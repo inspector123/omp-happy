@@ -411,12 +411,19 @@ function resolveRequestedLegacyModelCode(models: SessionModelState, requested: s
   return null;
 }
 
+// Permission modes that mean "don't ask — allow everything" (Happy's yolo/bypass).
+function isAutoApproveMode(mode: string | undefined): boolean {
+  return mode === 'bypassPermissions' || mode === 'yolo' || mode === 'safe-yolo' || mode === 'acceptAll';
+}
+
 class GenericAcpPermissionHandler extends BasePermissionHandler implements AcpPermissionHandler {
   private readonly logPrefix: string;
+  private readonly autoApprove: () => boolean;
 
-  constructor(session: ApiSessionClient, agentName: string) {
+  constructor(session: ApiSessionClient, agentName: string, autoApprove?: () => boolean) {
     super(session);
     this.logPrefix = `[${agentName}]`;
+    this.autoApprove = autoApprove ?? (() => false);
   }
 
   protected getLogPrefix(): string {
@@ -424,6 +431,11 @@ class GenericAcpPermissionHandler extends BasePermissionHandler implements AcpPe
   }
 
   async handleToolCall(toolCallId: string, toolName: string, input: unknown): Promise<PermissionResult> {
+    // Yolo / bypass: approve immediately without bothering the phone.
+    if (this.autoApprove()) {
+      logger.debug(`${this.logPrefix} Auto-approving tool (yolo): ${toolName} (${toolCallId})`);
+      return { decision: 'approved_for_session' };
+    }
     return new Promise<PermissionResult>((resolve, reject) => {
       this.pendingRequests.set(toolCallId, {
         resolve,
@@ -462,6 +474,8 @@ export async function runAcp(opts: {
   verbose?: boolean;
   /** Drop into a local interactive prompt (read stdin) while mirroring to the relay. */
   local?: boolean;
+  /** Auto-approve all tool permission requests (yolo / allow-all). */
+  yolo?: boolean;
 }): Promise<void> {
   const verbose = opts.verbose === true;
   const localMode = opts.local === true;
@@ -543,14 +557,22 @@ export async function runAcp(opts: {
     }
   }
 
-  permissionHandler = new GenericAcpPermissionHandler(session, opts.agentName);
+  // Yolo: the --yolo flag forces auto-approve; otherwise honour a bypass-style
+  // permission mode requested from the app. Auto-approve answers ACP permission
+  // requests instantly instead of prompting on the phone.
+  const yolo = opts.yolo === true;
+  let currentPermissionMode: string | undefined;
+  permissionHandler = new GenericAcpPermissionHandler(
+    session,
+    opts.agentName,
+    () => yolo || isAutoApproveMode(currentPermissionMode),
+  );
   // Drop any permission requests left in agent state from a previous CLI
   // process that died while a tool prompt was open — see the matching
   // call in claudeRemoteLauncher for the full rationale.
   permissionHandler.reset('Previous CLI process exited before responding');
   const sessionManager = new AcpSessionManager();
   const messageQueue = new MessageQueue2<AcpSwitchMode>((mode) => hashObject(mode));
-  let currentPermissionMode: string | undefined;
   let currentModel: string | null | undefined;
   let modeSelector: AcpConfigSelector | null = null;
   let modelSelector: AcpConfigSelector | null = null;

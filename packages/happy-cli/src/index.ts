@@ -361,6 +361,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
       let startedBy: 'daemon' | 'terminal' | undefined = undefined;
       let verbose = false;
       let local = false;
+      let yolo = false;
       const acpArgs: string[] = [];
       let customCommandMode = false;
       for (let i = 1; i < args.length; i++) {
@@ -374,6 +375,10 @@ Conversation history is preserved on the server, but in-flight tool calls are in
         }
         if (!customCommandMode && args[i] === '--local') {
           local = true;
+          continue;
+        }
+        if (!customCommandMode && (args[i] === '--yolo' || args[i] === '--dangerously-skip-permissions')) {
+          yolo = true;
           continue;
         }
         if (args[i] === '--') {
@@ -391,6 +396,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
         startedBy,
         verbose,
         local,
+        yolo,
         agentName: resolved.agentName,
         command: resolved.command,
         args: resolved.args,

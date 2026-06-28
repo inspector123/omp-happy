@@ -412,7 +412,7 @@ export async function startDaemon(): Promise<void> {
             : '';
           // omp launches via `acp omp` and is always remote (no --happy-starting-mode).
           const launchSubcommand = isOmp
-            ? 'acp omp --started-by daemon'
+            ? 'acp omp --yolo --started-by daemon'
             : `${agent} --happy-starting-mode remote --started-by daemon`;
           const fullCommand = `node --no-warnings --no-deprecation ${cliPath} ${launchSubcommand}${resumeFragment}`;
 
@@ -503,7 +503,7 @@ export async function startDaemon(): Promise<void> {
             // it omits --happy-starting-mode (the acp arg parser would otherwise
             // leak that flag into omp's own args). It still reports to the daemon
             // webhook via notifyDaemonSessionStarted, so spawn tracking works.
-            args = ['acp', 'omp', '--started-by', 'daemon'];
+            args = ['acp', 'omp', '--yolo', '--started-by', 'daemon'];
           } else {
             let agentCommand: string;
             switch (options.agent) {

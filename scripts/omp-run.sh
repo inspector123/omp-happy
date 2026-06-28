@@ -6,6 +6,7 @@
 # - --local drops you into an interactive omp prompt in THIS terminal while the
 #   session is mirrored to your phone, so either side can drive it.
 #
+# --yolo auto-approves all tool permissions (allow-all). Drop it to be prompted.
 # Override the server with HAPPY_SERVER_URL=... (defaults to a LAN address).
 set -euo pipefail
 
@@ -15,4 +16,4 @@ export HAPPY_HOME_DIR="${HAPPY_HOME_DIR:-$HOME/.omp-happy}"
 export HAPPY_SERVER_URL="${HAPPY_SERVER_URL:-http://192.168.0.252:30003}"
 export PATH="$PATH:$HOME/.local/bin"   # so `omp` resolves
 
-exec node "$REPO_ROOT/packages/happy-cli/bin/happy.mjs" acp omp --local "$@"
+exec node "$REPO_ROOT/packages/happy-cli/bin/happy.mjs" acp omp --local --yolo "$@"
