@@ -114,7 +114,7 @@ export function getHardcodedPermissionModes(flavor: AgentFlavor, translate: Tran
     if (flavor === 'gemini') {
         return getGeminiPermissionModes(translate);
     }
-    if (flavor === 'openclaw') {
+    if (flavor === 'openclaw' || flavor === 'omp') {
         return getOpenClawPermissionModes(translate);
     }
     return getClaudePermissionModes(translate);
@@ -133,7 +133,9 @@ export function getHardcodedModelModes(flavor: AgentFlavor, _translate: Translat
     if (flavor === 'gemini') {
         return getGeminiModelModes();
     }
-    if (flavor === 'openclaw') {
+    if (flavor === 'openclaw' || flavor === 'omp') {
+        // omp's models are dynamic (from the session's configOptions); before a
+        // session exists, offer only "default model" instead of Claude's list.
         return getOpenClawModelModes();
     }
     return getClaudeModelModes();

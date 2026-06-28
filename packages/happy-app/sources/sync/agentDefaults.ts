@@ -43,6 +43,10 @@ export function normalizeAgentKey(flavor: string | null | undefined): AgentKey {
 }
 
 export function getCodeAgentDefaults(flavor: string | null | undefined): AgentDefaultConfig {
+    if (flavor === 'omp') {
+        // omp: no Claude leakage — model/mode come from the live session.
+        return { permissionMode: 'default', modelMode: 'default', effortLevel: null };
+    }
     return codeAgentDefaults[normalizeAgentKey(flavor)];
 }
 
