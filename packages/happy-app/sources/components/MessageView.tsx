@@ -9,6 +9,7 @@ import { Metadata } from "@/sync/storageTypes";
 import { ToolView } from "./tools/ToolView";
 import { AgentEvent } from "@/sync/typesRaw";
 import { sync } from '@/sync/sync';
+import { useSetting } from '@/sync/storage';
 import { Option } from './markdown/MarkdownView';
 import { layout } from "./layout";
 import { parseLocalCommandMessage, isUserSlashCommandEcho } from './parseLocalCommandMessage';
@@ -63,7 +64,9 @@ function RenderBlock(props: {
       );
 
     case 'agent-text':
-      return <AgentTextBlock message={props.message} sessionId={props.sessionId} />;
+      return props.message.isThinking
+        ? <AgentReasoningBlock message={props.message} sessionId={props.sessionId} />
+        : <AgentTextBlock message={props.message} sessionId={props.sessionId} />;
 
     case 'tool-call':
       return <ToolCallBlock
@@ -184,14 +187,27 @@ function AgentTextBlock(props: {
     sync.sendMessage(props.sessionId, option.title, { source: 'option' });
   }, [props.sessionId]);
 
-  // Hide thinking messages
-  if (props.message.isThinking) {
-    return null;
-  }
-
   return (
     <View style={styles.agentMessageContainer}>
       <MarkdownView markdown={props.message.text} onOptionPress={handleOptionPress} sessionId={props.sessionId} />
+    </View>
+  );
+}
+
+// Reasoning / thinking block. Hidden in upstream Happy; we render it (muted)
+// behind the `showReasoning` setting so omp's reasoning is visible.
+function AgentReasoningBlock(props: { message: AgentTextMessage; sessionId: string }) {
+  const showReasoning = useSetting('showReasoning');
+  if (!showReasoning) {
+    return null;
+  }
+  return (
+    <View style={styles.reasoningContainer}>
+      <View style={styles.reasoningHeader}>
+        <Ionicons name="bulb-outline" size={13} color={styles.reasoningLabel.color as string} />
+        <Text style={styles.reasoningLabel}>Reasoning</Text>
+      </View>
+      <MarkdownView markdown={props.message.text} sessionId={props.sessionId} />
     </View>
   );
 }
@@ -344,5 +360,24 @@ const styles = StyleSheet.create((theme) => ({
   debugText: {
     color: theme.colors.agentEventText,
     fontSize: 12,
+  },
+  reasoningContainer: {
+    marginBottom: 12,
+    paddingLeft: 10,
+    borderLeftWidth: 2,
+    borderLeftColor: theme.colors.divider,
+    opacity: 0.78,
+  },
+  reasoningHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 2,
+  },
+  reasoningLabel: {
+    color: theme.colors.agentEventText,
+    fontSize: 11,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
 }));

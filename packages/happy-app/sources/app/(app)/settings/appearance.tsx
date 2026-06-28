@@ -31,6 +31,7 @@ export default function AppearanceSettingsScreen() {
     const [alwaysShowContextSize, setAlwaysShowContextSize] = useSettingMutable('alwaysShowContextSize');
     const [avatarStyle, setAvatarStyle] = useSettingMutable('avatarStyle');
     const [showFlavorIcons, setShowFlavorIcons] = useSettingMutable('showFlavorIcons');
+    const [showReasoning, setShowReasoning] = useSettingMutable('showReasoning');
     const [themePreference, setThemePreference] = useLocalSettingMutable('themePreference');
     const [preferredLanguage] = useSettingMutable('preferredLanguage');
     
@@ -129,6 +130,17 @@ export default function AppearanceSettingsScreen() {
                         <Switch
                             value={viewInline}
                             onValueChange={setViewInline}
+                        />
+                    }
+                />
+                <Item
+                    title="Show reasoning"
+                    subtitle="Show the agent's thinking/reasoning blocks in chat"
+                    icon={<Ionicons name="bulb-outline" size={29} color="#5856D6" />}
+                    rightElement={
+                        <Switch
+                            value={showReasoning}
+                            onValueChange={setShowReasoning}
                         />
                     }
                 />
