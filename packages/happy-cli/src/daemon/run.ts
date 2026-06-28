@@ -402,14 +402,19 @@ export async function startDaemon(): Promise<void> {
           // Construct command for the CLI
           const cliPath = join(projectPath(), 'dist', 'index.mjs');
           // Determine agent command - support claude, codex, and gemini
-          const agent = options.agent === 'gemini' ? 'gemini' : (options.agent === 'codex' ? 'codex' : (options.agent === 'openclaw' ? 'openclaw' : 'claude'));
+          const isOmp = options.agent === 'omp';
+          const agent = isOmp ? 'omp' : (options.agent === 'gemini' ? 'gemini' : (options.agent === 'codex' ? 'codex' : (options.agent === 'openclaw' ? 'openclaw' : 'claude')));
           const resumeId = agent === 'claude'
             ? options.resumeClaudeSessionId
             : (agent === 'codex' ? options.resumeCodexThreadId : undefined);
           const resumeFragment = resumeId
             ? ` --resume ${shellescape(resumeId)}`
             : '';
-          const fullCommand = `node --no-warnings --no-deprecation ${cliPath} ${agent} --happy-starting-mode remote --started-by daemon${resumeFragment}`;
+          // omp launches via `acp omp` and is always remote (no --happy-starting-mode).
+          const launchSubcommand = isOmp
+            ? 'acp omp --started-by daemon'
+            : `${agent} --happy-starting-mode remote --started-by daemon`;
+          const fullCommand = `node --no-warnings --no-deprecation ${cliPath} ${launchSubcommand}${resumeFragment}`;
 
           // Spawn in tmux with environment variables
           // IMPORTANT: Pass complete environment (process.env + extraEnv) because:
@@ -491,41 +496,50 @@ export async function startDaemon(): Promise<void> {
         if (!useTmux) {
           logger.debug(`[DAEMON RUN] Using regular process spawning`);
 
-          // Construct arguments for the CLI - support claude, codex, and gemini
-          let agentCommand: string;
-          switch (options.agent) {
-            case 'claude':
-            case undefined:
-              agentCommand = 'claude';
-              break;
-            case 'codex':
-              agentCommand = 'codex';
-              break;
-            case 'gemini':
-              agentCommand = 'gemini';
-              break;
-            case 'openclaw':
-              agentCommand = 'openclaw';
-              break;
-            default:
-              return {
-                type: 'error',
-                errorMessage: `Unsupported agent type: '${options.agent}'. Please update your CLI to the latest version.`
-              };
-          }
-          const args = [
-            agentCommand,
-            '--happy-starting-mode', 'remote',
-            '--started-by', 'daemon'
-          ];
+          // Construct arguments for the CLI - support claude, codex, gemini, openclaw, omp
+          let args: string[];
+          if (options.agent === 'omp') {
+            // omp runs via the `acp` subcommand and is always headless/remote, so
+            // it omits --happy-starting-mode (the acp arg parser would otherwise
+            // leak that flag into omp's own args). It still reports to the daemon
+            // webhook via notifyDaemonSessionStarted, so spawn tracking works.
+            args = ['acp', 'omp', '--started-by', 'daemon'];
+          } else {
+            let agentCommand: string;
+            switch (options.agent) {
+              case 'claude':
+              case undefined:
+                agentCommand = 'claude';
+                break;
+              case 'codex':
+                agentCommand = 'codex';
+                break;
+              case 'gemini':
+                agentCommand = 'gemini';
+                break;
+              case 'openclaw':
+                agentCommand = 'openclaw';
+                break;
+              default:
+                return {
+                  type: 'error',
+                  errorMessage: `Unsupported agent type: '${options.agent}'. Please update your CLI to the latest version.`
+                };
+            }
+            args = [
+              agentCommand,
+              '--happy-starting-mode', 'remote',
+              '--started-by', 'daemon'
+            ];
 
-          // Resume ids attach the new Happy session to a pre-existing provider
-          // conversation created by the fork / duplicate RPC.
-          if (options.resumeClaudeSessionId && agentCommand === 'claude') {
-            args.push('--resume', options.resumeClaudeSessionId);
-          }
-          if (options.resumeCodexThreadId && agentCommand === 'codex') {
-            args.push('--resume', options.resumeCodexThreadId);
+            // Resume ids attach the new Happy session to a pre-existing provider
+            // conversation created by the fork / duplicate RPC.
+            if (options.resumeClaudeSessionId && agentCommand === 'claude') {
+              args.push('--resume', options.resumeClaudeSessionId);
+            }
+            if (options.resumeCodexThreadId && agentCommand === 'codex') {
+              args.push('--resume', options.resumeCodexThreadId);
+            }
           }
 
           // TODO: In future, sessionId could be used with --resume to continue existing sessions
