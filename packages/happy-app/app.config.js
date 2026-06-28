@@ -2,14 +2,15 @@ const { execFileSync } = require('node:child_process');
 
 const variant = process.env.APP_ENV || 'development';
 const name = {
-    development: "Happy (dev)",
-    preview: "Happy (preview)",
-    production: "Happy"
+    development: "OMP (dev)",
+    preview: "OMP (preview)",
+    production: "OMP"
 }[variant];
+// Distinct bundle ids so this fork installs alongside (not over) the real Happy app.
 const bundleId = {
-    development: "com.slopus.happy.dev",
-    preview: "com.slopus.happy.preview",
-    production: "com.ex3ndr.happy"
+    development: "gg.omp.companion.dev",
+    preview: "gg.omp.companion.preview",
+    production: "gg.omp.companion"
 }[variant];
 // const stagingElevenLabsAgentId = 'agent_7801k2c0r5hjfraa1kdbytpvs6yt';
 const productionElevenLabsAgentId = 'agent_6701k211syvvegba4kt7m68nxjmw';
@@ -63,7 +64,7 @@ export default {
         runtimeVersion: "21",
         orientation: "default",
         icon: "./sources/assets/images/icon.png",
-        scheme: "happy",
+        scheme: "omphappy",
         userInterfaceStyle: "automatic",
         ios: {
             supportsTablet: true,
@@ -110,7 +111,9 @@ export default {
                 "android.permission.READ_MEDIA_VIDEO",
             ],
             package: bundleId,
-            googleServicesFile: "./google-services.json",
+            // Firebase config omitted: the upstream google-services.json is keyed to
+            // com.ex3ndr.happy and won't match this fork's package (gradle would fail).
+            // Remote push is unused for the sideloaded omp build; local notifications still work.
             intentFilters: variant === 'production' ? [
                 {
                     "action": "VIEW",
