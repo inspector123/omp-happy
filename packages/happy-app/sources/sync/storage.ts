@@ -1420,6 +1420,25 @@ export function useSession(id: string): Session | null {
     return storage(useShallow((state) => state.sessions[id] ?? null));
 }
 
+/**
+ * Most recently updated session that advertises a model list. Used by the
+ * global "Manage models" settings page, which has no session context — it
+ * curates against whatever models the latest agent session offered.
+ */
+export function useLatestSessionWithModels(): Session | null {
+    return storage(useShallow((state) => {
+        if (!state.isDataReady) return null;
+        let best: Session | null = null;
+        for (const s of Object.values(state.sessions)) {
+            const models = s.metadata?.models;
+            if (Array.isArray(models) && models.length > 0) {
+                if (!best || s.updatedAt > best.updatedAt) best = s;
+            }
+        }
+        return best;
+    }));
+}
+
 const emptyArray: unknown[] = [];
 
 export function useSessionMessages(sessionId: string): {

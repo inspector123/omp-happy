@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { Item } from '@/components/Item';
 import { ItemGroup } from '@/components/ItemGroup';
 import { ItemList } from '@/components/ItemList';
@@ -8,6 +9,7 @@ import { Switch } from '@/components/Switch';
 import { t } from '@/text';
 
 export default function FeaturesSettingsScreen() {
+    const router = useRouter();
     const [experiments, setExperiments] = useSettingMutable('experiments');
     const [analyticsOptOut, setAnalyticsOptOut] = useSettingMutable('analyticsOptOut');
     const [agentInputEnterToSend, setAgentInputEnterToSend] = useSettingMutable('agentInputEnterToSend');
@@ -21,6 +23,19 @@ export default function FeaturesSettingsScreen() {
 
     return (
         <ItemList style={{ paddingTop: 0 }}>
+            {/* Models */}
+            <ItemGroup
+                title="Models"
+                footer="Curate which models appear in the in-chat model picker."
+            >
+                <Item
+                    title="Manage Models"
+                    subtitle="Pick the models you use; hide the rest"
+                    icon={<Ionicons name="hardware-chip-outline" size={29} color="#5856D6" />}
+                    onPress={() => router.push('/settings/models')}
+                />
+            </ItemGroup>
+
             {/* Interface */}
             <ItemGroup
                 title="Interface"

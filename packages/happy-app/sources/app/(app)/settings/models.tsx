@@ -6,7 +6,7 @@ import { Item } from '@/components/Item';
 import { ItemGroup } from '@/components/ItemGroup';
 import { ItemList } from '@/components/ItemList';
 import { getAvailableModels } from '@/components/modelModeOptions';
-import { useSession, useSettingMutable } from '@/sync/storage';
+import { useSession, useLatestSessionWithModels, useSettingMutable } from '@/sync/storage';
 import { t } from '@/text';
 
 /**
@@ -23,7 +23,11 @@ import { t } from '@/text';
 export default function ModelShortlistScreen() {
     const { theme } = useUnistyles();
     const { sessionId } = useLocalSearchParams<{ sessionId?: string }>();
-    const session = useSession(sessionId ?? '');
+    // From the composer we get a sessionId; from global Settings we don't, so
+    // fall back to the latest session that advertised a model list.
+    const sessionById = useSession(sessionId ?? '');
+    const latestWithModels = useLatestSessionWithModels();
+    const session = sessionById ?? latestWithModels;
     const [shortlist, setShortlist] = useSettingMutable('modelShortlist');
 
     const models = React.useMemo(() => {
