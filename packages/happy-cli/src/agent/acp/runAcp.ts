@@ -604,6 +604,10 @@ export async function runAcp(opts: {
   let thinking = false;
   let acpSessionId: string | null = null;
   let shouldExit = false;
+  // True while a user-requested abort/cancel is in flight. omp reports a
+  // `stopped` backend status when a turn is cancelled; without this flag we'd
+  // treat that like a backend death and kill+archive the whole session.
+  let aborting = false;
   let abortController = new AbortController();
   let pendingTurn: PendingTurn | null = null;
 
@@ -997,7 +1001,12 @@ export async function runAcp(opts: {
       if (msg.status === 'idle') {
         clearPendingTurn();
       }
-      if (msg.status === 'error' || msg.status === 'stopped') {
+      if (msg.status === 'stopped' && aborting) {
+        // User cancelled the current turn — end the turn, keep the session alive.
+        logger.debug(`[${opts.agentName}] turn cancelled by user; ending turn, session stays alive`);
+        aborting = false;
+        clearPendingTurn();
+      } else if (msg.status === 'error' || msg.status === 'stopped') {
         stopRunnerFromBackendStatus(msg.status, msg.detail);
       }
     }
@@ -1063,6 +1072,8 @@ export async function runAcp(opts: {
   }, 2000);
 
   async function handleAbort() {
+    // Mark that the imminent backend `stopped` is a user cancel, not a death.
+    aborting = true;
     try {
       if (acpSessionId) {
         await backend.cancel(acpSessionId);
@@ -1116,6 +1127,7 @@ export async function runAcp(opts: {
         throw new Error('ACP session is not started');
       }
 
+      aborting = false;
       logAcp('incoming', `Incoming prompt: ${formatUnknownForConsole(batch.message, ACP_EVENT_PREVIEW_CHARS)}`);
       if (useMobileSink) {
         ompPending = '';
