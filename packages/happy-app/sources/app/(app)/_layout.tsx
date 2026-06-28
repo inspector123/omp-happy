@@ -118,6 +118,12 @@ export default function RootLayout() {
                 }}
             />
             <Stack.Screen
+                name="settings/models"
+                options={{
+                    headerTitle: 'Models',
+                }}
+            />
+            <Stack.Screen
                 name="settings/features"
                 options={{
                     headerTitle: t('settings.features'),

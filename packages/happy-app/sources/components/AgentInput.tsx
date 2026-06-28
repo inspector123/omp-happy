@@ -21,7 +21,8 @@ import { TextInputState, MultiTextInputHandle } from './MultiTextInput';
 import { applySuggestion } from './autocomplete/applySuggestion';
 import { GitStatusBadge, useHasMeaningfulGitStatus } from './GitStatusBadge';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useSetting } from '@/sync/storage';
+import { useRouter } from 'expo-router';
+import { useSetting, useSettingMutable } from '@/sync/storage';
 import { hackMode, hackModes } from '@/sync/modeHacks';
 import { Theme } from '@/theme';
 import { t } from '@/text';
@@ -571,6 +572,14 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         hackModes(props.availableModes ?? [])
     ), [props.availableModes]);
     const availableModels = props.availableModels ?? [];
+    const router = useRouter();
+    const [modelShortlist] = useSettingMutable('modelShortlist');
+    // Curated shortlist: if any of the user's picks are in this agent's model
+    // list, show only those; otherwise show all (so other agents are unaffected).
+    const shownModels = React.useMemo(() => {
+        const curated = availableModels.filter((m) => modelShortlist.includes(m.key));
+        return curated.length > 0 ? curated : availableModels;
+    }, [availableModels, modelShortlist]);
     const availableEffortLevels = props.availableEffortLevels ?? [];
     const isSandboxEnabled = React.useMemo(() => {
         const sandbox = props.metadata?.sandbox as unknown;
@@ -1015,7 +1024,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                             {t('agentInput.model.title')}
                                         </Text>
                                         {availableModels.length > 0 ? (
-                                            availableModels.map((model) => {
+                                            shownModels.map((model) => {
                                                 const isSelected = props.modelMode?.key === model.key;
 
                                                 return (
@@ -1085,6 +1094,25 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                             }}>
                                                 {t('agentInput.model.configureInCli')}
                                             </Text>
+                                        )}
+                                        {availableModels.length > 6 && (
+                                            <Pressable
+                                                onPress={() => {
+                                                    setShowSettings(false);
+                                                    router.push(`/settings/models?sessionId=${props.sessionId ?? ''}`);
+                                                }}
+                                                style={({ pressed }) => ({
+                                                    paddingHorizontal: 16,
+                                                    paddingVertical: 8,
+                                                    backgroundColor: pressed ? theme.colors.surfacePressed : 'transparent',
+                                                })}
+                                            >
+                                                <Text style={{ fontSize: 13, color: theme.colors.radio.active, ...Typography.default() }}>
+                                                    {shownModels.length < availableModels.length
+                                                        ? `Manage models… (${shownModels.length}/${availableModels.length})`
+                                                        : 'Manage models…'}
+                                                </Text>
+                                            </Pressable>
                                         )}
                                     </View>
 
