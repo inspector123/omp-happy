@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import * as readline from 'node:readline';
 import { ApiClient } from '@/api/api';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentMessage } from '@/agent/core';
@@ -71,7 +72,13 @@ function colorizeAcpLine(kind: AcpLogKind, line: string): string {
   return `${ACP_LOG_COLORS[kind]}${line}${ACP_COLOR_RESET}`;
 }
 
+// In local interactive mode we suppress the verbose 'muted'/'incoming' lines
+// so the terminal reads as a clean omp conversation.
+let acpQuietLocal = false;
 function logAcp(kind: AcpLogKind, message: string): void {
+  if (acpQuietLocal && (kind === 'muted' || kind === 'incoming')) {
+    return;
+  }
   const line = `[${formatAcpTime()}] ${message}`;
   console.log(colorizeAcpLine(kind, line));
 }
@@ -453,8 +460,33 @@ export async function runAcp(opts: {
   args: string[];
   startedBy?: 'daemon' | 'terminal';
   verbose?: boolean;
+  /** Drop into a local interactive prompt (read stdin) while mirroring to the relay. */
+  local?: boolean;
 }): Promise<void> {
   const verbose = opts.verbose === true;
+  const localMode = opts.local === true;
+  acpQuietLocal = localMode && !verbose;
+
+  // Clean terminal rendering of the agent stream for local interactive mode.
+  const LOCAL_PROMPT = '\x1b[36momp› \x1b[0m';
+  const printLocal = (msg: AgentMessage) => {
+    switch (msg.type) {
+      case 'model-output':
+        if (msg.textDelta) process.stdout.write(msg.textDelta);
+        break;
+      case 'event':
+        if (msg.name === 'thinking') {
+          const p = msg.payload as { text?: string } | undefined;
+          if (typeof p?.text === 'string') process.stdout.write(`\x1b[2m${p.text}\x1b[0m`);
+        }
+        break;
+      case 'tool-call': {
+        const label = (msg as { title?: string }).title || msg.toolName;
+        process.stdout.write(`\n\x1b[2m⚙ ${label}\x1b[0m\n`);
+        break;
+      }
+    }
+  };
   const sessionTag = randomUUID();
   connectionState.setBackend(opts.agentName);
 
@@ -948,9 +980,13 @@ export async function runAcp(opts: {
       }
     }
 
-    const frontendMessage = formatAcpMessageForFrontend(opts.agentName, msg, verbose);
-    if (frontendMessage) {
-      logAcp(frontendMessage.kind, frontendMessage.text);
+    if (localMode) {
+      printLocal(msg);
+    } else {
+      const frontendMessage = formatAcpMessageForFrontend(opts.agentName, msg, verbose);
+      if (frontendMessage) {
+        logAcp(frontendMessage.kind, frontendMessage.text);
+      }
     }
 
     if (useMobileSink) {
@@ -982,6 +1018,22 @@ export async function runAcp(opts: {
       model: currentModel,
     });
   });
+
+  // Local interactive mode: read prompts from the terminal too. The session is
+  // still mirrored to the phone, so either side can drive it.
+  if (localMode) {
+    process.stdout.write(`\n\x1b[36mLocal omp session — type below (also drivable from your phone). Ctrl-C to exit.\x1b[0m\n\n${LOCAL_PROMPT}`);
+    const rl = readline.createInterface({ input: process.stdin });
+    rl.on('line', (line) => {
+      const text = line.trim();
+      if (text) {
+        messageQueue.push(text, { permissionMode: currentPermissionMode, model: currentModel });
+      } else {
+        process.stdout.write(LOCAL_PROMPT);
+      }
+    });
+  }
+
   session.keepAlive(thinking, 'remote');
 
   const keepAliveInterval = setInterval(() => {
@@ -1068,6 +1120,9 @@ export async function runAcp(opts: {
           sendEnvelopes(sessionManager.endTurn('completed'));
         }
         session.sendSessionEvent({ type: 'ready' });
+        if (localMode) {
+          process.stdout.write(`\n\n${LOCAL_PROMPT}`);
+        }
         if (verbose) {
           logAcp('muted', `Outgoing prompt completion from ${opts.agentName}`);
         }
