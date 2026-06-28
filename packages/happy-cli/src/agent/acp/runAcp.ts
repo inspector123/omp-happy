@@ -598,6 +598,86 @@ export async function runAcp(opts: {
     }
   };
 
+  // ---------------------------------------------------------------------------
+  // omp first-class sink (Path B — unified ACP data via sendAgentMessage).
+  //
+  // The default ACP path (sendEnvelopes → session-protocol) cannot carry tool
+  // RESULTS: the app normalizer hardcodes tool-call-end to `content: null`
+  // (happy-app sync/typesRaw.ts). Gemini avoids this by emitting the richer
+  // `type:'acp'` data stream where `tool-result.output` lands in `tool.result`.
+  // omp needs that path so its real outputs — and the structured
+  // `rawOutput.details` behind delegate_task subagents — actually render.
+  //
+  // We reuse all of runAcp's transport/prompt-loop/permission/mode infra and
+  // only swap the emit sink (and turn lifecycle) when driving omp.
+  // ---------------------------------------------------------------------------
+  const useMobileSink = opts.agentName === 'omp';
+  let ompPendingText = '';
+
+  const flushOmpText = () => {
+    const text = ompPendingText.trim();
+    ompPendingText = '';
+    if (text) {
+      session.sendAgentMessage('omp', { type: 'message', message: text });
+    }
+  };
+
+  const emitOmpMobile = (msg: AgentMessage) => {
+    switch (msg.type) {
+      case 'model-output':
+        if (msg.textDelta) {
+          ompPendingText += msg.textDelta;
+        }
+        return;
+      case 'event':
+        if (msg.name === 'thinking') {
+          const payload = msg.payload as { text?: string } | undefined;
+          const text = typeof payload?.text === 'string' ? payload.text : '';
+          if (text.trim()) {
+            flushOmpText();
+            session.sendAgentMessage('omp', { type: 'thinking', text });
+          }
+        }
+        return;
+      case 'tool-call':
+        // Flush any pending prose so ordering (text → tool → text) is preserved.
+        flushOmpText();
+        session.sendAgentMessage('omp', {
+          type: 'tool-call',
+          name: msg.toolName,
+          callId: msg.callId,
+          input: msg.args,
+          id: randomUUID(),
+        });
+        return;
+      case 'tool-result': {
+        const isError = !!msg.result
+          && typeof msg.result === 'object'
+          && 'error' in (msg.result as Record<string, unknown>);
+        session.sendAgentMessage('omp', {
+          type: 'tool-result',
+          callId: msg.callId,
+          output: msg.result,
+          id: randomUUID(),
+          isError,
+        });
+        return;
+      }
+      case 'fs-edit':
+        session.sendAgentMessage('omp', {
+          type: 'file-edit',
+          description: msg.description,
+          filePath: msg.path ?? '',
+          diff: msg.diff,
+          id: randomUUID(),
+        });
+        return;
+      default:
+        // status/token-count/etc. are handled by the shared control flow above.
+        return;
+    }
+  };
+
   const switchPermissionModeIfRequested = async (requestedMode: string): Promise<void> => {
     if (!requestedMode) {
       return;
@@ -825,7 +905,11 @@ export async function runAcp(opts: {
       logAcp(frontendMessage.kind, frontendMessage.text);
     }
 
-    sendEnvelopes(sessionManager.mapMessage(msg));
+    if (useMobileSink) {
+      emitOmpMobile(msg);
+    } else {
+      sendEnvelopes(sessionManager.mapMessage(msg));
+    }
   };
 
   backend.onMessage(onBackendMessage);
@@ -911,7 +995,12 @@ export async function runAcp(opts: {
       }
 
       logAcp('incoming', `Incoming prompt: ${formatUnknownForConsole(batch.message, ACP_EVENT_PREVIEW_CHARS)}`);
-      sendEnvelopes(sessionManager.startTurn());
+      if (useMobileSink) {
+        ompPendingText = '';
+        session.sendAgentMessage('omp', { type: 'task_started', id: randomUUID() });
+      } else {
+        sendEnvelopes(sessionManager.startTurn());
+      }
       const turnEnded = waitForTurnEnd();
       try {
         if (typeof batch.mode.permissionMode === 'string' && batch.mode.permissionMode.length > 0) {
@@ -922,13 +1011,23 @@ export async function runAcp(opts: {
         }
         await backend.sendPrompt(acpSessionId, batch.message);
         await turnEnded;
-        sendEnvelopes(sessionManager.endTurn('completed'));
+        if (useMobileSink) {
+          flushOmpText();
+          session.sendAgentMessage('omp', { type: 'task_complete', id: randomUUID() });
+        } else {
+          sendEnvelopes(sessionManager.endTurn('completed'));
+        }
         session.sendSessionEvent({ type: 'ready' });
         if (verbose) {
           logAcp('muted', `Outgoing prompt completion from ${opts.agentName}`);
         }
       } catch (error) {
-        sendEnvelopes(sessionManager.endTurn('failed'));
+        if (useMobileSink) {
+          flushOmpText();
+          session.sendAgentMessage('omp', { type: 'turn_aborted', id: randomUUID() });
+        } else {
+          sendEnvelopes(sessionManager.endTurn('failed'));
+        }
         session.sendSessionEvent({ type: 'ready' });
         logAcp('error', `Prompt error from ${opts.agentName}: ${error instanceof Error ? error.message : String(error)}`);
         clearPendingTurn(error instanceof Error ? error : new Error(String(error)));

@@ -145,14 +145,17 @@ export class AcpSessionManager {
     if (msg.type === 'tool-call') {
       const flushed = this.flush();
       const call = this.ensureSessionCallId(msg.callId);
+      // Prefer the agent-provided human title (omp/ACP); fall back to the tool name.
+      const hasTitle = typeof msg.title === 'string' && msg.title.trim().length > 0;
+      const title = hasTitle ? msg.title!.trim() : buildToolTitle(msg.toolName);
       return [
         ...flushed,
         createEnvelope('agent', {
           t: 'tool-call-start',
           call,
           name: msg.toolName,
-          title: buildToolTitle(msg.toolName),
-          description: buildToolDescription(msg.toolName),
+          title,
+          description: hasTitle ? msg.title!.trim() : buildToolDescription(msg.toolName),
           args: msg.args,
         }, turnOptions(this.currentTurnId, this.nextTime())),
       ];

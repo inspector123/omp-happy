@@ -37,12 +37,38 @@ export interface SessionUpdate {
     [key: string]: unknown;
   } | string | unknown;
   locations?: unknown[];
+  /** Human-readable tool title (omp/ACP spec: e.g. "Listing current directory") */
+  title?: string;
+  /** Tool input payload (omp/ACP spec puts args here, NOT in `content`) */
+  rawInput?: Record<string, unknown>;
+  /** Tool output payload (omp/ACP spec puts results here, incl. delegate `details`) */
+  rawOutput?: Record<string, unknown>;
   messageChunk?: {
     textDelta?: string;
   };
   plan?: unknown;
   thinking?: unknown;
   [key: string]: unknown;
+}
+
+/**
+ * Derive a stable, app-renderable tool name from an ACP tool update.
+ *
+ * ACP/omp tool calls carry a `kind` (read/edit/execute/search/fetch/think/other)
+ * plus a human `title`, but no discrete tool "name". happy-app's knownTools
+ * registry keys off tool NAME, and its Gemini entries are keyed on the ACP kind
+ * strings (`edit`/`execute`/...), so mapping name = kind reuses those views.
+ *
+ * The one exception is omp's subagent tool, which arrives as kind `other` with a
+ * `rawInput.tasks[]` array. We surface it as `delegate_task` so the app can mount
+ * a dedicated subagent renderer (progress[]/results[] merged by task id).
+ */
+export function deriveToolName(update: SessionUpdate, fallbackKind: string | undefined): string {
+  const tasks = update.rawInput?.tasks;
+  if (Array.isArray(tasks)) {
+    return 'delegate_task';
+  }
+  return fallbackKind || 'unknown';
 }
 
 /**
@@ -248,7 +274,7 @@ export function startToolCall(
 
   // Extract real tool name from toolCallId
   const extractedName = ctx.transport.extractToolNameFromId?.(toolCallId);
-  const realToolName = extractedName ?? (toolKindStr || 'unknown');
+  const realToolName = extractedName ?? deriveToolName(update, toolKindStr);
 
   // Store mapping for permission requests
   ctx.toolCallIdToNameMap.set(toolCallId, realToolName);
@@ -293,8 +319,11 @@ export function startToolCall(
   // Emit running status
   ctx.emit({ type: 'status', status: 'running' });
 
-  // Parse args and emit tool-call event
-  const args = parseArgsFromContent(update.content);
+  // Parse args. omp/ACP put the tool input in `rawInput`; legacy/Gemini paths
+  // put it in `content`. Prefer rawInput, fall back to content so we never lose args.
+  const args = update.rawInput && typeof update.rawInput === 'object'
+    ? { ...update.rawInput }
+    : parseArgsFromContent(update.content);
 
   // Extract locations if present
   if (update.locations && Array.isArray(update.locations)) {
@@ -308,9 +337,12 @@ export function startToolCall(
 
   ctx.emit({
     type: 'tool-call',
-    toolName: toolKindStr || 'unknown',
+    toolName: realToolName,
     args,
     callId: toolCallId,
+    // Human-readable title from the agent (omp: "Listing current directory").
+    // Falls back to undefined → session manager uses the tool name.
+    title: typeof update.title === 'string' ? update.title : undefined,
   });
 }
 
@@ -457,9 +489,11 @@ export function handleToolCallUpdate(
       logger.debug(`[AcpBackend] Tool call ${toolCallId} already tracked, status: ${status}`);
     }
   } else if (status === 'completed') {
-    completeToolCall(toolCallId, toolKind, update.content, ctx);
+    // omp/ACP put tool output in `rawOutput` (incl. delegate `details.progress/results`);
+    // legacy/Gemini paths use `content`. Prefer rawOutput so omp results aren't lost.
+    completeToolCall(toolCallId, toolKind, update.rawOutput ?? update.content, ctx);
   } else if (status === 'failed' || status === 'cancelled') {
-    failToolCall(toolCallId, status, toolKind, update.content, ctx);
+    failToolCall(toolCallId, status, toolKind, update.rawOutput ?? update.content, ctx);
   }
 
   return { handled: true, toolCallCountSincePrompt };
