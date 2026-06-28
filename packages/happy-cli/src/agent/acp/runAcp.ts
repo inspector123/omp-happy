@@ -612,31 +612,44 @@ export async function runAcp(opts: {
   // only swap the emit sink (and turn lifecycle) when driving omp.
   // ---------------------------------------------------------------------------
   const useMobileSink = opts.agentName === 'omp';
-  let ompPendingText = '';
+  // Accumulate streamed output/thinking and emit each contiguous run as ONE
+  // message. omp streams reasoning as hundreds of token-sized chunks; without
+  // coalescing, each chunk became its own "Reasoning" block in the app.
+  let ompPending = '';
+  let ompPendingKind: 'output' | 'thinking' | null = null;
   let ompLastPlanJson = '';
 
   const flushOmpText = () => {
-    const text = ompPendingText.trim();
-    ompPendingText = '';
-    if (text) {
+    const text = ompPending.trim();
+    const kind = ompPendingKind;
+    ompPending = '';
+    ompPendingKind = null;
+    if (!text || !kind) return;
+    if (kind === 'thinking') {
+      session.sendAgentMessage('omp', { type: 'thinking', text });
+    } else {
       session.sendAgentMessage('omp', { type: 'message', message: text });
     }
+  };
+  const appendOmpPending = (kind: 'output' | 'thinking', text: string) => {
+    if (ompPendingKind && ompPendingKind !== kind) flushOmpText();
+    ompPendingKind = kind;
+    ompPending += text;
   };
 
   const emitOmpMobile = (msg: AgentMessage) => {
     switch (msg.type) {
       case 'model-output':
         if (msg.textDelta) {
-          ompPendingText += msg.textDelta;
+          appendOmpPending('output', msg.textDelta);
         }
         return;
       case 'event':
         if (msg.name === 'thinking') {
           const payload = msg.payload as { text?: string } | undefined;
           const text = typeof payload?.text === 'string' ? payload.text : '';
-          if (text.trim()) {
-            flushOmpText();
-            session.sendAgentMessage('omp', { type: 'thinking', text });
+          if (text) {
+            appendOmpPending('thinking', text);
           }
         } else if (msg.name === 'plan') {
           // omp's plan/to-do list (ACP plan entries). Surface it by synthesizing
@@ -1031,7 +1044,8 @@ export async function runAcp(opts: {
 
       logAcp('incoming', `Incoming prompt: ${formatUnknownForConsole(batch.message, ACP_EVENT_PREVIEW_CHARS)}`);
       if (useMobileSink) {
-        ompPendingText = '';
+        ompPending = '';
+        ompPendingKind = null;
         ompLastPlanJson = '';
         session.sendAgentMessage('omp', { type: 'task_started', id: randomUUID() });
       } else {
