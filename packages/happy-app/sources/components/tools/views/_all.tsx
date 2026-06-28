@@ -17,6 +17,7 @@ import { CodexDiffView } from './CodexDiffView';
 import { AskUserQuestionView } from './AskUserQuestionView';
 import { GeminiEditView } from './GeminiEditView';
 import { GeminiExecuteView } from './GeminiExecuteView';
+import { DelegateView } from './DelegateView';
 import { FileView } from './FileView';
 
 export type ToolViewProps = {
@@ -48,6 +49,8 @@ export const toolViewRegistry: Record<string, ToolViewComponent> = {
     // Gemini tools (lowercase)
     edit: GeminiEditView,
     execute: GeminiExecuteView,
+    // omp subagents (delegate_task → kind 'other', detected via rawInput.tasks)
+    delegate_task: DelegateView,
     // File attachment events
     file: FileView,
 };
@@ -86,4 +89,5 @@ export { TaskView } from './TaskView';
 export { AskUserQuestionView } from './AskUserQuestionView';
 export { GeminiEditView } from './GeminiEditView';
 export { GeminiExecuteView } from './GeminiExecuteView';
+export { DelegateView } from './DelegateView';
 export { FileView } from './FileView';

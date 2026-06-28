@@ -57,6 +57,30 @@ const taskLikeTool = {
 export const knownTools = {
     'Task': taskLikeTool,
     'Agent': taskLikeTool,
+    // omp subagents (delegate_task) — rich per-agent rendering via DelegateView.
+    'delegate_task': {
+        title: (opts: { metadata: Metadata | null, tool: ToolCall }) => {
+            const tasks = (opts.tool.input as any)?.tasks;
+            if (Array.isArray(tasks) && tasks.length > 0) {
+                return `Delegating ${tasks.length} task${tasks.length === 1 ? '' : 's'}`;
+            }
+            return opts.tool.description || t('tools.names.task');
+        },
+        icon: ICON_TASK,
+        isMutable: true,
+        minimal: false,
+    },
+    // omp tool kind 'fetch' (web/browser). read/search/think/edit/execute kinds
+    // are already covered by other entries in this registry.
+    'fetch': {
+        title: (opts: { metadata: Metadata | null, tool: ToolCall }) => {
+            const input = opts.tool.input as any;
+            const url = input?.url;
+            return typeof url === 'string' ? url : t('tools.names.fetchUrl');
+        },
+        icon: ICON_WEB,
+        minimal: true,
+    },
     'Bash': {
         title: (opts: { metadata: Metadata | null, tool: ToolCall }) => {
             if (opts.tool.description) {
