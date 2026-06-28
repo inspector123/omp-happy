@@ -336,6 +336,10 @@ export async function startDaemon(): Promise<void> {
         if (options.resumeCodexThreadId) {
           extraEnv.HAPPY_FORK_CODEX_THREAD_ID = options.resumeCodexThreadId;
         }
+        if (options.resumeOmpSessionId) {
+          // runAcp reads this and resumes the omp session via session/load.
+          extraEnv.HAPPY_RESUME_OMP_SESSION_ID = options.resumeOmpSessionId;
+        }
         logger.debug(`[DAEMON RUN] Environment variable keys (before expansion) (${Object.keys(extraEnv).length}): ${Object.keys(extraEnv).join(', ')}`);
 
         // Expand ${VAR} references from daemon's process.env

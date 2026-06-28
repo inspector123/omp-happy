@@ -136,6 +136,11 @@ export interface SpawnSessionOptions {
      * session attaches to a forked Codex app-server thread.
      */
     resumeCodexThreadId?: string;
+    /**
+     * If set, the daemon spawns omp resuming this session id (ACP session/load)
+     * so the new Happy session continues a prior omp conversation.
+     */
+    resumeOmpSessionId?: string;
     /** Happy session id this fork was branched from (lineage). */
     parentSessionId?: string;
     /** Happy message id used as the rewind point (only set for "duplicate"). */

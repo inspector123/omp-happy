@@ -362,6 +362,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
       let verbose = false;
       let local = false;
       let yolo = false;
+      let resumeOmpSessionId: string | undefined = undefined;
       const acpArgs: string[] = [];
       let customCommandMode = false;
       for (let i = 1; i < args.length; i++) {
@@ -381,6 +382,10 @@ Conversation history is preserved on the server, but in-flight tool calls are in
           yolo = true;
           continue;
         }
+        if (!customCommandMode && args[i] === '--resume-omp') {
+          resumeOmpSessionId = args[++i];
+          continue;
+        }
         if (args[i] === '--') {
           customCommandMode = true;
         }
@@ -397,6 +402,8 @@ Conversation history is preserved on the server, but in-flight tool calls are in
         verbose,
         local,
         yolo,
+        // Resume id: from --resume-omp <id> or the daemon-set env var.
+        resumeOmpSessionId: resumeOmpSessionId || process.env.HAPPY_RESUME_OMP_SESSION_ID || undefined,
         agentName: resolved.agentName,
         command: resolved.command,
         args: resolved.args,

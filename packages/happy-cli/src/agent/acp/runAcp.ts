@@ -476,6 +476,8 @@ export async function runAcp(opts: {
   local?: boolean;
   /** Auto-approve all tool permission requests (yolo / allow-all). */
   yolo?: boolean;
+  /** Resume an existing omp session (ACP session/load) instead of a fresh one. */
+  resumeOmpSessionId?: string;
 }): Promise<void> {
   const verbose = opts.verbose === true;
   const localMode = opts.local === true;
@@ -599,6 +601,7 @@ export async function runAcp(opts: {
     permissionHandler,
     transportHandler: new DefaultTransport(opts.agentName),
     verbose,
+    resumeSessionId: opts.resumeOmpSessionId,
   });
 
   let thinking = false;
@@ -1098,6 +1101,13 @@ export async function runAcp(opts: {
   try {
     const started = await backend.startSession();
     acpSessionId = started.sessionId;
+    // Persist omp's own session id in the Happy session metadata so this
+    // conversation can later be resumed (session/load) from the app.
+    const ompSessionId = backend.getAgentSessionId();
+    if (ompSessionId && opts.agentName === 'omp') {
+      // Tag the session as omp + record its id so it can be resumed later.
+      session.updateMetadata((m) => ({ ...m, ompSessionId, flavor: m.flavor ?? 'omp' }));
+    }
     if (verbose) {
       if (!sawSlashCommands) {
         logAcp('muted', `Outgoing slash commands from ${opts.agentName}: not reported yet`);

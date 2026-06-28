@@ -36,12 +36,15 @@ export function parseResumeCommandArgs(args: string[]): { showHelp: boolean; ses
     };
 }
 
-function resolveFlavor(metadata: Metadata): 'codex' | 'claude' | null {
+function resolveFlavor(metadata: Metadata): 'codex' | 'claude' | 'omp' | null {
     if (metadata.flavor === 'codex' || metadata.codexThreadId) {
         return 'codex';
     }
     if (metadata.flavor === 'claude' || metadata.claudeSessionId) {
         return 'claude';
+    }
+    if (metadata.flavor === 'omp' || metadata.ompSessionId) {
+        return 'omp';
     }
     return null;
 }
@@ -76,6 +79,21 @@ export function buildResumeLaunch(session: ResumableHappySession, options: Resum
             args.push('--started-by', options.startedBy);
         }
         args.push('--resume', metadata.claudeSessionId);
+        return {
+            cwd: metadata.path,
+            args,
+        };
+    }
+
+    if (flavor === 'omp') {
+        if (!metadata.ompSessionId) {
+            throw new Error(`Happy session ${session.id} is missing its omp session ID.`);
+        }
+        // happy acp omp --resume-omp <id> → runAcp resumes via ACP session/load.
+        const args = ['acp', 'omp', '--resume-omp', metadata.ompSessionId, '--yolo'];
+        if (options.startedBy) {
+            args.push('--started-by', options.startedBy);
+        }
         return {
             cwd: metadata.path,
             args,

@@ -183,6 +183,13 @@ export interface AcpBackendOptions {
   /** Working directory for the agent */
   cwd: string;
 
+  /**
+   * If set, resume this existing agent session (ACP `session/load`) instead of
+   * creating a new one. Requires the agent to advertise the `loadSession`
+   * capability (omp does). Used to continue a prior conversation.
+   */
+  resumeSessionId?: string;
+
   /** Command to spawn the ACP agent */
   command: string;
 
@@ -319,6 +326,11 @@ export class AcpBackend implements AgentBackend {
   private process: ChildProcess | null = null;
   private connection: ClientSideConnection | null = null;
   private acpSessionId: string | null = null;
+
+  /** The agent's own session id (used for resume via session/load). */
+  getAgentSessionId(): string | null {
+    return this.acpSessionId;
+  }
   private disposed = false;
   /** Track active tool calls to prevent duplicate events */
   private activeToolCalls = new Set<string>();
@@ -794,7 +806,14 @@ export class AcpBackend implements AgentBackend {
         mcpServers: mcpServers as unknown as NewSessionRequest['mcpServers'],
       };
 
-      logger.debug(`[AcpBackend] Creating new session...`);
+      const resumeId = this.options.resumeSessionId;
+      logger.debug(resumeId
+        ? `[AcpBackend] Resuming session ${resumeId} via session/load...`
+        : `[AcpBackend] Creating new session...`);
+      // Resume an existing agent session (session/load) or create a fresh one.
+      const startSessionCall = () => resumeId
+        ? this.connection!.loadSession({ sessionId: resumeId, cwd: this.options.cwd, mcpServers: newSessionRequest.mcpServers })
+        : this.connection!.newSession(newSessionRequest);
 
       const sessionResponse = await withRetry(
         async () => {
@@ -802,7 +821,7 @@ export class AcpBackend implements AgentBackend {
           try {
             const result = await Promise.race([
               startupFailurePromise,
-              this.connection!.newSession(newSessionRequest).then((res) => {
+              startSessionCall().then((res) => {
                 if (timeoutHandle) {
                   clearTimeout(timeoutHandle);
                   timeoutHandle = null;
@@ -830,14 +849,14 @@ export class AcpBackend implements AgentBackend {
           shouldRetry: (error) => !isNonRetryableStartupError(error),
         }
       );
-      this.acpSessionId = sessionResponse.sessionId;
-      logger.debug(`[AcpBackend] Session created: ${this.acpSessionId}`);
+      this.acpSessionId = resumeId ?? (sessionResponse as NewSessionResponse).sessionId;
+      logger.debug(`[AcpBackend] Session ${resumeId ? 'resumed' : 'created'}: ${this.acpSessionId}`);
       if (this.options.verbose) {
         logAcpBackendMuted(
           `Incoming newSession response from ${this.options.agentName}: ${summarizeSessionMetadataPayload(sessionResponse)}`,
         );
       }
-      this.emitInitialSessionMetadata(sessionResponse);
+      this.emitInitialSessionMetadata(sessionResponse as NewSessionResponse);
 
       this.emitIdleStatus();
 

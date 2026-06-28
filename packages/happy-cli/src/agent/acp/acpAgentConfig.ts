@@ -6,7 +6,9 @@ export type AcpAgentConfig = {
 export const KNOWN_ACP_AGENTS: Record<string, AcpAgentConfig> = {
   gemini: { command: 'gemini', args: ['--experimental-acp'] },
   opencode: { command: 'opencode', args: ['acp'] },
-  omp: { command: 'omp', args: ['acp'] },
+  // --allow-home keeps omp in the launch cwd instead of auto-switching to a temp
+  // dir in ~, so sessions (and resume via session/load) stay in one project.
+  omp: { command: 'omp', args: ['--allow-home', 'acp'] },
 };
 
 export type ResolvedAcpAgentConfig = {
