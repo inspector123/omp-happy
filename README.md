@@ -1,3 +1,5 @@
+> **This is [omp-happy](README.omp.md)** — a fork of Happy that drives **omp (oh-my-pi)** as a first-class agent. See **[README.omp.md](README.omp.md)** for what's different and how to run it. The original Happy README follows.
+
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="/.github/logotype-dark.png">
