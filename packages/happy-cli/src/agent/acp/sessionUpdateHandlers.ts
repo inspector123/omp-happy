@@ -47,6 +47,8 @@ export interface SessionUpdate {
     textDelta?: string;
   };
   plan?: unknown;
+  /** ACP plan/to-do entries (omp emits the plan list here) */
+  entries?: unknown[];
   thinking?: unknown;
   [key: string]: unknown;
 }
@@ -558,14 +560,20 @@ export function handlePlanUpdate(
   update: SessionUpdate,
   ctx: HandlerContext
 ): HandlerResult {
-  if (!update.plan) {
+  // ACP `plan` updates carry the to-do list under `entries` (omp); some agents
+  // use `plan`. Forward either as a plan event with the entries array.
+  const entries = Array.isArray((update as { entries?: unknown }).entries)
+    ? (update as { entries?: unknown[] }).entries
+    : null;
+  const payload = entries ?? update.plan;
+  if (!payload) {
     return { handled: false };
   }
 
   ctx.emit({
     type: 'event',
     name: 'plan',
-    payload: update.plan,
+    payload: entries ? { entries } : update.plan,
   });
 
   return { handled: true };

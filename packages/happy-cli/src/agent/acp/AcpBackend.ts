@@ -995,6 +995,16 @@ export class AcpBackend implements AgentBackend {
       return;
     }
 
+    if (updateType === 'usage_update') {
+      const u = update as { size?: number; used?: number; cost?: { amount?: number; currency?: string } };
+      this.emit({
+        type: 'event',
+        name: 'usage',
+        payload: { size: u.size, used: u.used, cost: u.cost },
+      });
+      return;
+    }
+
     if (updateType === 'current_mode_update') {
       const currentModeId = (update as { currentModeId?: unknown }).currentModeId;
       if (typeof currentModeId === 'string' && currentModeId.length > 0) {

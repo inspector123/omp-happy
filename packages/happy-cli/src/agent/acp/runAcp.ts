@@ -613,6 +613,7 @@ export async function runAcp(opts: {
   // ---------------------------------------------------------------------------
   const useMobileSink = opts.agentName === 'omp';
   let ompPendingText = '';
+  let ompLastPlanJson = '';
 
   const flushOmpText = () => {
     const text = ompPendingText.trim();
@@ -636,6 +637,40 @@ export async function runAcp(opts: {
           if (text.trim()) {
             flushOmpText();
             session.sendAgentMessage('omp', { type: 'thinking', text });
+          }
+        } else if (msg.name === 'plan') {
+          // omp's plan/to-do list (ACP plan entries). Surface it by synthesizing
+          // a TodoWrite tool call, which the app already renders via TodoView.
+          const entries = Array.isArray((msg.payload as { entries?: unknown[] })?.entries)
+            ? (msg.payload as { entries: Array<Record<string, unknown>> }).entries
+            : [];
+          const todos = entries
+            .map((e) => ({
+              content: String(e?.content ?? ''),
+              status: (e?.status === 'completed' || e?.status === 'in_progress') ? e.status : 'pending',
+            }))
+            .filter((tdo) => tdo.content.length > 0);
+          const json = JSON.stringify(todos);
+          if (todos.length > 0 && json !== ompLastPlanJson) {
+            ompLastPlanJson = json;
+            flushOmpText();
+            const planCall = `omp-plan-${randomUUID()}`;
+            session.sendAgentMessage('omp', { type: 'tool-call', name: 'TodoWrite', callId: planCall, input: { todos }, id: randomUUID() });
+            session.sendAgentMessage('omp', { type: 'tool-result', callId: planCall, output: { todos }, id: randomUUID() });
+          }
+        } else if (msg.name === 'usage') {
+          // Compact usage/cost line, once per turn (omp emits one usage_update).
+          const u = msg.payload as { size?: number; used?: number; cost?: { amount?: number; currency?: string } };
+          const parts: string[] = [];
+          if (typeof u.used === 'number') {
+            parts.push(typeof u.size === 'number' ? `${u.used.toLocaleString()} / ${u.size.toLocaleString()} tokens` : `${u.used.toLocaleString()} tokens`);
+          }
+          if (u.cost && typeof u.cost.amount === 'number') {
+            parts.push(`${u.cost.currency === 'USD' || !u.cost.currency ? '$' : ''}${u.cost.amount.toFixed(4)}`);
+          }
+          if (parts.length > 0) {
+            flushOmpText();
+            session.sendAgentMessage('omp', { type: 'message', message: `📊 ${parts.join(' · ')}` });
           }
         }
         return;
@@ -997,6 +1032,7 @@ export async function runAcp(opts: {
       logAcp('incoming', `Incoming prompt: ${formatUnknownForConsole(batch.message, ACP_EVENT_PREVIEW_CHARS)}`);
       if (useMobileSink) {
         ompPendingText = '';
+        ompLastPlanJson = '';
         session.sendAgentMessage('omp', { type: 'task_started', id: randomUUID() });
       } else {
         sendEnvelopes(sessionManager.startTurn());
