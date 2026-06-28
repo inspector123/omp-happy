@@ -48,6 +48,13 @@ HAPPY_HOME_DIR=~/.omp-happy node packages/happy-cli/bin/happy.mjs daemon start
 HAPPY_HOME_DIR=~/.omp-happy node packages/happy-cli/bin/happy.mjs acp omp
 ```
 
+Or use the helper scripts (isolated home dir + `--local` interactive prompt mirrored to the phone; override the relay with `HAPPY_SERVER_URL=...`):
+
+```bash
+scripts/omp-daemon.sh start   # prepare for remote spawn (status | stop | restart)
+scripts/omp-run.sh            # interactive local omp session, mirrored to the phone
+```
+
 omp manages its own provider credentials (under `~/.omp`); configure those with regular `omp`.
 
 ### Build the Android app
