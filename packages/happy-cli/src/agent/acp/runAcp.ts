@@ -431,8 +431,10 @@ class GenericAcpPermissionHandler extends BasePermissionHandler implements AcpPe
   }
 
   async handleToolCall(toolCallId: string, toolName: string, input: unknown): Promise<PermissionResult> {
-    // Yolo / bypass: approve immediately without bothering the phone.
-    if (this.autoApprove()) {
+    // Plan approval (resolve) always requires explicit user confirmation, even in yolo mode.
+    // Without this, --yolo auto-approves resolve and the agent starts executing the plan
+    // before the user picks an execution option.
+    if (this.autoApprove() && toolName !== 'resolve') {
       logger.debug(`${this.logPrefix} Auto-approving tool (yolo): ${toolName} (${toolCallId})`);
       return { decision: 'approved_for_session' };
     }
