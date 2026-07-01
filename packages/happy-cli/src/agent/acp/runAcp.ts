@@ -431,10 +431,8 @@ class GenericAcpPermissionHandler extends BasePermissionHandler implements AcpPe
   }
 
   async handleToolCall(toolCallId: string, toolName: string, input: unknown): Promise<PermissionResult> {
-    // Plan approval (resolve) always requires explicit user confirmation, even in yolo mode.
-    // Without this, --yolo auto-approves resolve and the agent starts executing the plan
-    // before the user picks an execution option.
-    if (this.autoApprove() && toolName !== 'resolve') {
+    // Yolo / bypass: approve immediately without bothering the phone.
+    if (this.autoApprove()) {
       logger.debug(`${this.logPrefix} Auto-approving tool (yolo): ${toolName} (${toolCallId})`);
       return { decision: 'approved_for_session' };
     }
@@ -447,6 +445,24 @@ class GenericAcpPermissionHandler extends BasePermissionHandler implements AcpPe
       });
       this.addPendingRequestToState(toolCallId, toolName, input);
       logger.debug(`${this.logPrefix} Permission request sent for tool: ${toolName} (${toolCallId})`);
+    });
+  }
+
+  /**
+   * Send a plan approval request to the phone, always bypassing yolo
+   * auto-approve. Uses the same pending request / RPC flow as regular
+   * permission requests so the phone's response resolves the promise.
+   */
+  waitForPlanApproval(approvalId: string, input: unknown): Promise<PermissionResult> {
+    return new Promise<PermissionResult>((resolve, reject) => {
+      this.pendingRequests.set(approvalId, {
+        resolve,
+        reject,
+        toolName: 'plan_approval',
+        input,
+      });
+      this.addPendingRequestToState(approvalId, 'plan_approval', input);
+      logger.debug(`${this.logPrefix} Plan approval request sent to phone (${approvalId})`);
     });
   }
 }
@@ -992,6 +1008,36 @@ export async function runAcp(opts: {
           mergeAcpSessionConfigIntoMetadata(currentMetadata, { currentModeId }),
         );
       }
+    }
+
+    // Plan approval: omp's stdout is paused via backpressure in the stream
+    // filter. Use the existing permission handler to send an approval request
+    // to the phone, bypassing yolo auto-approve. On response, release the gate.
+    if (msg.type === 'event' && msg.name === 'plan_approval_requested') {
+      const approvalId = `plan-approval-${Date.now()}`;
+      const payload = msg.payload as Record<string, unknown>;
+      const planTitle = (payload?.extra as Record<string, unknown>)?.title ?? 'plan';
+      const reason = payload?.reason ?? 'Plan ready for approval';
+
+      // Use waitForPlanApproval which bypasses auto-approve and goes straight
+      // to the phone. The existing BasePermissionHandler 'permission' RPC
+      // handler resolves the pending request when the phone responds.
+      permissionHandler.waitForPlanApproval(
+        approvalId,
+        { plan: planTitle, reason: String(reason) },
+      ).then((result) => {
+        if (result.decision === 'approved' || result.decision === 'approved_for_session') {
+          logger.debug(`[${opts.agentName}] Plan approved, releasing stream gate`);
+          currentPermissionMode = undefined; // exit plan mode for yolo
+          backend.releasePlanApprovalGate();
+        } else {
+          logger.debug(`[${opts.agentName}] Plan rejected, releasing gate and cancelling`);
+          backend.releasePlanApprovalGate();
+          if (acpSessionId) {
+            backend.cancel(acpSessionId);
+          }
+        }
+      });
     }
 
     if (msg.type === 'status') {

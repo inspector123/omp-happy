@@ -357,6 +357,15 @@ export class AcpBackend implements AgentBackend {
   /** Transport handler for agent-specific behavior */
   private readonly transport: TransportHandler;
 
+  /**
+   * Plan approval gate: when set, the stdout stream reader pauses until this
+   * promise resolves. Used to block omp via pipe backpressure when a plan
+   * resolve(action:"apply") is detected, so the phone can approve/deny before
+   * omp starts executing the plan.
+   */
+  private planApprovalGate: Promise<void> | null = null;
+  private planApprovalResolve: (() => void) | null = null;
+
   constructor(private options: AcpBackendOptions) {
     this.transport = options.transportHandler ?? new DefaultTransport(options.agentName);
   }
@@ -369,6 +378,18 @@ export class AcpBackend implements AgentBackend {
     const index = this.listeners.indexOf(handler);
     if (index !== -1) {
       this.listeners.splice(index, 1);
+    }
+  }
+
+  /**
+   * Release the plan approval gate, unblocking the stdout stream so omp can
+   * continue executing. Called by runAcp after the phone approves the plan.
+   */
+  releasePlanApprovalGate(): void {
+    if (this.planApprovalResolve) {
+      logger.debug('[AcpBackend] Plan approval gate released');
+      this.planApprovalResolve();
+      this.planApprovalResolve = null;
     }
   }
 
@@ -503,6 +524,7 @@ export class AcpBackend implements AgentBackend {
       // Filter stdout via transport handler before ACP parsing
       // Some agents output debug info that breaks JSON-RPC parsing
       const transport = this.transport;
+      const self = this;
       const filteredReadable = new ReadableStream<Uint8Array>({
         async start(controller) {
           const reader = readable.getReader();
@@ -542,6 +564,34 @@ export class AcpBackend implements AgentBackend {
 
               for (const line of lines) {
                 if (!line.trim()) continue;
+
+                // Detect plan approval (resolve with action:"apply") and pause
+                // the stream until the phone approves. omp blocks naturally on
+                // pipe backpressure, preventing premature execution.
+                try {
+                  const parsed = JSON.parse(line);
+                  const update = parsed?.params?.update ?? parsed?.update;
+                  if (update?.rawInput?.action === 'apply' && update?.sessionUpdate === 'tool_call') {
+                    logger.debug('[AcpBackend] Plan approval detected, pausing stream for phone approval');
+                    self.planApprovalGate = new Promise<void>((resolve) => {
+                      self.planApprovalResolve = resolve;
+                    });
+                    // Emit the plan approval event so runAcp can send a permission request
+                    self.emit({
+                      type: 'event',
+                      name: 'plan_approval_requested',
+                      payload: update.rawInput,
+                    });
+                  }
+                } catch {
+                  // Not valid JSON or no match, continue normally
+                }
+
+                // If a plan approval gate is active, wait for phone approval
+                if (self.planApprovalGate) {
+                  await self.planApprovalGate;
+                  self.planApprovalGate = null;
+                }
 
                 // Use transport handler to filter lines
                 // Note: filterStdoutLine returns null to filter out, string to keep
