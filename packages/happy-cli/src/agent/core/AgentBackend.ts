@@ -13,6 +13,21 @@
  */
 
 /** Unique identifier for an agent session */
+
+export type AgentPromptImage = {
+  type: 'image';
+  data: string;
+  mimeType: string;
+};
+
+export type AgentPromptText = {
+  type: 'text';
+  text: string;
+};
+
+export type AgentPromptContent = AgentPromptText | AgentPromptImage;
+
+export type AgentPrompt = string | AgentPromptContent[];
 export type SessionId = string;
 
 /** Unique identifier for a tool call */
@@ -114,9 +129,9 @@ export interface AgentBackend {
    * Send a prompt to an existing session.
    * 
    * @param sessionId - The session to send the prompt to
-   * @param prompt - The user's prompt text
+   * @param prompt - The user's prompt text or ACP-compatible content blocks
    */
-  sendPrompt(sessionId: SessionId, prompt: string): Promise<void>;
+  sendPrompt(sessionId: SessionId, prompt: AgentPrompt): Promise<void>;
   
   /**
    * Cancel the current operation in a session.

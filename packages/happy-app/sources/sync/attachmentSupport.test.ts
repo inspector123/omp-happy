@@ -6,11 +6,13 @@ import {
 } from './attachmentSupport';
 
 describe('supportsImageAttachmentsForFlavor', () => {
-    it('supports legacy sessions, Claude, and Codex', () => {
+    it('supports legacy sessions, Claude, Codex, OMP, and ACP', () => {
         expect(supportsImageAttachmentsForFlavor(undefined)).toBe(true);
         expect(supportsImageAttachmentsForFlavor(null)).toBe(true);
         expect(supportsImageAttachmentsForFlavor('claude')).toBe(true);
         expect(supportsImageAttachmentsForFlavor('codex')).toBe(true);
+        expect(supportsImageAttachmentsForFlavor('omp')).toBe(true);
+        expect(supportsImageAttachmentsForFlavor('acp')).toBe(true);
     });
 
     it('rejects Gemini, OpenClaw, and unknown explicit flavors', () => {

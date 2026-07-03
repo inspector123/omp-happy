@@ -506,17 +506,24 @@ class Sync {
     private async uploadAttachmentsForSession(
         sessionId: string,
         attachments: AttachmentPreview[],
-    ): Promise<{ uploaded: UploadedAttachment[]; failed: number }> {
-        if (!this.credentials) return { uploaded: [], failed: attachments.length };
+    ): Promise<{ uploaded: UploadedAttachment[]; failed: number; error?: string }> {
+        if (!this.credentials) {
+            console.error('[attachments] No credentials');
+            return { uploaded: [], failed: attachments.length, error: 'Not authenticated' };
+        }
 
         const blobKey = this.encryption.getSessionBlobKey(sessionId);
         if (!blobKey) {
             console.error(`[attachments] No blob key for session ${sessionId}`);
-            return { uploaded: [], failed: attachments.length };
+            return { uploaded: [], failed: attachments.length, error: 'Session encryption not ready' };
         }
+
+        const serverUrl = getServerUrl();
+        console.log(`[attachments] Uploading ${attachments.length} attachment(s) for session ${sessionId} to ${serverUrl}`);
 
         const uploaded: UploadedAttachment[] = [];
         let failed = 0;
+        let lastError: string | undefined;
 
         for (const attachment of attachments) {
             try {
@@ -539,15 +546,18 @@ class Sync {
                     size: attachment.size,
                     width: attachment.width,
                     height: attachment.height,
+                    mimeType: attachment.mimeType,
                     thumbhash: attachment.thumbhash,
                 });
             } catch (err) {
                 const diagnostic = getAttachmentDiagnostic(err);
                 if (diagnostic) {
-                    console.error('[attachments] Failed to upload image attachment:', formatAttachmentDiagnosticForLog(diagnostic, {
+                    const logEntry = formatAttachmentDiagnosticForLog(diagnostic, {
                         platform: Platform.OS,
                         client: getHappyClientId(),
-                    }));
+                    });
+                    console.error('[attachments] Failed to upload image attachment:', logEntry);
+                    lastError = `${diagnostic.leg}: ${diagnostic.message}`;
                 } else {
                     const message = errorMessageFromUnknown(err);
                     console.error('[attachments] Failed to upload image attachment:', {
@@ -556,13 +566,14 @@ class Sync {
                         platform: Platform.OS,
                         client: getHappyClientId(),
                     });
+                    lastError = message;
                 }
                 failed++;
                 // Skip this attachment; do not abort the whole message send.
             }
         }
 
-        return { uploaded, failed };
+        return { uploaded, failed, error: lastError };
     }
 
     async sendMessage(sessionId: string, text: string, options?: SendMessageOptions) {
@@ -614,12 +625,13 @@ class Sync {
 
         // Upload attachments and queue file events before the text message.
         if (effectiveAttachments && effectiveAttachments.length > 0) {
-            const { uploaded, failed } = await this.uploadAttachmentsForSession(sessionId, effectiveAttachments);
+            const { uploaded, failed, error: uploadError } = await this.uploadAttachmentsForSession(sessionId, effectiveAttachments);
 
             if (failed > 0) {
+                const detail = uploadError ? ` (${uploadError})` : '';
                 Modal.alert(
                     t('imageUpload.uploadFailedTitle'),
-                    t('imageUpload.uploadFailedMessage', { count: failed }),
+                    t('imageUpload.uploadFailedMessage', { count: failed }) + detail,
                     [{ text: t('common.ok'), style: 'cancel' }],
                 );
             }
@@ -645,6 +657,7 @@ class Sync {
                                     ref: att.ref,
                                     name: att.name,
                                     size: att.size,
+                                    mimeType: att.mimeType,
                                     // Include image metadata when we have dimensions; thumbhash is
                                     // optional. The native iOS picker can't generate a thumbhash
                                     // without Canvas, so requiring it here would reduce the chat

@@ -1,42 +1,86 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+type SessionHandler = (params: unknown) => Promise<unknown> | unknown;
+type UserMessageHandler = (message: {
+  role?: string;
+  content: {
+    type?: string;
+    text?: string | null;
+  };
+  meta?: Record<string, unknown>;
+}) => void | Promise<void>;
+type FileEventHandler = (message: {
+  content: {
+    data: {
+      ev: {
+        ref: string;
+        name: string;
+        size?: number;
+        mimeType?: string | null;
+      };
+    };
+  };
+}) => void;
+type PendingAttachment = { data: Uint8Array; mimeType: string; name: string };
+type AcpPromptBlock =
+  | { type: 'image'; mimeType: string; data: string }
+  | { type: 'text'; text: string };
+type BackendConstructorArgs = { command: string; args: string[] };
+
 const mocks = vi.hoisted(() => {
-  const sessionHandlers = new Map<string, (params: any) => Promise<any> | any>();
-  let userMessageHandler: ((message: any) => void) | null = null;
+  const sessionHandlers = new Map<string, SessionHandler>();
+  let userMessageHandler: UserMessageHandler | null = null;
+  let fileEventHandler: FileEventHandler | null = null;
   let killHandler: (() => Promise<void>) | null = null;
+  let pendingAttachmentDownloads: Array<Promise<PendingAttachment | null>> = [];
 
   const mockSession = {
-    onUserMessage: vi.fn((handler: (message: any) => void) => {
+    onUserMessage: vi.fn((handler: UserMessageHandler) => {
       userMessageHandler = handler;
+    }),
+    onFileEvent: vi.fn((handler: FileEventHandler) => {
+      fileEventHandler = handler;
+    }),
+    downloadAndDecryptAttachment: vi.fn(async (_ref: string): Promise<Uint8Array | null> => null),
+    trackAttachmentDownload: vi.fn((promise: Promise<PendingAttachment | null>) => {
+      pendingAttachmentDownloads.push(promise);
+    }),
+    drainAttachmentsForUserMessage: vi.fn(async (): Promise<PendingAttachment[]> => {
+      const downloads = pendingAttachmentDownloads;
+      pendingAttachmentDownloads = [];
+      const attachments = await Promise.all(downloads);
+      return attachments.filter((attachment): attachment is PendingAttachment => attachment !== null);
     }),
     keepAlive: vi.fn(),
     sendSessionProtocolMessage: vi.fn(),
     sendSessionEvent: vi.fn(),
-    updateMetadata: vi.fn(),
-    sendSessionDeath: vi.fn(),
-    flush: vi.fn(async () => {}),
-    close: vi.fn(async () => {}),
+    updateMetadata: vi.fn((handler: (state: Record<string, unknown>) => Record<string, unknown>) => {
+      handler({});
+    }),
     updateAgentState: vi.fn((handler: (state: Record<string, unknown>) => Record<string, unknown>) => {
       handler({});
     }),
+    sendSessionDeath: vi.fn(),
+    flush: vi.fn(async () => {}),
+    close: vi.fn(async () => {}),
     rpcHandlerManager: {
-      registerHandler: vi.fn((name: string, handler: (params: any) => Promise<any> | any) => {
+      registerHandler: vi.fn((name: string, handler: SessionHandler) => {
         sessionHandlers.set(name, handler);
       }),
     },
   };
 
   const backendState = {
-    listeners: [] as Array<(message: any) => void>,
-    prompts: [] as Array<{ sessionId: string; prompt: string }>,
+    listeners: [] as Array<(message: unknown) => void>,
+    prompts: [] as Array<{ sessionId: string; prompt: string | AcpPromptBlock[] }>,
     setConfigOptionCalls: [] as Array<{ configId: string; value: string }>,
     setModeCalls: [] as string[],
     setModelCalls: [] as string[],
-    startSessionMessages: [] as any[],
+    startSessionMessages: [] as unknown[],
     startSessionCalls: 0,
     cancelCalls: [] as string[],
     disposeCalls: 0,
-    constructorArgs: null as any,
+    constructorArgs: { command: '', args: [] as string[] },
   };
 
   return {
@@ -56,12 +100,19 @@ const mocks = vi.hoisted(() => {
     mockConsoleLog: vi.spyOn(console, 'log').mockImplementation(() => {}),
     sessionHandlers,
     getUserMessageHandler: () => userMessageHandler,
-    setUserMessageHandler: (handler: ((message: any) => void) | null) => {
+    setUserMessageHandler: (handler: UserMessageHandler | null) => {
       userMessageHandler = handler;
+    },
+    getFileEventHandler: () => fileEventHandler,
+    setFileEventHandler: (handler: FileEventHandler | null) => {
+      fileEventHandler = handler;
     },
     getKillHandler: () => killHandler,
     setKillHandler: (handler: (() => Promise<void>) | null) => {
       killHandler = handler;
+    },
+    clearPendingAttachmentDownloads: () => {
+      pendingAttachmentDownloads = [];
     },
     mockSession,
     backendState,
@@ -120,15 +171,15 @@ vi.mock('@/ui/logger', () => ({
 
 vi.mock('./AcpBackend', () => ({
   AcpBackend: class MockAcpBackend {
-    constructor(args: any) {
+    constructor(args: BackendConstructorArgs) {
       mocks.backendState.constructorArgs = args;
     }
 
-    onMessage(handler: (message: any) => void) {
+    onMessage(handler: (message: unknown) => void) {
       mocks.backendState.listeners.push(handler);
     }
 
-    offMessage(handler: (message: any) => void) {
+    offMessage(handler: (message: unknown) => void) {
       mocks.backendState.listeners = mocks.backendState.listeners.filter((item) => item !== handler);
     }
 
@@ -142,7 +193,11 @@ vi.mock('./AcpBackend', () => ({
       return { sessionId: 'acp-session-1' };
     }
 
-    async sendPrompt(sessionId: string, prompt: string) {
+    getAgentSessionId() {
+      return null;
+    }
+
+    async sendPrompt(sessionId: string, prompt: string | AcpPromptBlock[]) {
       mocks.backendState.prompts.push({ sessionId, prompt });
       for (const listener of mocks.backendState.listeners) {
         listener({ type: 'status', status: 'running' });
@@ -195,6 +250,8 @@ describe('runAcp', () => {
     mocks.sessionHandlers.clear();
     mocks.setUserMessageHandler(null);
     mocks.setKillHandler(null);
+    mocks.setFileEventHandler(null);
+    mocks.clearPendingAttachmentDownloads();
     mocks.backendState.listeners = [];
     mocks.backendState.prompts = [];
     mocks.backendState.setConfigOptionCalls = [];
@@ -204,7 +261,8 @@ describe('runAcp', () => {
     mocks.backendState.startSessionCalls = 0;
     mocks.backendState.cancelCalls = [];
     mocks.backendState.disposeCalls = 0;
-    mocks.backendState.constructorArgs = null;
+    mocks.backendState.constructorArgs = { command: '', args: [] };
+    mocks.mockSession.downloadAndDecryptAttachment.mockResolvedValue(null);
 
     mocks.mockApiCreate.mockResolvedValue({
       getOrCreateMachine: mocks.mockGetOrCreateMachine,
@@ -265,6 +323,99 @@ describe('runAcp', () => {
       'Tool: ReadFile completed (callId=tool-1)',
       'Status: idle',
     ]));
+  });
+
+  it('sends mobile image attachments before text as ACP content blocks', async () => {
+    const runPromise = runAcp({
+      credentials: { token: 'token', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
+      agentName: 'opencode',
+      command: 'opencode',
+      args: ['--acp'],
+    });
+
+    await vi.waitFor(() => {
+      expect(mocks.getUserMessageHandler()).toBeTypeOf('function');
+      expect(mocks.getFileEventHandler()).toBeTypeOf('function');
+    });
+
+    mocks.mockSession.downloadAndDecryptAttachment.mockResolvedValueOnce(new Uint8Array([0xde, 0xad]));
+    mocks.getFileEventHandler()!({
+      content: {
+        data: {
+          ev: {
+            ref: 'attachment-ref',
+            name: 'image.png',
+            size: 2,
+            mimeType: 'image/png',
+          },
+        },
+      },
+    });
+    mocks.getUserMessageHandler()!({
+      role: 'user',
+      content: { type: 'text', text: 'Describe this image' },
+    });
+
+    await vi.waitFor(() => {
+      expect(mocks.backendState.prompts).toHaveLength(1);
+    });
+
+    await mocks.getKillHandler()!();
+    await runPromise;
+
+    expect(mocks.backendState.prompts[0]).toEqual({
+      sessionId: 'acp-session-1',
+      prompt: [
+        { type: 'image', mimeType: 'image/png', data: '3q0=' },
+        { type: 'text', text: 'Describe this image' },
+      ],
+    });
+  });
+
+  it('sends mobile image-only turns as ACP image content blocks', async () => {
+    const runPromise = runAcp({
+      credentials: { token: 'token', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
+      agentName: 'opencode',
+      command: 'opencode',
+      args: ['--acp'],
+    });
+
+    await vi.waitFor(() => {
+      expect(mocks.getUserMessageHandler()).toBeTypeOf('function');
+      expect(mocks.getFileEventHandler()).toBeTypeOf('function');
+    });
+
+    mocks.mockSession.downloadAndDecryptAttachment.mockResolvedValueOnce(new Uint8Array([0x01, 0x02, 0x03]));
+    mocks.getFileEventHandler()!({
+      content: {
+        data: {
+          ev: {
+            ref: 'attachment-ref',
+            name: 'photo.jpg',
+            size: 3,
+            mimeType: 'image/jpeg',
+          },
+        },
+      },
+    });
+    mocks.getUserMessageHandler()!({
+      role: 'user',
+      content: { type: 'text', text: '' },
+    });
+
+    await vi.waitFor(() => {
+      expect(mocks.backendState.prompts).toHaveLength(1);
+    });
+
+    await mocks.getKillHandler()!();
+    await runPromise;
+
+    expect(mocks.backendState.prompts[0]).toEqual({
+      sessionId: 'acp-session-1',
+      prompt: [
+        { type: 'image', mimeType: 'image/jpeg', data: 'AQID' },
+      ],
+    });
   });
 
   it('registers abort handler that cancels the ACP backend session', async () => {

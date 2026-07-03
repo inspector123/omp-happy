@@ -12,6 +12,10 @@
 
 export type {
   SessionId,
+  AgentPrompt,
+  AgentPromptContent,
+  AgentPromptImage,
+  AgentPromptText,
   ToolCallId,
   AgentMessage,
   AgentMessageHandler,

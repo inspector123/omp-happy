@@ -27,6 +27,7 @@ import type {
   AgentBackend,
   AgentMessage,
   AgentMessageHandler,
+  AgentPrompt,
   SessionId,
   StartSessionResult,
   McpServerConfig,
@@ -1116,9 +1117,15 @@ export class AcpBackend implements AgentBackend {
   private idleResolver: (() => void) | null = null;
   private waitingForResponse = false;
 
-  async sendPrompt(sessionId: SessionId, prompt: string): Promise<void> {
+  async sendPrompt(sessionId: SessionId, prompt: AgentPrompt): Promise<void> {
+    const textPrompt = typeof prompt === 'string'
+      ? prompt
+      : prompt
+        .filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
+        .map((block) => block.text)
+        .join('\n');
     // Check if prompt contains change_title instruction (via optional callback)
-    const promptHasChangeTitle = this.options.hasChangeTitleInstruction?.(prompt) ?? false;
+    const promptHasChangeTitle = this.options.hasChangeTitleInstruction?.(textPrompt) ?? false;
 
     // Reset tool call counter and set flag
     this.toolCallCountSincePrompt = 0;
@@ -1139,20 +1146,18 @@ export class AcpBackend implements AgentBackend {
     this.waitingForResponse = true;
 
     try {
-      logger.debug(`[AcpBackend] Sending prompt (length: ${prompt.length}): ${prompt.substring(0, 100)}...`);
-      logger.debug(`[AcpBackend] Full prompt: ${prompt}`);
-      
-      const contentBlock: ContentBlock = {
-        type: 'text',
-        text: prompt,
-      };
+      const contentBlocks: ContentBlock[] = typeof prompt === 'string'
+        ? [{ type: 'text', text: prompt }]
+        : prompt;
+      const imageCount = contentBlocks.filter((block) => block.type === 'image').length;
+      logger.debug(`[AcpBackend] Sending prompt (text length: ${textPrompt.length}, images: ${imageCount}): ${textPrompt.substring(0, 100)}...`);
 
       const promptRequest: PromptRequest = {
         sessionId: this.acpSessionId,
-        prompt: [contentBlock],
+        prompt: contentBlocks,
       };
 
-      logger.debug(`[AcpBackend] Prompt request:`, JSON.stringify(promptRequest, null, 2));
+      logger.debug(`[AcpBackend] Prompt request blocks: text=${contentBlocks.length - imageCount}, images=${imageCount}`);
       await this.connection.prompt(promptRequest);
       logger.debug('[AcpBackend] Prompt request sent to ACP connection');
       

@@ -3,13 +3,13 @@ import { join } from 'node:path';
 import * as readline from 'node:readline';
 import { ApiClient } from '@/api/api';
 import type { ApiSessionClient } from '@/api/apiSession';
-import type { AgentMessage } from '@/agent/core';
+import type { AgentMessage, AgentPromptContent } from '@/agent/core';
 import { AcpBackend, type AcpPermissionHandler } from './AcpBackend';
 import { DefaultTransport } from '@/agent/transport';
 import { AcpSessionManager } from './AcpSessionManager';
 import type { SessionEnvelope } from '@slopus/happy-wire';
 import { logger } from '@/ui/logger';
-import { MessageQueue2 } from '@/utils/MessageQueue2';
+import { MessageQueue2, type PendingAttachment } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import { Credentials, readSettings } from '@/persistence';
 import { initialMachineMetadata } from '@/daemon/run';
@@ -481,6 +481,24 @@ function resolveSessionFlavor(agentName: string): 'gemini' | 'opencode' | 'acp' 
     return 'opencode';
   }
   return 'acp';
+}
+
+function buildAcpPrompt(message: string, attachments?: PendingAttachment[]): string | AgentPromptContent[] {
+  if (!attachments || attachments.length === 0) {
+    return message;
+  }
+
+  const prompt: AgentPromptContent[] = attachments.map((attachment) => ({
+    type: 'image',
+    mimeType: attachment.mimeType || 'image/jpeg',
+    data: Buffer.from(attachment.data).toString('base64'),
+  }));
+
+  if (message.trim().length > 0) {
+    prompt.push({ type: 'text', text: message });
+  }
+
+  return prompt;
 }
 
 export async function runAcp(opts: {
@@ -1080,8 +1098,33 @@ export async function runAcp(opts: {
 
   backend.onMessage(onBackendMessage);
 
-  session.onUserMessage((message) => {
-    if (!message.content.text) {
+  session.onFileEvent((fileEvent) => {
+    const ev = fileEvent.content.data.ev;
+    const downloadPromise = (async (): Promise<PendingAttachment | null> => {
+      try {
+        const decrypted = await session.downloadAndDecryptAttachment(ev.ref);
+        if (!decrypted) {
+          logger.debug(`[${opts.agentName}] Failed to decrypt attachment`);
+          return null;
+        }
+        return {
+          data: decrypted,
+          mimeType: ev.mimeType ?? 'image/jpeg',
+          name: ev.name,
+        };
+      } catch (error) {
+        logger.debug(`[${opts.agentName}] Failed to download attachment`, {
+          errorName: error instanceof Error ? error.name : typeof error,
+        });
+        return null;
+      }
+    })();
+    session.trackAttachmentDownload(downloadPromise);
+  });
+
+  session.onUserMessage(async (message) => {
+    const attachmentsForThisMessage = await session.drainAttachmentsForUserMessage();
+    if (!message.content.text && attachmentsForThisMessage.length === 0) {
       return;
     }
 
@@ -1095,10 +1138,10 @@ export async function runAcp(opts: {
       logger.debug(`[${opts.agentName}] Requested ACP model: ${currentModel ?? 'null'}`);
     }
 
-    messageQueue.push(message.content.text, {
+    messageQueue.push(message.content.text ?? '', {
       permissionMode: currentPermissionMode,
       model: currentModel,
-    });
+    }, attachmentsForThisMessage);
   });
 
   // Local interactive mode: read prompts from the terminal too. The session is
@@ -1203,7 +1246,7 @@ export async function runAcp(opts: {
         if (typeof batch.mode.model === 'string' && batch.mode.model.length > 0) {
           await switchModelIfRequested(batch.mode.model);
         }
-        await backend.sendPrompt(acpSessionId, batch.message);
+        await backend.sendPrompt(acpSessionId, buildAcpPrompt(batch.message, batch.attachments));
         await turnEnded;
         if (useMobileSink) {
           flushOmpText();
