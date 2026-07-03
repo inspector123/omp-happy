@@ -35,18 +35,6 @@ const actions = [
     description: "Run production store builds and auto-submit",
     scripts: ["release:build:appstore"],
   },
-  {
-    id: "ota-preview",
-    label: "OTA (preview)",
-    description: "Publish an update to the preview channel",
-    scripts: ["release:ota:preview"],
-  },
-  {
-    id: "ota-release",
-    label: "OTA (release)",
-    description: "Publish an update to the production channel",
-    scripts: ["release:ota:release"],
-  },
 ];
 
 const actionAliases = {
@@ -60,12 +48,6 @@ const actionAliases = {
   appstore: "appstore-build",
   store: "appstore-build",
   "appstore-build": "appstore-build",
-  "ota-preview": "ota-preview",
-  "ota:preview": "ota-preview",
-  preview: "ota-preview",
-  "ota-release": "ota-release",
-  "ota:release": "ota-release",
-  production: "ota-release",
 };
 
 function findAction(input) {

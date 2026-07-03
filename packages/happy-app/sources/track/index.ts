@@ -1,5 +1,3 @@
-import Constants from 'expo-constants';
-import * as Updates from 'expo-updates';
 import { tracking } from './tracking';
 import type { Metadata, Session } from '@/sync/storageTypes';
 
@@ -59,16 +57,9 @@ export function trackMessageSent(source: MessageSentSource, metadata?: Metadata 
                 ? 'cli'
                 : null,
         happy_cli_version: metadata?.version ?? null,
-        ota_version: Updates.updateId ?? null,
-        ota_runtime_version: Updates.runtimeVersion
-            ?? (typeof Constants.expoConfig?.runtimeVersion === 'string' ? Constants.expoConfig.runtimeVersion : null),
     });
 }
 
-type OtaEventProperties = {
-    ota_version?: string;
-    ota_runtime_version?: string;
-};
 
 export function trackVoicePermissionResponse(allowed: boolean) {
     tracking?.capture('voice_permission_response', { allowed });
@@ -124,22 +115,6 @@ export function trackReviewRetryScheduled(daysUntilRetry: number) {
     tracking?.capture('review_retry_scheduled', { days_until_retry: daysUntilRetry });
 }
 
-/**
- * OTA update events
- */
-export function trackOtaUpdateAvailable(properties?: OtaEventProperties) {
-    tracking?.capture('ota_update_available', {
-        ota_version: properties?.ota_version ?? null,
-        ota_runtime_version: properties?.ota_runtime_version ?? null,
-    });
-}
-
-export function trackOtaUpdateApplied(properties?: OtaEventProperties) {
-    tracking?.capture('ota_update_applied', {
-        ota_version: properties?.ota_version ?? null,
-        ota_runtime_version: properties?.ota_runtime_version ?? null,
-    });
-}
 
 /**
  * What's New / Changelog events
