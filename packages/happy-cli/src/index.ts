@@ -34,6 +34,9 @@ import { extractNoSandboxFlag } from './utils/sandboxFlags'
 import { handleResumeCommand } from '@/resume/handleResumeCommand'
 import { ensureDaemonRunning } from './daemon/ensureDaemonRunning'
 import { handleCodexCommand } from './commands/codexCommand'
+import { runOmp } from '@/omp/runOmp'
+import { runOmpRpc } from '@/ompRpc/runOmpRpc'
+import { runAcp, resolveAcpAgentConfig } from '@/agent/acp'
 
 
 (async () => {
@@ -354,9 +357,149 @@ Conversation history is preserved on the server, but in-flight tool calls are in
       process.exit(1)
     }
     return;
+  } else if (subcommand === 'omp') {
+    try {
+      let startedBy: 'daemon' | 'terminal' | undefined = undefined;
+      let verbose = false;
+      let yolo = false;
+      const extraArgs: string[] = [];
+      let passthroughMode = false;
+      for (let i = 1; i < args.length; i++) {
+        if (!passthroughMode && args[i] === '--started-by') {
+          startedBy = args[++i] as 'daemon' | 'terminal';
+          continue;
+        }
+        if (!passthroughMode && args[i] === '--verbose') {
+          verbose = true;
+          continue;
+        }
+        if (!passthroughMode && (args[i] === '--yolo' || args[i] === '--dangerously-skip-permissions')) {
+          yolo = true;
+          continue;
+        }
+        if (!passthroughMode && (args[i] === '-h' || args[i] === '--help')) {
+          console.log(`happy omp - Run the literal omp TUI with Happy sync
+
+Usage:
+  happy omp [options] [-- <omp-args>]
+
+Options:
+  --yolo, --dangerously-skip-permissions
+                                  Auto-approve tool calls inside OMP
+  --started-by <terminal|daemon>  Mark the session launcher
+  --verbose                       Print mirror diagnostics
+
+Examples:
+  happy omp
+  happy omp --yolo
+  happy omp -- --model claude-sonnet
+`);
+          process.exit(0);
+        }
+        if (args[i] === '--') {
+          passthroughMode = true;
+          continue;
+        }
+        extraArgs.push(args[i]);
+      }
+
+      const { credentials } = await authAndSetupMachineIfNeeded();
+      await ensureDaemonRunning()
+
+      await runOmp({
+        credentials,
+        startedBy,
+        verbose,
+        yolo,
+        extraArgs,
+      });
+      process.exit(0)
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'omp-rpc') {
+    try {
+      let startedBy: 'daemon' | 'terminal' | undefined = undefined;
+      let verbose = false;
+      let local = true;
+      let yolo = false;
+      const extraArgs: string[] = [];
+      let passthroughMode = false;
+      for (let i = 1; i < args.length; i++) {
+        if (!passthroughMode && args[i] === '--started-by') {
+          startedBy = args[++i] as 'daemon' | 'terminal';
+          continue;
+        }
+        if (!passthroughMode && args[i] === '--verbose') {
+          verbose = true;
+          continue;
+        }
+        if (!passthroughMode && args[i] === '--local') {
+          local = true;
+          continue;
+        }
+        if (!passthroughMode && args[i] === '--remote') {
+          local = false;
+          continue;
+        }
+        if (!passthroughMode && (args[i] === '--yolo' || args[i] === '--dangerously-skip-permissions')) {
+          yolo = true;
+          continue;
+        }
+        if (!passthroughMode && (args[i] === '-h' || args[i] === '--help')) {
+          console.log(`happy omp-rpc - Run OMP through its RPC event stream
+
+Usage:
+  happy omp-rpc [options] [-- <omp-args>]
+
+Options:
+  --local                         Read prompts from this terminal and mirror to the phone (default)
+  --remote                        Run headless; prompts come from the phone
+  --yolo, --dangerously-skip-permissions
+                                  Auto-approve tool calls inside OMP
+  --started-by <terminal|daemon>  Mark the session launcher
+  --verbose                       Print RPC diagnostics
+
+Examples:
+  happy omp-rpc
+  happy omp-rpc --yolo
+  happy omp-rpc -- --model claude-sonnet
+`);
+          process.exit(0);
+        }
+        if (args[i] === '--') {
+          passthroughMode = true;
+          continue;
+        }
+        extraArgs.push(args[i]);
+      }
+
+      const { credentials } = await authAndSetupMachineIfNeeded();
+      await ensureDaemonRunning()
+
+      await runOmpRpc({
+        credentials,
+        startedBy,
+        verbose,
+        local,
+        yolo,
+        extraArgs,
+      });
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
   } else if (subcommand === 'acp') {
     try {
-      const { runAcp, resolveAcpAgentConfig } = await import('@/agent/acp');
 
       let startedBy: 'daemon' | 'terminal' | undefined = undefined;
       let verbose = false;
@@ -698,6 +841,8 @@ ${chalk.bold('Usage:')}
   happy resume            Resume a previous Happy session by Happy session ID
   happy codex             Start Codex mode
   happy gemini            Start Gemini mode (ACP)
+  happy omp               Start literal OMP with Happy sync
+  happy omp-rpc           Prototype OMP wrapper via RPC event stream
   happy acp               Start a generic ACP-compatible agent
   happy connect           Connect AI vendor API keys
   happy sandbox           Configure and manage OS-level sandboxing
@@ -705,7 +850,6 @@ ${chalk.bold('Usage:')}
   happy daemon            Manage background service that allows
                             to spawn new sessions away from your computer
   happy doctor            System diagnostics & troubleshooting
-
 ${chalk.bold('Examples:')}
   happy                    Start session
   happy resume cmmij8      Resume a previous session by Happy session ID

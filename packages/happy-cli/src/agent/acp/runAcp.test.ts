@@ -279,6 +279,7 @@ describe('runAcp', () => {
     });
   });
 
+
   it('wires backend messages through mapper into session envelopes', async () => {
     const runPromise = runAcp({
       credentials: { token: 'token', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
