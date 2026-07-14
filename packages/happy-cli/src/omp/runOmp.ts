@@ -97,19 +97,30 @@ function normalizeBridgeToolName(toolName: string): string {
       return 'Grep';
     case 'glob':
       return 'Glob';
+    case 'write':
+      return 'Write';
     default:
       return toolName;
   }
 }
 
 function normalizeBridgeToolInput(toolName: string, input: unknown): unknown {
+  if (!isRecord(input)) {
+    return input;
+  }
   if (
     toolName === 'Glob'
-    && isRecord(input)
     && typeof input.path === 'string'
     && typeof input.pattern !== 'string'
   ) {
     return { ...input, pattern: input.path };
+  }
+  if (
+    toolName === 'Write'
+    && typeof input.path === 'string'
+    && typeof input.file_path !== 'string'
+  ) {
+    return { ...input, file_path: input.path };
   }
   return input;
 }

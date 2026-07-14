@@ -490,7 +490,7 @@ describe('runOmp', () => {
     ]);
   });
 
-  it('maps OMP search tools onto the compact ACP-compatible renderers', async () => {
+  it('maps OMP tools onto their ACP-compatible renderers', async () => {
     vi.useFakeTimers();
 
     const runPromise = runOmp({ credentials });
@@ -517,6 +517,15 @@ describe('runOmp', () => {
         args: { path: 'src/**/*.ts', hidden: true },
       },
     });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_start',
+        toolCallId: 'write-call-1',
+        toolName: 'write',
+        args: { path: '/tmp/omp-tool-test.txt', content: 'initial content\n' },
+      },
+    });
 
     child.emitExit(0);
     await vi.advanceTimersByTimeAsync(200);
@@ -538,6 +547,19 @@ describe('runOmp', () => {
         callId: 'glob-call-1',
         input: { path: 'src/**/*.ts', pattern: 'src/**/*.ts', hidden: true },
         name: 'Glob',
+      }),
+    );
+    expect(mocks.mockSession.sendAgentMessage).toHaveBeenCalledWith(
+      'omp',
+      expect.objectContaining({
+        type: 'tool-call',
+        callId: 'write-call-1',
+        name: 'Write',
+        input: {
+          path: '/tmp/omp-tool-test.txt',
+          file_path: '/tmp/omp-tool-test.txt',
+          content: 'initial content\n',
+        },
       }),
     );
   });
