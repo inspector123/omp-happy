@@ -89,10 +89,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function normalizeBridgeToolName(toolName: string): string {
-  if (toolName === 'bash' || toolName === 'shell') {
-    return 'execute';
+  switch (toolName) {
+    case 'bash':
+    case 'shell':
+      return 'execute';
+    case 'grep':
+      return 'Grep';
+    case 'glob':
+      return 'Glob';
+    default:
+      return toolName;
   }
-  return toolName;
+}
+
+function normalizeBridgeToolInput(toolName: string, input: unknown): unknown {
+  if (
+    toolName === 'Glob'
+    && isRecord(input)
+    && typeof input.path === 'string'
+    && typeof input.pattern !== 'string'
+  ) {
+    return { ...input, pattern: input.path };
+  }
+  return input;
 }
 
 function asString(value: unknown): string | undefined {
@@ -486,7 +505,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
           type: 'tool-call',
           name: toolName,
           callId: toolCallId,
-          input: event.args,
+          input: normalizeBridgeToolInput(toolName, event.args),
           id: randomUUID(),
         });
         return;

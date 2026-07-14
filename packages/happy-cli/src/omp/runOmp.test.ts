@@ -490,6 +490,58 @@ describe('runOmp', () => {
     ]);
   });
 
+  it('maps OMP search tools onto the compact ACP-compatible renderers', async () => {
+    vi.useFakeTimers();
+
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-session-search-tools' });
+    await vi.advanceTimersByTimeAsync(1);
+
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_start',
+        toolCallId: 'grep-call-1',
+        toolName: 'grep',
+        args: { pattern: 'needle', path: 'src' },
+      },
+    });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_start',
+        toolCallId: 'glob-call-1',
+        toolName: 'glob',
+        args: { path: 'src/**/*.ts', hidden: true },
+      },
+    });
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+
+    expect(mocks.mockSession.sendAgentMessage).toHaveBeenCalledWith(
+      'omp',
+      expect.objectContaining({
+        type: 'tool-call',
+        callId: 'grep-call-1',
+        name: 'Grep',
+        input: { pattern: 'needle', path: 'src' },
+      }),
+    );
+    expect(mocks.mockSession.sendAgentMessage).toHaveBeenCalledWith(
+      'omp',
+      expect.objectContaining({
+        type: 'tool-call',
+        callId: 'glob-call-1',
+        input: { path: 'src/**/*.ts', pattern: 'src/**/*.ts', hidden: true },
+        name: 'Glob',
+      }),
+    );
+  });
+
   it('starts phone-created sessions under remote control', async () => {
     vi.useFakeTimers();
 
