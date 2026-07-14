@@ -136,6 +136,30 @@ function isAssistantMessage(message: unknown): boolean {
 function isUserMessage(message: unknown): boolean {
   return isRecord(message) && message.role === 'user';
 }
+function extractAdvisorNotes(message: unknown): Array<{ note: string; severity?: 'nit' | 'concern' | 'blocker'; advisor?: string }> {
+  if (!isRecord(message) || message.role !== 'custom' || message.customType !== 'advisor' || message.display !== true || !isRecord(message.details)) {
+    return [];
+  }
+  const notes = message.details.notes;
+  if (!Array.isArray(notes)) {
+    return [];
+  }
+  return notes.flatMap((entry) => {
+    if (!isRecord(entry) || typeof entry.note !== 'string' || entry.note.trim().length === 0) {
+      return [];
+    }
+    const severity = entry.severity;
+    if (severity !== undefined && severity !== 'nit' && severity !== 'concern' && severity !== 'blocker') {
+      return [];
+    }
+    const advisor = entry.advisor;
+    if (advisor !== undefined && typeof advisor !== 'string') {
+      return [];
+    }
+    return [{ note: entry.note, ...(severity === undefined ? {} : { severity }), ...(advisor === undefined ? {} : { advisor }) }];
+  });
+}
+
 
 function extractMessageText(message: unknown): string {
   if (!isRecord(message)) {
@@ -407,8 +431,6 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
     if (pendingKind && pendingKind !== kind) {
       flushPendingText();
-      if (kind === 'thinking') thinkingStreamId = randomUUID();
-      else outputStreamId = randomUUID();
     }
     pendingKind = kind;
     pendingText += text;
@@ -503,6 +525,11 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
             appendPendingText('output', text);
             flushPendingText();
           }
+        }
+        const advisorNotes = extractAdvisorNotes(event.message);
+        if (advisorNotes.length > 0) {
+          flushPendingText();
+          session.sendAgentMessage('omp', { type: 'advisor', notes: advisorNotes });
         }
         return;
       }

@@ -248,6 +248,35 @@ function AgentEventBlock(props: {
       </View>
     );
   }
+  if (props.event.type === 'advisor') {
+    return (
+      <View style={styles.advisorContainer}>
+        <View style={styles.advisorHeader}>
+          <Ionicons name="document-text-outline" size={14} color={styles.advisorLabel.color as string} />
+          <Text style={styles.advisorLabel}>Advisor</Text>
+        </View>
+        {props.event.notes.map((note, index) => (
+          <View key={index} style={styles.advisorNoteCard}>
+            <View style={styles.advisorNoteMeta}>
+              {note.severity ? (
+                <View style={[
+                  styles.severityBadge,
+                  note.severity === 'blocker' && styles.severityBlocker,
+                  note.severity === 'concern' && styles.severityConcern,
+                ]}>
+                  <Text style={styles.severityText}>{note.severity}</Text>
+                </View>
+              ) : null}
+              {note.advisor ? (
+                <Text style={styles.advisorSource}>{note.advisor}</Text>
+              ) : null}
+            </View>
+            <MarkdownView markdown={note.note} />
+          </View>
+        ))}
+      </View>
+    );
+  }
   return (
     <View style={styles.agentEventContainer}>
       <Text style={styles.agentEventText}>{t('message.unknownEvent')}</Text>
@@ -379,5 +408,58 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: 11,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
+  },
+  // Advisor card styles
+  advisorContainer: {
+    marginHorizontal: 16,
+    marginBottom: 12,
+    maxWidth: '100%',
+  },
+  advisorHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 6,
+  },
+  advisorLabel: {
+    color: theme.colors.agentEventText,
+    fontSize: 11,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  advisorNoteCard: {
+    backgroundColor: theme.colors.groupped.background,
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 6,
+  },
+  advisorNoteMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  severityBadge: {
+    backgroundColor: theme.colors.divider,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  severityConcern: {
+    backgroundColor: '#f59e0b',
+  },
+  severityBlocker: {
+    backgroundColor: '#ef4444',
+  },
+  severityText: {
+    color: '#ffffff',
+    fontSize: 9,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  advisorSource: {
+    color: theme.colors.agentEventText,
+    fontSize: 11,
+    fontStyle: 'italic',
   },
 }));

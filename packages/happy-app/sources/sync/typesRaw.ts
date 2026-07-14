@@ -17,6 +17,18 @@ const usageDataSchema = z.object({
 
 export type UsageData = z.infer<typeof usageDataSchema>;
 
+const advisorNoteSchema = z.object({
+    note: z.string(),
+    severity: z.enum(['nit', 'concern', 'blocker']).optional(),
+    advisor: z.string().optional(),
+});
+type AdvisorNote = z.infer<typeof advisorNoteSchema>;
+
+const advisorEventSchema = z.object({
+    type: z.literal('advisor'),
+    notes: z.array(advisorNoteSchema),
+});
+
 const agentEventSchema = z.discriminatedUnion('type', [z.object({
     type: z.literal('switch'),
     mode: z.enum(['local', 'remote'])
@@ -28,7 +40,7 @@ const agentEventSchema = z.discriminatedUnion('type', [z.object({
     endsAt: z.number(),
 }), z.object({
     type: z.literal('ready'),
-})]);
+}), advisorEventSchema]);
 export type AgentEvent = z.infer<typeof agentEventSchema>;
 
 const sessionTextEventSchema = z.object({
@@ -326,6 +338,10 @@ const rawAgentRecordSchema = z.discriminatedUnion('type', [z.object({
             message: z.string(),
             streamId: z.string().optional(),
             append: z.boolean().optional(),
+        }),
+        z.object({
+            type: z.literal('advisor'),
+            notes: z.array(advisorNoteSchema),
         }),
         z.object({
             type: z.literal('thinking'),
@@ -1024,6 +1040,20 @@ export function normalizeRawMessage(id: string, localId: string | null, createdA
         }
         // ACP (Agent Communication Protocol) - unified format for all agent providers
         if (raw.content.type === 'acp') {
+            if (raw.content.data.type === 'advisor') {
+                return {
+                    id,
+                    localId,
+                    createdAt,
+                    role: 'event',
+                    isSidechain: false,
+                    content: {
+                        type: 'advisor',
+                        notes: raw.content.data.notes,
+                    },
+                    meta: raw.meta,
+                } satisfies NormalizedMessage;
+            }
             if (raw.content.data.type === 'message') {
                 return {
                     id,

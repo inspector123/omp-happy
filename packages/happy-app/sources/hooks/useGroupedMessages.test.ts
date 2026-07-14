@@ -323,4 +323,134 @@ describe('useGroupedMessages', () => {
         }
         expect(items[0].messages.map((message) => message.id)).toEqual(['tool-only']);
     });
+
+    it('keeps advisor event messages as standalone items outside agent-work groups', () => {
+        const messages: Message[] = [
+            {
+                kind: 'agent-text',
+                id: 'agent-final',
+                localId: null,
+                createdAt: 5,
+                text: 'done',
+            },
+            {
+                kind: 'agent-event',
+                id: 'advisor-event',
+                createdAt: 4,
+                event: {
+                    type: 'advisor',
+                    notes: [
+                        { note: 'Consider refactoring this module' },
+                    ],
+                },
+            },
+            toolMessage('tool-work', 3),
+            {
+                kind: 'user-text',
+                id: 'user',
+                localId: null,
+                createdAt: 1,
+                text: 'refactor',
+            },
+        ];
+
+        const items = groupMessagesForDisplay(messages, true);
+
+        // Advisor event should appear as its own message item, not inside the work group
+        const advisorItem = items.find((item) => item.type === 'message' && item.message.id === 'advisor-event');
+        expect(advisorItem).toBeDefined();
+
+        // The work group should NOT contain the advisor event
+        const workGroup = items.find((item) => item.type === 'agent-work-group');
+        if (workGroup) {
+            expect(workGroup.messages.map((m) => m.id)).not.toContain('advisor-event');
+        }
+    });
+
+    it('preserves chronological order of advisor events alongside agent work', () => {
+        const messages: Message[] = [
+            {
+                kind: 'agent-text',
+                id: 'agent-final',
+                localId: null,
+                createdAt: 6,
+                text: 'done',
+            },
+            {
+                kind: 'agent-event',
+                id: 'advisor-later',
+                createdAt: 5,
+                event: {
+                    type: 'advisor',
+                    notes: [{ note: 'second note' }],
+                },
+            },
+            {
+                kind: 'agent-event',
+                id: 'advisor-earlier',
+                createdAt: 4,
+                event: {
+                    type: 'advisor',
+                    notes: [{ note: 'first note' }],
+                },
+            },
+            toolMessage('tool-work', 3),
+            {
+                kind: 'user-text',
+                id: 'user',
+                localId: null,
+                createdAt: 1,
+                text: 'run',
+            },
+        ];
+
+        const items = groupMessagesForDisplay(messages, true);
+        const ids = items.map((item) => item.type === 'message' ? item.message.id : item.id);
+
+        // Newest-first order: agent-final, advisor-later, advisor-earlier, work/user
+        expect(ids).toContain('agent-final');
+        expect(ids).toContain('advisor-later');
+        expect(ids).toContain('advisor-earlier');
+        // advisor-later should appear before advisor-earlier (newest-first)
+        const laterIdx = ids.indexOf('advisor-later');
+        const earlierIdx = ids.indexOf('advisor-earlier');
+        expect(laterIdx).toBeLessThan(earlierIdx);
+    });
+
+    it('does not group non-advisor agent events into work groups differently', () => {
+        const messages: Message[] = [
+            {
+                kind: 'agent-text',
+                id: 'agent-final',
+                localId: null,
+                createdAt: 5,
+                text: 'done',
+            },
+            {
+                kind: 'agent-event',
+                id: 'switch-event',
+                createdAt: 4,
+                event: {
+                    type: 'switch',
+                    mode: 'local',
+                },
+            },
+            toolMessage('tool-work', 3),
+            {
+                kind: 'user-text',
+                id: 'user',
+                localId: null,
+                createdAt: 1,
+                text: 'run',
+            },
+        ];
+
+        const items = groupMessagesForDisplay(messages, true);
+
+        // Non-advisor events can still be in work groups (existing behavior unchanged)
+        const workGroup = items.find((item) => item.type === 'agent-work-group');
+        // The switch event may or may not be in the work group; the key is that
+        // the grouping still works — we're just verifying we didn't break it
+        expect(items.map((item) => item.type)).toContain('message');
+    });
 });

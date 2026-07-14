@@ -2006,5 +2006,53 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
 
             expect(normalized).toBeNull();
         });
+        it('accepts and normalizes structured ACP advisor notes', () => {
+            const message = {
+                role: 'agent',
+                content: {
+                    type: 'acp',
+                    provider: 'omp',
+                    data: {
+                        type: 'advisor',
+                        notes: [
+                            { note: 'Tighten the error handling', severity: 'concern', advisor: 'reviewer' },
+                            { note: 'Minor naming nit', severity: 'nit' },
+                            { note: 'Blocking issue' , severity: 'blocker', advisor: 'security' },
+                        ],
+                    },
+                },
+            };
+
+            const parsed = RawRecordSchema.safeParse(message);
+            expect(parsed.success).toBe(true);
+            if (!parsed.success) {
+                throw parsed.error;
+            }
+            const normalized = normalizeRawMessage('advisor-1', null, 42, parsed.data);
+            expect(normalized).toEqual({
+                id: 'advisor-1',
+                localId: null,
+                createdAt: 42,
+                role: 'event',
+                isSidechain: false,
+                content: {
+                    type: 'advisor',
+                    notes: message.content.data.notes,
+                },
+            });
+        });
+
+        it('rejects ACP advisor notes without a string note', () => {
+            const parsed = RawRecordSchema.safeParse({
+                role: 'agent',
+                content: {
+                    type: 'acp',
+                    provider: 'omp',
+                    data: { type: 'advisor', notes: [{ note: 123 }] },
+                },
+            });
+            expect(parsed.success).toBe(false);
+        });
+
     });
 });

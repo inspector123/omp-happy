@@ -44,6 +44,8 @@ export type ACPMessageData =
     | { type: 'turn_aborted'; id: string }
     // Permissions
     | { type: 'permission-request'; permissionId: string; toolName: string; description: string; options?: unknown }
+    // Advisor feedback
+    | { type: 'advisor'; notes: Array<{ note: string; severity?: 'nit' | 'concern' | 'blocker'; advisor?: string }> }
     // Usage/metrics
     | { type: 'token_count';[key: string]: unknown };
 

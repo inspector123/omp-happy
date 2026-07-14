@@ -1,83 +1,172 @@
-# omp-happy
+# Native OMP sessions in Happy
 
-A fork of [slopus/happy](https://github.com/slopus/happy) that drives **[omp](https://github.com/) (oh-my-pi)** as a **first-class agent** — used from your phone over Happy's end-to-end-encrypted relay, with the same UX as the Claude/Codex flow: live remote sessions, spawn-from-phone, streaming reasoning, todos, subagents, and usage/cost.
+- Branch: `feat/omp-happy-extension-bridge`
+- Base: the repository's default remote branch, `origin/omp-backend`
 
-> Upstream Happy is a mobile/web client for Claude Code & Codex. This fork adds omp as a fully-rendered agent rather than a generic ACP passthrough. See the original [`README.md`](README.md) for the base project.
+This fork of [Happy](https://github.com/slopus/happy) runs the native OMP terminal UI while mirroring the same session to the OMP mobile/web app. A session can move between local terminal control and phone control without switching agents or starting a second OMP conversation.
 
-## Why a fork (not just `happy acp omp`)
+The original Happy project supports Claude Code and Codex. This branch adds OMP-specific CLI, daemon, synchronization, and rendering paths. The relay protocol and encryption remain Happy's existing transport.
 
-Registering omp as a *generic* ACP agent gives a degraded experience, because Happy renders by **tool name** and `metadata.flavor`, and — critically — its **session-protocol path hardcodes tool results to `null`**, so tool outputs never render. Gemini avoids this with a dedicated runner that emits the richer `type:'acp'` data path (`sendAgentMessage`), where outputs land in `tool.result`.
+## What this branch adds
 
-This fork puts omp on that same rich path and adds omp-specific rendering. See [`docs`/`~/omp-happy-build-spec.md`] and the session writeup for the full analysis.
-
-## What this fork adds
-
-| Area | Change |
+| Area | Behavior |
 |---|---|
-| **Agent backend** | omp registered as an ACP agent; its messages routed through the rich `sendAgentMessage('omp', …)` path so tool **results** (and structured payloads) actually render |
-| **Subagents** | `delegate_task` runs render in a dedicated `DelegateView` — per-agent status, role, tokens/cost/duration, live progress, final output |
-| **Tool kinds** | omp's `read/edit/execute/search/fetch/think` reuse existing tool views; `delegate_task`/`fetch` added |
-| **Remote spawn** | the daemon can launch omp sessions, so the phone's **＋ New session → omp** works like Claude/Codex |
-| **Reasoning** | omp's streaming reasoning (`agent_thought_chunk`) renders as a muted "Reasoning" block (upstream hid all thinking). Toggle in Settings → Appearance |
-| **Plan / todos** | omp's ACP `plan` updates render as a live to-do checklist (via the existing TodoView) |
-| **Usage / cost** | a compact `📊 used/size tokens · $cost` line per turn |
-| **Model shortlist** | a Settings → Models page to curate which of omp's (40+) models appear in the picker |
-| **Branding** | app renamed **OMP**, distinct bundle id (`gg.omp.companion`) so it installs alongside real Happy |
+| Native OMP runtime | `happy omp` launches the installed OMP binary in a PTY with the bundled Happy extension. The native terminal UI remains visible and interactive. |
+| Bidirectional bridge | A private temporary Unix socket carries OMP extension events to Happy and phone commands back to OMP. |
+| Session handoff | Terminal input switches the session to local control; a phone prompt switches it to remote control. |
+| Rich event mirroring | Assistant text, thinking, tool calls/results, errors, and todo updates are converted to Happy agent messages. |
+| Phone input | Text, image attachments, model selection, abort, and session termination are forwarded to the live OMP process. |
+| Remote spawn | The Happy daemon can start OMP from the phone. It uses tmux when available so the exact process remains attachable from the desktop. |
+| Desktop attach | `happy omp attach [session-id]` attaches to the tmux window for a phone-started OMP session. |
+| OMP rendering | The app recognizes OMP tool payloads, edit results, delegated tasks, thinking, todos, token usage, and model metadata. |
+| Isolation and branding | `HAPPY_HOME_DIR` can isolate identity/state under `~/.omp-happy`; the companion app uses OMP branding and its own bundle identifier. |
 
-## Layout
+## How it works
 
-Monorepo (pnpm workspaces). The omp work lives almost entirely in:
-- `packages/happy-cli/src/agent/acp/*` — the omp ACP backend + Path-B sink (`runAcp.ts`)
-- `packages/happy-cli/src/daemon/*` — remote spawn of omp
-- `packages/happy-app/sources/components/tools/views/DelegateView.tsx`, `sources/sync/typesRaw.ts`, `sources/app/(app)/settings/models.tsx`, `sources/components/{AgentInput,MessageView}.tsx` — rendering
+```text
+native OMP TUI
+    |
+    | bundled extension events and commands
+    v
+temporary Unix socket
+    |
+    | packages/happy-cli/src/omp/runOmp.ts
+    v
+encrypted Happy session <----> Happy relay <----> OMP mobile/web app
+```
 
-Server (`packages/happy-server`) and the wire/crypto are **unchanged** — both forks ride the same relay (it's agent-blind).
+The bridge extension is loaded with OMP's `--extension` option. It publishes the native OMP session ID and structured lifecycle events. The CLI converts those events into Happy's rich agent-message format instead of scraping terminal output.
 
-## Quick start
+Important paths:
+
+- `packages/happy-cli/src/omp/runOmp.ts` — PTY lifecycle, Happy session, event conversion, and local/remote control.
+- `packages/happy-cli/scripts/omp-happy-bridge.mjs` — extension-side socket protocol and OMP API integration.
+- `packages/happy-cli/src/index.ts` — `happy omp` and `happy omp attach`.
+- `packages/happy-cli/src/daemon/run.ts` — phone-started OMP sessions and tmux launch.
+- `packages/happy-cli/src/daemon/controlServer.ts` — active-session metadata used by attach.
+- `packages/happy-cli/src/utils/tmux.ts` — exact tmux window identifiers.
+- `packages/happy-app/sources/components/tools/knownTools.tsx` — OMP tool presentation.
+- `packages/happy-app/sources/sync/reducer/reducer.ts` — streamed OMP event reduction.
+
+## Prerequisites
+
+- Node.js and pnpm.
+- A working native `omp` installation with provider credentials already configured.
+- Access to a Happy-compatible relay and the OMP companion app.
+- tmux for attaching to phone-started sessions. Without tmux, daemon launch falls back to a regular child process and desktop attach is unavailable.
+
+The CLI resolves the native executable from `OMP_HAPPY_REAL_BIN`, then `~/.local/bin/omp`, then `PATH`.
+
+## Build
 
 ```bash
 pnpm install
-
-# CLI
 pnpm -C packages/happy-cli build
-
-# Prepare for remote use (registers this machine so the phone can spawn omp):
-HAPPY_HOME_DIR=~/.omp-happy node packages/happy-cli/bin/happy.mjs daemon start
-
-# One foreground session (also handles first-run pairing — scan the QR with the app):
-HAPPY_HOME_DIR=~/.omp-happy node packages/happy-cli/bin/happy.mjs acp omp
 ```
 
-Or use the helper scripts (isolated home dir + `--local` interactive prompt mirrored to the phone; override the relay with `HAPPY_SERVER_URL=...`):
+## Run a native mirrored session
 
 ```bash
-scripts/omp-daemon.sh start   # prepare for remote spawn (status | stop | restart)
-scripts/omp-run.sh            # interactive local omp session, mirrored to the phone
+HAPPY_HOME_DIR="$HOME/.omp-happy" \
+HAPPY_SERVER_URL="https://your-happy-relay.example" \
+node packages/happy-cli/bin/happy.mjs omp
 ```
 
-omp manages its own provider credentials (under `~/.omp`); configure those with regular `omp`.
+The first authenticated run performs Happy machine/account setup when needed. OMP continues to use its own provider credentials.
 
-### Build the Android app
+Useful forms:
 
 ```bash
-cd packages/happy-app
-npx expo prebuild --platform android --no-install
-cd android
-EXPO_PUBLIC_HAPPY_SERVER_URL=<your-happy-server-url> ./gradlew assembleRelease --no-daemon
-adb install -r app/build/outputs/apk/release/app-release.apk
+# Print bridge diagnostics.
+node packages/happy-cli/bin/happy.mjs omp --verbose
+
+# Auto-approve OMP tool calls.
+node packages/happy-cli/bin/happy.mjs omp --yolo
+
+# Pass native OMP arguments after --.
+node packages/happy-cli/bin/happy.mjs omp -- --model claude-sonnet
+
+# Show the literal command help.
+node packages/happy-cli/bin/happy.mjs omp --help
 ```
 
-Notes: release uses the debug keystore (standalone signed APK, no custom keystore needed). For a plain-HTTP / LAN server, add `android:usesCleartextTraffic="true"` to the `<application>` tag and bump `android/gradle.properties` jvmargs (`-Xmx8192m -XX:MaxMetaspaceSize=2048m`) + `lint { checkReleaseBuilds false }` to avoid KSP/lint OOM.
+`--yolo` and `--dangerously-skip-permissions` both map to OMP auto-approval. Phone-started daemon sessions currently use auto-approval so remote tool calls do not block on an inaccessible terminal prompt.
 
-## Isolation
+## Start from the phone and attach locally
 
-The fork is fully isolated from a real Happy install: all identity/state derives from `HAPPY_HOME_DIR` (default `~/.happy`; set it to `~/.omp-happy`). Different account, different app package — your real Happy is untouched.
+Start the daemon with the same isolated home and relay configuration:
 
-## Status / not done
+```bash
+HAPPY_HOME_DIR="$HOME/.omp-happy" \
+HAPPY_SERVER_URL="https://your-happy-relay.example" \
+node packages/happy-cli/bin/happy.mjs daemon start
+```
 
-- **Advisor notes** aren't badged separately — omp's ACP strips model-role tags, so they arrive inline (visible within the reasoning stream, not a dedicated panel).
-- **Standalone `/jobs` panel** — jobs already show inside `DelegateView`; a separate panel isn't built.
+Create an OMP session from the app. If tmux is installed, the daemon starts it in a `happy-omp` tmux session and records its exact window identifier.
 
-## Credits
+Attach from the desktop:
 
-Built on [slopus/happy](https://github.com/slopus/happy) (see [`README.md`](README.md) and `LICENSE`). Fork changes generated with Claude Code via Happy.
+```bash
+node packages/happy-cli/bin/happy.mjs omp attach
+node packages/happy-cli/bin/happy.mjs omp attach <happy-session-id-prefix>
+```
+
+When more than one phone-started OMP session is active, the command lists the available Happy session IDs and tmux targets and requires a selector.
+
+## Optional command wrapper
+
+`packages/happy-cli/scripts/omp-happy-launcher.sh` routes ordinary interactive OMP invocations through `happy omp`. It deliberately bypasses Happy for `acp`, `update`, RPC modes, help, and version commands.
+
+The script contains workstation-specific defaults. Set all relevant paths and the relay explicitly instead of installing it over the real OMP binary:
+
+```bash
+OMP_HAPPY_REAL_BIN="/absolute/path/to/real/omp" \
+HAPPY_OMP_CLI="$PWD/packages/happy-cli/bin/happy.mjs" \
+HAPPY_HOME_DIR="$HOME/.omp-happy" \
+HAPPY_SERVER_URL="https://your-happy-relay.example" \
+packages/happy-cli/scripts/omp-happy-launcher.sh
+```
+
+The older `scripts/omp-run.sh` uses the generic ACP path and is not the native extension-bridge entry point documented here.
+
+## Operational behavior
+
+- The extension bridge listens on a socket inside a newly created temporary directory and removes that directory during shutdown.
+- The CLI waits up to 15 seconds for the extension's ready frame.
+- Output and thinking deltas are coalesced briefly before relay transmission.
+- The session sends keepalives every two seconds and preserves local/remote control state.
+- Phone images are downloaded, decrypted, converted to OMP image messages, and delivered with the prompt.
+- The native OMP session ID is saved in Happy metadata for resume and session correlation.
+- Session shutdown terminates the PTY, closes the bridge, archives the Happy session, flushes pending events, and closes the relay connection.
+- Structured OMP advisor notes render as dedicated app cards with Markdown, severity, and source attribution.
+
+## Current limitations
+
+- Desktop attach requires tmux and applies only to active phone-started OMP sessions tracked by the daemon.
+- The launcher script is a convenience wrapper, not an installer; its defaults must be reviewed before use.
+- The native bridge and the older `happy acp omp` integration are separate paths. Use `happy omp` for the behavior described in this document.
+- Delegated jobs render inside tool views; there is no standalone jobs panel.
+
+## Validation
+
+Observed on this branch:
+
+```text
+$ node packages/happy-cli/bin/happy.mjs omp --help
+happy omp - Run the native OMP TUI with Happy sync
+```
+
+The following commands passed while preparing this README:
+
+```bash
+pnpm -C packages/happy-cli build
+pnpm -C packages/happy-cli exec vitest run src/omp/runOmp.test.ts
+```
+
+The focused test run completed all 6 `runOmp` tests successfully.
+
+An end-to-end relay/app session was not run while preparing this README.
+
+## Upstream
+
+See [`README.md`](README.md) for the original Happy overview and `LICENSE` for licensing.

@@ -564,6 +564,118 @@ describe('runOmp', () => {
     );
   });
 
+  it('preserves output identity across thinking and starts a new segment after tools', async () => {
+    vi.useFakeTimers();
+
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-session-interleaved' });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_start' } });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'message_update',
+        message: { role: 'assistant', content: [] },
+        assistantMessageEvent: { type: 'text_delta', delta: 'Before ' },
+      },
+    });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'message_update',
+        message: { role: 'assistant', content: [] },
+        assistantMessageEvent: { type: 'thinking_delta', delta: 'private reasoning' },
+      },
+    });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'message_update',
+        message: { role: 'assistant', content: [] },
+        assistantMessageEvent: { type: 'text_delta', delta: 'after' },
+      },
+    });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_start',
+        toolCallId: 'advisor-tool-call',
+        toolName: 'bash',
+        args: { command: 'true' },
+      },
+    });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_end',
+        toolCallId: 'advisor-tool-call',
+        result: { content: [{ type: 'text', text: '' }] },
+        isError: false,
+      },
+    });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'message_update',
+        message: { role: 'assistant', content: [] },
+        assistantMessageEvent: { type: 'text_delta', delta: ' after tool' },
+      },
+    });
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_end' } });
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+
+    const outputMessages = mocks.mockSession.sendAgentMessage.mock.calls
+      .map((call) => call[1])
+      .filter((message) => message.type === 'message' && message.append === true);
+    expect(outputMessages).toHaveLength(3);
+    expect(outputMessages.map((message) => message.message)).toEqual(['Before ', 'after', ' after tool']);
+    expect(outputMessages[0]?.streamId).toBe(outputMessages[1]?.streamId);
+    expect(outputMessages[1]?.streamId).not.toBe(outputMessages[2]?.streamId);
+  });
+
+  it('emits one structured advisor message only at message_end', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-advisor' });
+    await vi.advanceTimersByTimeAsync(1);
+    const advisorMessage = {
+      role: 'custom',
+      customType: 'advisor',
+      display: true,
+      details: {
+        notes: [
+          { note: 'Use a narrower interface', severity: 'concern', advisor: 'reviewer' },
+          { note: '', severity: 'nit' },
+          { note: 'bad severity', severity: 'invalid' },
+        ],
+      },
+    };
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'message_start', message: advisorMessage } });
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'message_end', message: advisorMessage } });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'message_end',
+        message: { ...advisorMessage, display: false },
+      },
+    });
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+    const advisorMessages = mocks.mockSession.sendAgentMessage.mock.calls
+      .map((call) => call[1])
+      .filter((message) => message.type === 'advisor');
+    expect(advisorMessages).toEqual([
+      { type: 'advisor', notes: [{ note: 'Use a narrower interface', severity: 'concern', advisor: 'reviewer' }] },
+    ]);
+  });
+
   it('starts phone-created sessions under remote control', async () => {
     vi.useFakeTimers();
 

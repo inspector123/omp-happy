@@ -268,7 +268,7 @@ function collectAgentWorkGroups(messages: Message[], turnOf: number[], collapseC
         const visibleAgentIndexes = indexes.filter((index) => {
             const msg = messages[index];
             if (msg.kind === 'user-text') return false;
-            if (isInvisibleMessage(msg) || isUserAttachment(msg)) return false;
+            if (isInvisibleMessage(msg) || isUserAttachment(msg) || isAdvisorEvent(msg)) return false;
             return true;
         });
 
@@ -320,6 +320,10 @@ function isInvisibleMessage(msg: Message): boolean {
 /** User-sent file/image attachments should never be collapsed into a group */
 function isUserAttachment(msg: Message): boolean {
     return msg.kind === 'tool-call' && msg.tool.name === 'file';
+}
+/** Advisor event messages should remain standalone and never be collapsed */
+function isAdvisorEvent(msg: Message): boolean {
+    return msg.kind === 'agent-event' && msg.event.type === 'advisor';
 }
 
 function hasPendingPermission(messages: Message[]): boolean {
