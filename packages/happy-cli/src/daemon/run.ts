@@ -233,6 +233,7 @@ export async function startDaemon(): Promise<void> {
         // New session started externally
         const trackedSession: TrackedSession = {
           startedBy: 'happy directly - likely by user from terminal',
+          agent: sessionMetadata.flavor,
           happySessionId: sessionId,
           happySessionMetadataFromLocalWebhook: sessionMetadata,
           encryption,
@@ -336,10 +337,6 @@ export async function startDaemon(): Promise<void> {
         if (options.resumeCodexThreadId) {
           extraEnv.HAPPY_FORK_CODEX_THREAD_ID = options.resumeCodexThreadId;
         }
-        if (options.resumeOmpSessionId) {
-          // runAcp reads this and resumes the omp session via session/load.
-          extraEnv.HAPPY_RESUME_OMP_SESSION_ID = options.resumeOmpSessionId;
-        }
         logger.debug(`[DAEMON RUN] Environment variable keys (before expansion) (${Object.keys(extraEnv).length}): ${Object.keys(extraEnv).join(', ')}`);
 
         // Expand ${VAR} references from daemon's process.env
@@ -387,6 +384,12 @@ export async function startDaemon(): Promise<void> {
         // Empty string means "use current/most recent session" (tmux default behavior)
         let tmuxSessionName: string | undefined = extraEnv.TMUX_SESSION_NAME;
 
+        // Phone-created OMP sessions need a persistent native terminal so the
+        // desktop can attach to the exact live process later.
+        if (options.agent === 'omp' && tmuxAvailable && tmuxSessionName === undefined) {
+          tmuxSessionName = 'happy-omp';
+        }
+
         // If tmux is not available or session name is explicitly undefined, fall back to regular spawning
         // Note: Empty string is valid (means use current/most recent tmux session)
         if (!tmuxAvailable || tmuxSessionName === undefined) {
@@ -405,18 +408,19 @@ export async function startDaemon(): Promise<void> {
 
           // Construct command for the CLI
           const cliPath = join(projectPath(), 'dist', 'index.mjs');
-          // Determine agent command - support claude, codex, and gemini
+          // Determine agent command and native resume argument.
           const isOmp = options.agent === 'omp';
           const agent = isOmp ? 'omp' : (options.agent === 'gemini' ? 'gemini' : (options.agent === 'codex' ? 'codex' : (options.agent === 'openclaw' ? 'openclaw' : 'claude')));
           const resumeId = agent === 'claude'
             ? options.resumeClaudeSessionId
-            : (agent === 'codex' ? options.resumeCodexThreadId : undefined);
+            : (agent === 'codex'
+              ? options.resumeCodexThreadId
+              : (agent === 'omp' ? options.resumeOmpSessionId : undefined));
           const resumeFragment = resumeId
             ? ` --resume ${shellescape(resumeId)}`
             : '';
-          // omp launches via `acp omp` and is always remote (no --happy-starting-mode).
           const launchSubcommand = isOmp
-            ? 'acp omp --yolo --started-by daemon'
+            ? 'omp --yolo --started-by daemon'
             : `${agent} --happy-starting-mode remote --started-by daemon`;
           const fullCommand = `node --no-warnings --no-deprecation ${cliPath} ${launchSubcommand}${resumeFragment}`;
 
@@ -455,6 +459,7 @@ export async function startDaemon(): Promise<void> {
             // Create a tracked session for tmux windows - now we have the real PID!
             const trackedSession: TrackedSession = {
               startedBy: 'daemon',
+              agent: options.agent ?? 'claude',
               pid: tmuxResult.pid, // Real PID from tmux -P flag
               tmuxSessionId: tmuxResult.sessionId,
               directoryCreated,
@@ -503,11 +508,10 @@ export async function startDaemon(): Promise<void> {
           // Construct arguments for the CLI - support claude, codex, gemini, openclaw, omp
           let args: string[];
           if (options.agent === 'omp') {
-            // omp runs via the `acp` subcommand and is always headless/remote, so
-            // it omits --happy-starting-mode (the acp arg parser would otherwise
-            // leak that flag into omp's own args). It still reports to the daemon
-            // webhook via notifyDaemonSessionStarted, so spawn tracking works.
-            args = ['acp', 'omp', '--yolo', '--started-by', 'daemon'];
+            args = ['omp', '--yolo', '--started-by', 'daemon'];
+            if (options.resumeOmpSessionId) {
+              args.push('--resume', options.resumeOmpSessionId);
+            }
           } else {
             let agentCommand: string;
             switch (options.agent) {
@@ -549,6 +553,7 @@ export async function startDaemon(): Promise<void> {
           // TODO: In future, sessionId could be used with --resume to continue existing sessions
           // For now, we ignore it - each spawn creates a new session
           return spawnTrackedHappyProcess({
+            agent: options.agent ?? 'claude',
             args,
             cwd: directory,
             env: {
@@ -581,10 +586,12 @@ export async function startDaemon(): Promise<void> {
       env,
       directoryCreated = false,
       message,
+      agent,
     }: {
       args: string[];
       cwd: string;
       env: NodeJS.ProcessEnv;
+      agent?: string;
       directoryCreated?: boolean;
       message?: string;
     }): Promise<SpawnSessionResult> => {
@@ -607,6 +614,7 @@ export async function startDaemon(): Promise<void> {
 
       const trackedSession: TrackedSession = {
         startedBy: 'daemon',
+        agent,
         pid: happyProcess.pid,
         childProcess: happyProcess,
         directoryCreated,

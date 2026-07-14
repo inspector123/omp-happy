@@ -228,6 +228,49 @@ describe('reducer', () => {
                 expect(result.messages[1].text).toBe('Part 2');
             }
         });
+
+        it('appends streamed agent chunks into one rendered message', () => {
+            const state = createReducer();
+            const firstChunk: NormalizedMessage = {
+                id: 'stream-chunk-1',
+                localId: null,
+                createdAt: 1000,
+                role: 'agent',
+                isSidechain: false,
+                streamId: 'omp-stream-1',
+                append: true,
+                content: [{
+                    type: 'text',
+                    text: 'Hi! What',
+                    uuid: 'stream-chunk-1',
+                    parentUUID: null,
+                }],
+            };
+            const secondChunk: NormalizedMessage = {
+                id: 'stream-chunk-2',
+                localId: null,
+                createdAt: 1100,
+                role: 'agent',
+                isSidechain: false,
+                streamId: 'omp-stream-1',
+                append: true,
+                content: [{
+                    type: 'text',
+                    text: ' can I help you with?',
+                    uuid: 'stream-chunk-2',
+                    parentUUID: null,
+                }],
+            };
+
+            reducer(state, [firstChunk]);
+            const result = reducer(state, [secondChunk]);
+
+            expect(result.messages).toHaveLength(1);
+            expect(result.messages[0]).toMatchObject({
+                kind: 'agent-text',
+                text: 'Hi! What can I help you with?',
+            });
+        });
     });
 
     describe('mixed message processing', () => {

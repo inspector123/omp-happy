@@ -150,6 +150,7 @@ export type ReducerState = {
     permissions: Map<string, StoredPermission>; // Store permission details by ID for quick lookup
     localIds: Map<string, string>;
     messageIds: Map<string, string>; // originalId -> internalId
+    streamIds: Map<string, string>; // agent stream ID -> canonical rendered message ID
     messages: Map<string, ReducerMessage>;
     sidechains: Map<string, ReducerMessage[]>;
     tracerState: TracerState; // Tracer state for sidechain processing
@@ -175,6 +176,7 @@ export function createReducer(): ReducerState {
         messages: new Map(),
         localIds: new Map(),
         messageIds: new Map(),
+        streamIds: new Map(),
         sidechains: new Map(),
         tracerState: createTracer()
     }
@@ -678,40 +680,58 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                 state.localIds.set(msg.localId, mid);
             }
             state.messageIds.set(msg.id, mid);
-
             changed.add(mid);
+
         } else if (msg.role === 'agent') {
-            // Check if we've seen this agent message before
             if (state.messageIds.has(msg.id)) {
                 continue;
             }
 
-            // Mark this message as seen
-            state.messageIds.set(msg.id, msg.id);
+            const existingStreamMessageId = msg.append && msg.streamId
+                ? state.streamIds.get(msg.streamId)
+                : undefined;
+            state.messageIds.set(msg.id, existingStreamMessageId ?? msg.id);
 
-            // Process usage data if present
             if (msg.usage) {
                 processUsageData(state, msg.usage, msg.createdAt);
             }
 
-            // Process text and thinking content (tool calls handled in Phase 2)
-            for (let c of msg.content) {
-                if (c.type === 'text' || c.type === 'thinking') {
-                    let mid = allocateId();
-                    const isThinking = c.type === 'thinking';
-                    state.messages.set(mid, {
-                        id: mid,
-                        realID: msg.id,
-                        role: 'agent',
-                        createdAt: msg.createdAt,
-                        text: isThinking ? `*${c.thinking}*` : c.text,
-                        isThinking,
-                        tool: null,
-                        event: null,
-                        meta: msg.meta,
-                    });
-                    changed.add(mid);
+            for (const content of msg.content) {
+                if (content.type !== 'text' && content.type !== 'thinking') {
+                    continue;
                 }
+                const isThinking = content.type === 'thinking';
+                const delta = isThinking ? content.thinking : content.text;
+                if (existingStreamMessageId) {
+                    const streamedMessage = state.messages.get(existingStreamMessageId);
+                    if (streamedMessage && streamedMessage.isThinking === isThinking) {
+                        const currentText = streamedMessage.text ?? '';
+                        streamedMessage.text = isThinking && currentText.endsWith('*')
+                            ? `${currentText.slice(0, -1)}${delta}*`
+                            : `${currentText}${delta}`;
+                        state.messageIds.set(msg.id, existingStreamMessageId);
+                        changed.add(existingStreamMessageId);
+                        continue;
+                    }
+                }
+
+                const mid = allocateId();
+                state.messages.set(mid, {
+                    id: mid,
+                    realID: msg.id,
+                    role: 'agent',
+                    createdAt: msg.createdAt,
+                    text: isThinking ? `*${delta}*` : delta,
+                    isThinking,
+                    tool: null,
+                    event: null,
+                    meta: msg.meta,
+                });
+                state.messageIds.set(msg.id, mid);
+                if (msg.append && msg.streamId) {
+                    state.streamIds.set(msg.streamId, mid);
+                }
+                changed.add(mid);
             }
         }
     }

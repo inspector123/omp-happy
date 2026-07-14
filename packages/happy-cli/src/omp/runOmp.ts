@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { open, mkdtemp, rm, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { existsSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer, type Server, type Socket } from 'node:net';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { spawn as spawnPty, type IPty } from 'node-pty';
@@ -13,6 +15,7 @@ import { encodeBase64 } from '@/api/encryption';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
 import { initialMachineMetadata } from '@/daemon/run';
+import { projectPath } from '@/projectPath';
 import type { Credentials } from '@/persistence';
 import { readSettings } from '@/persistence';
 import { logger } from '@/ui/logger';
@@ -21,24 +24,39 @@ import { connectionState } from '@/utils/serverConnectionErrors';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
 
 const KEEPALIVE_INTERVAL_MS = 2_000;
-const MIRROR_POLL_INTERVAL_MS = 100;
 const MIRROR_FLUSH_DELAY_MS = 150;
-const MIRROR_READY_TIMEOUT_MS = 15_000;
+const BRIDGE_READY_TIMEOUT_MS = 15_000;
 const SESSION_CLOSE_TIMEOUT_MS = 5_000;
-const MIRROR_EXIT_GRACE_MS = 300;
-const MIRROR_ENV = 'OMP_HAPPY_MIRROR_PATH';
+const BRIDGE_EXIT_GRACE_MS = 300;
+const BRIDGE_SOCKET_ENV = 'OMP_HAPPY_BRIDGE_SOCKET';
+const BRIDGE_EXTENSION_FILE = 'omp-happy-bridge.mjs';
 
 type RunMode = 'local' | 'remote';
 
-type MirrorFrame = MirrorReadyFrame | MirrorAgentEventFrame;
+type BridgeFrame = BridgeReadyFrame | BridgeAgentEventFrame | BridgeInputFrame | BridgeErrorFrame;
 
-type MirrorReadyFrame = {
+type BridgeReadyFrame = {
   type: 'ready';
+  protocolVersion: number;
+  sessionId: string;
+  sessionFile?: string;
+  cwd?: string;
 };
 
-type MirrorAgentEventFrame = {
+type BridgeAgentEventFrame = {
   type: 'agent_event';
   event: MirrorEvent;
+};
+
+type BridgeInputFrame = {
+  type: 'input';
+  text: string;
+  source: 'interactive' | 'rpc' | 'extension';
+};
+
+type BridgeErrorFrame = {
+  type: 'bridge_error';
+  message: string;
 };
 
 type MirrorEvent = {
@@ -61,12 +79,20 @@ export interface RunOmpOptions {
   extraArgs?: string[];
 }
 
-interface MirrorFollower {
-  stop(): Promise<void>;
+interface BridgeServer {
+  send(frame: unknown): boolean;
+  close(): Promise<void>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function normalizeBridgeToolName(toolName: string): string {
+  if (toolName === 'bash' || toolName === 'shell') {
+    return 'execute';
+  }
+  return toolName;
 }
 
 function asString(value: unknown): string | undefined {
@@ -128,108 +154,81 @@ function extractTodoEntries(result: unknown): Array<{ content: string; status: '
   });
 }
 
-function buildOmpArgs(opts: RunOmpOptions): string[] {
-  const args = (opts.extraArgs ?? []).filter(
+function buildOmpArgs(opts: RunOmpOptions, extensionPath: string): string[] {
+  const extraArgs = (opts.extraArgs ?? []).filter(
     (value): value is string => typeof value === 'string' && value.length > 0 && value !== 'undefined',
   );
-  if (!args.includes('--allow-home')) {
-    args.unshift('--allow-home');
-  }
-  if (opts.yolo && !args.includes('--yolo') && !args.includes('--auto-approve') && !args.includes('--dangerously-skip-permissions')) {
-    args.unshift('--yolo');
+  const args = ['--allow-home', '--extension', extensionPath, ...extraArgs];
+  if (opts.yolo && !args.includes('--auto-approve') && !args.includes('--approval-mode')) {
+    args.unshift('--auto-approve');
   }
   return args;
 }
 
-async function readChunk(filePath: string, offset: number, length: number): Promise<string> {
-  const handle = await open(filePath, 'r');
-  try {
-    const buffer = Buffer.alloc(length);
-    const { bytesRead } = await handle.read(buffer, 0, length, offset);
-    return buffer.subarray(0, bytesRead).toString('utf8');
-  } finally {
-    await handle.close();
-  }
-}
-
-function startMirrorFollower(
-  mirrorPath: string,
-  onFrame: (frame: MirrorFrame) => void,
+async function startBridgeServer(
+  socketPath: string,
+  onFrame: (frame: BridgeFrame) => void,
   log: (message: string, data?: unknown) => void,
-): MirrorFollower {
-  let offset = 0;
+): Promise<BridgeServer> {
+  let activeSocket: Socket | null = null;
   let pending = '';
-  let stopped = false;
-  let draining = false;
-  let drainAgain = false;
+  const outgoing: string[] = [];
 
   const processLine = (line: string): void => {
     const trimmed = line.trim();
-    if (!trimmed) {
-      return;
-    }
+    if (!trimmed) return;
     try {
-      const frame = JSON.parse(trimmed) as MirrorFrame;
-      onFrame(frame);
+      onFrame(JSON.parse(trimmed) as BridgeFrame);
     } catch (error) {
-      log(`Failed to parse OMP mirror frame: ${error instanceof Error ? error.message : String(error)}`);
+      log(`Failed to parse OMP bridge frame: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
-  const drain = async (finalPass = false): Promise<void> => {
-    if (draining) {
-      drainAgain = true;
-      return;
-    }
-    if (stopped && !finalPass) {
-      return;
-    }
-    draining = true;
-    try {
-      while (true) {
-        let size = 0;
-        try {
-          size = (await stat(mirrorPath)).size;
-        } catch (error) {
-          const code = isRecord(error) ? asString(error.code) : undefined;
-          if (code === 'ENOENT') {
-            break;
-          }
-          throw error;
-        }
-        if (size <= offset) {
-          break;
-        }
-        const chunk = await readChunk(mirrorPath, offset, size - offset);
-        offset = size;
-        pending += chunk;
-        const lines = pending.split('\n');
-        pending = lines.pop() ?? '';
-        for (const line of lines) {
-          processLine(line);
-        }
-      }
-    } finally {
-      draining = false;
-      if (drainAgain && !stopped) {
-        drainAgain = false;
-        void drain();
-      }
-    }
-  };
+  const server: Server = createServer((socket) => {
+    activeSocket?.destroy();
+    activeSocket = socket;
+    pending = '';
+    socket.setEncoding('utf8');
+    for (const line of outgoing.splice(0)) socket.write(line);
+    socket.on('data', (chunk) => {
+      pending += chunk;
+      const lines = pending.split('\n');
+      pending = lines.pop() ?? '';
+      for (const line of lines) processLine(line);
+    });
+    socket.on('close', () => {
+      if (activeSocket === socket) activeSocket = null;
+    });
+    socket.on('error', (error) => {
+      log(`OMP bridge socket error: ${error.message}`);
+    });
+  });
 
-  const interval = setInterval(() => {
-    void drain();
-  }, MIRROR_POLL_INTERVAL_MS);
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off('listening', onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off('error', onError);
+      resolve();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(socketPath);
+  });
 
   return {
-    async stop(): Promise<void> {
-      clearInterval(interval);
-      await drain(true);
-      stopped = true;
-      if (pending.trim().length > 0) {
-        processLine(pending);
-      }
+    send(frame: unknown): boolean {
+      const line = `${JSON.stringify(frame)}\n`;
+      if (activeSocket?.writable) activeSocket.write(line);
+      else outgoing.push(line);
+      return true;
+    },
+    async close(): Promise<void> {
+      activeSocket?.destroy();
+      activeSocket = null;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
 }
@@ -293,13 +292,15 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   let pendingText = '';
   let pendingKind: 'output' | 'thinking' | null = null;
   let pendingFlushTimer: NodeJS.Timeout | null = null;
+  let outputStreamId = randomUUID();
+  let thinkingStreamId = randomUUID();
   let lastPlanJson = '';
-  let mirrorFollower: MirrorFollower | null = null;
-  let mirrorReadyResolved = false;
-  let resolveMirrorReady: (() => void) | null = null;
-  let rejectMirrorReady: ((error: Error) => void) | null = null;
-  let runMode: RunMode = 'local';
-  let pendingRemotePrompts: string[] = [];
+  let bridgeServer: BridgeServer | null = null;
+  let bridgeReadyResolved = false;
+  let resolveBridgeReady: (() => void) | null = null;
+  let rejectBridgeReady: ((error: Error) => void) | null = null;
+  const initialRunMode: RunMode = opts.startedBy === 'daemon' ? 'remote' : 'local';
+  let runMode: RunMode = initialRunMode;
   let stdinDataHandler: ((data: string | Buffer) => void) | null = null;
   let stdinRawModeEnabled = false;
   let stdinResumed = false;
@@ -312,32 +313,32 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
   };
 
-  const settleMirrorReady = (error?: Error): void => {
-    if (mirrorReadyResolved) {
+  const settleBridgeReady = (error?: Error): void => {
+    if (bridgeReadyResolved) {
       return;
     }
-    mirrorReadyResolved = true;
+    bridgeReadyResolved = true;
     if (error) {
-      rejectMirrorReady?.(error);
+      rejectBridgeReady?.(error);
     } else {
-      resolveMirrorReady?.();
+      resolveBridgeReady?.();
     }
-    resolveMirrorReady = null;
-    rejectMirrorReady = null;
+    resolveBridgeReady = null;
+    rejectBridgeReady = null;
   };
 
-  const waitForMirrorReady = (): Promise<void> => {
-    if (mirrorReadyResolved) {
+  const waitForBridgeReady = (): Promise<void> => {
+    if (bridgeReadyResolved) {
       return Promise.resolve();
     }
     return new Promise<void>((resolve, reject) => {
-      resolveMirrorReady = resolve;
-      rejectMirrorReady = reject;
+      resolveBridgeReady = resolve;
+      rejectBridgeReady = reject;
       setTimeout(() => {
-        if (!mirrorReadyResolved) {
-          settleMirrorReady(new Error('Timed out waiting for OMP Happy mirror readiness; is this the patched omp build?'));
+        if (!bridgeReadyResolved) {
+          settleBridgeReady(new Error('Timed out waiting for the bundled OMP Happy extension bridge'));
         }
-      }, MIRROR_READY_TIMEOUT_MS);
+      }, BRIDGE_READY_TIMEOUT_MS);
     });
   };
 
@@ -346,7 +347,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       clearTimeout(pendingFlushTimer);
       pendingFlushTimer = null;
     }
-    const text = pendingText.trim();
+    const text = pendingText;
     const kind = pendingKind;
     pendingText = '';
     pendingKind = null;
@@ -354,10 +355,10 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       return;
     }
     if (kind === 'thinking') {
-      session.sendAgentMessage('omp', { type: 'thinking', text });
+      session.sendAgentMessage('omp', { type: 'thinking', text, streamId: thinkingStreamId, append: true });
       return;
     }
-    session.sendAgentMessage('omp', { type: 'message', message: text });
+    session.sendAgentMessage('omp', { type: 'message', message: text, streamId: outputStreamId, append: true });
   };
 
   const schedulePendingFlush = (): void => {
@@ -376,6 +377,8 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
     if (pendingKind && pendingKind !== kind) {
       flushPendingText();
+      if (kind === 'thinking') thinkingStreamId = randomUUID();
+      else outputStreamId = randomUUID();
     }
     pendingKind = kind;
     pendingText += text;
@@ -408,24 +411,6 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     session.keepAlive(thinking, runMode);
   };
 
-  const isRemoteEcho = (text: string): boolean => {
-    if (pendingRemotePrompts.length === 0) {
-      return false;
-    }
-    if (pendingRemotePrompts[0] !== text) {
-      return false;
-    }
-    pendingRemotePrompts.shift();
-    return true;
-  };
-
-  const sendLocalUserPrompt = (message: unknown): void => {
-    const text = extractMessageText(message).trim();
-    if (!text || isRemoteEcho(text)) {
-      return;
-    }
-    session.sendSessionProtocolMessage(createEnvelope('user', { t: 'text', text }));
-  };
 
   const handleAssistantMessageUpdate = (event: MirrorEvent): void => {
     if (!isAssistantMessage(event.message) || !isRecord(event.assistantMessageEvent)) {
@@ -458,7 +443,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
   };
 
-  const handleMirrorEvent = (event: MirrorEvent): void => {
+  const handleBridgeEvent = (event: MirrorEvent): void => {
     switch (event.type) {
       case 'agent_start': {
         turnStarted = true;
@@ -466,6 +451,8 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         pendingText = '';
         pendingKind = null;
         lastPlanJson = '';
+        outputStreamId = randomUUID();
+        thinkingStreamId = randomUUID();
         thinking = true;
         session.keepAlive(thinking, runMode);
         session.sendAgentMessage('omp', { type: 'task_started', id: randomUUID() });
@@ -477,8 +464,6 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       }
       case 'message_end': {
         if (isUserMessage(event.message)) {
-          flushPendingText();
-          sendLocalUserPrompt(event.message);
           return;
         }
         if (isAssistantMessage(event.message) && !assistantTextEmitted) {
@@ -493,7 +478,9 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       }
       case 'tool_execution_start': {
         flushPendingText();
-        const toolName = asString(event.toolName) ?? 'tool';
+        outputStreamId = randomUUID();
+        thinkingStreamId = randomUUID();
+        const toolName = normalizeBridgeToolName(asString(event.toolName) ?? 'tool');
         const toolCallId = asString(event.toolCallId) ?? randomUUID();
         session.sendAgentMessage('omp', {
           type: 'tool-call',
@@ -538,26 +525,44 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
   };
 
-  const handleMirrorFrame = (frame: MirrorFrame): void => {
+  const handleBridgeFrame = (frame: BridgeFrame): void => {
     if (frame.type === 'ready') {
-      log('OMP Happy mirror ready');
-      settleMirrorReady();
+      log(`OMP Happy extension ready for session ${frame.sessionId}`);
+      session.updateMetadata((currentMetadata) => ({
+        ...currentMetadata,
+        flavor: 'omp',
+        ompSessionId: frame.sessionId,
+      }));
+      settleBridgeReady();
       return;
     }
-    handleMirrorEvent(frame.event);
+    if (frame.type === 'input') {
+      if (frame.source === 'extension') return;
+      const text = frame.text.trim();
+      if (!text) return;
+      if (runMode !== 'local') setRunMode('local');
+      session.sendSessionProtocolMessage(createEnvelope('user', { t: 'text', text }));
+      return;
+    }
+    if (frame.type === 'bridge_error') {
+      log(`OMP Happy extension error: ${frame.message}`);
+      return;
+    }
+    handleBridgeEvent(frame.event);
   };
 
   const swallowSigint = (): void => {
     log('Received SIGINT in wrapper; waiting for omp child to handle it');
   };
 
-  const startChild = async (mirrorPath: string): Promise<void> => {
-    const childArgs = buildOmpArgs(opts);
-    log(`Spawning literal omp ${childArgs.join(' ')}`);
-    mirrorFollower = startMirrorFollower(mirrorPath, handleMirrorFrame, log);
-    child = spawnPty('omp', childArgs, {
+  const startChild = (socketPath: string, extensionPath: string): void => {
+    const childArgs = buildOmpArgs(opts, extensionPath);
+    const installedOmpBinary = join(homedir(), '.local', 'bin', 'omp');
+    const ompBinary = process.env.OMP_HAPPY_REAL_BIN || (existsSync(installedOmpBinary) ? installedOmpBinary : 'omp');
+    log(`Spawning native omp ${childArgs.join(' ')}`);
+    child = spawnPty(ompBinary, childArgs, {
       cwd: process.cwd(),
-      env: { ...process.env, [MIRROR_ENV]: mirrorPath },
+      env: { ...process.env, [BRIDGE_SOCKET_ENV]: socketPath },
       name: process.env.TERM || 'xterm-256color',
       cols: process.stdout.columns || 80,
       rows: process.stdout.rows || 24,
@@ -566,16 +571,16 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       process.stdout.write(data);
     });
     child.onExit(({ exitCode, signal }) => {
-      log(`Literal omp child exited (code=${exitCode} signal=${signal ?? 'null'})`);
-      const err = new Error(`literal omp exited with code ${exitCode} signal ${signal ?? 'null'}`);
-      if (!mirrorReadyResolved) {
+      log(`Native omp child exited (code=${exitCode} signal=${signal ?? 'null'})`);
+      const err = new Error(`native omp exited with code ${exitCode} signal ${signal ?? 'null'}`);
+      if (!bridgeReadyResolved) {
         setTimeout(() => {
-          if (!mirrorReadyResolved) {
-            settleMirrorReady(err);
+          if (!bridgeReadyResolved) {
+            settleBridgeReady(err);
           }
-        }, MIRROR_EXIT_GRACE_MS);
+        }, BRIDGE_EXIT_GRACE_MS);
       } else {
-        settleMirrorReady(err);
+        settleBridgeReady(err);
       }
       if (!shouldExit && turnStarted) {
         flushPendingText();
@@ -592,43 +597,55 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     child.write(data);
   };
 
-  const sendRemotePromptToChild = (text: string): void => {
-    const trimmed = text.trim();
-    if (!trimmed) {
-      return;
-    }
-    pendingRemotePrompts.push(trimmed);
-    writeToChild(text);
-    if (!text.endsWith('\n') && !text.endsWith('\r')) {
-      writeToChild('\r');
-    }
-  };
 
   const keepAliveInterval = setInterval(() => {
     session.keepAlive(thinking, runMode);
   }, KEEPALIVE_INTERVAL_MS);
 
   process.on('SIGINT', swallowSigint);
-  session.onFileEvent(() => {
-    log('Ignoring phone file event; literal omp handoff currently supports text prompts only');
+  session.onFileEvent((fileEvent) => {
+    const event = fileEvent.content.data.ev;
+    session.trackAttachmentDownload((async () => {
+      try {
+        const data = await session.downloadAndDecryptAttachment(event.ref);
+        if (!data) return null;
+        return {
+          data,
+          mimeType: event.mimeType ?? 'image/jpeg',
+          name: event.name,
+        };
+      } catch (error) {
+        logger.debug('[happy-omp] Failed to download phone attachment', {
+          errorName: error instanceof Error ? error.name : typeof error,
+        });
+        return null;
+      }
+    })());
   });
   session.onUserMessage(async (message: UserMessage) => {
     const attachmentsForThisMessage = await session.drainAttachmentsForUserMessage();
     if (!message.content.text && attachmentsForThisMessage.length === 0) {
       return;
     }
-    if (attachmentsForThisMessage.length > 0) {
-      log('Ignoring phone attachments while routing prompt text into literal omp');
-    }
-    const text = message.content.text?.trim();
-    if (!text) {
-      return;
-    }
+    const text = message.content.text?.trim() ?? '';
+    log(`Received phone prompt (${text.length} chars, ${attachmentsForThisMessage.length} images)`);
     if (runMode !== 'remote') {
+      log('Switching native OMP control to remote');
       flushPendingText();
       setRunMode('remote');
     }
-    sendRemotePromptToChild(text);
+    if (typeof message.meta?.model === 'string') {
+      bridgeServer?.send({ type: 'set_model', spec: message.meta.model });
+    }
+    bridgeServer?.send({
+      type: 'prompt',
+      text,
+      images: attachmentsForThisMessage.map((attachment) => ({
+        data: Buffer.from(attachment.data).toString('base64'),
+        mimeType: attachment.mimeType || 'image/jpeg',
+      })),
+    });
+    log('Sent remote prompt through the OMP extension bridge');
   });
 
   process.stdin.resume();
@@ -656,11 +673,15 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   };
   process.on('SIGWINCH', resizeHandler);
 
-  setRunMode('local');
+  setRunMode(initialRunMode);
   session.updateMetadata((currentMetadata) => ({
     ...currentMetadata,
     flavor: 'omp',
   }));
+
+  session.rpcHandlerManager.registerHandler('abort', async () => {
+    bridgeServer?.send({ type: 'abort' });
+  });
 
   registerKillSessionHandler(session.rpcHandlerManager, async () => {
     shouldExit = true;
@@ -674,12 +695,14 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
   });
 
-  const mirrorDir = await mkdtemp(join(tmpdir(), 'happy-omp-'));
-  const mirrorPath = join(mirrorDir, 'mirror.jsonl');
+  const bridgeDir = await mkdtemp(join(tmpdir(), 'happy-omp-'));
+  const socketPath = join(bridgeDir, 'bridge.sock');
+  const extensionPath = join(projectPath(), 'scripts', BRIDGE_EXTENSION_FILE);
 
   try {
-    await startChild(mirrorPath);
-    await waitForMirrorReady();
+    bridgeServer = await startBridgeServer(socketPath, handleBridgeFrame, log);
+    startChild(socketPath, extensionPath);
+    await waitForBridgeReady();
 
     while (!shouldExit) {
       await new Promise<void>((resolve) => setTimeout(resolve, 200));
@@ -720,18 +743,16 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
 
     try {
-      const follower = mirrorFollower as MirrorFollower | null;
-      if (follower !== null) {
-        await follower.stop();
-      }
+      await bridgeServer?.close();
+      bridgeServer = null;
     } catch (error) {
-      logger.debug('[happy-omp] Mirror follower shutdown failed:', error);
+      logger.debug('[happy-omp] Extension bridge shutdown failed:', error);
     }
 
     try {
-      await rm(mirrorDir, { recursive: true, force: true });
+      await rm(bridgeDir, { recursive: true, force: true });
     } catch (error) {
-      logger.debug('[happy-omp] Failed to remove mirror dir:', error);
+      logger.debug('[happy-omp] Failed to remove bridge dir:', error);
     }
 
     try {

@@ -358,6 +358,40 @@ Conversation history is preserved on the server, but in-flight tool calls are in
     }
     return;
   } else if (subcommand === 'omp') {
+    if (args[1] === 'attach') {
+      try {
+      const selector = args[2];
+      let sessions = (await listDaemonSessions()).filter(
+        (session) => session.agent === 'omp' && session.tmuxSessionId,
+      );
+      if (selector) {
+        sessions = sessions.filter(
+          (session) => session.happySessionId.startsWith(selector)
+            || session.tmuxSessionId === selector,
+        );
+      }
+      if (sessions.length === 0) {
+        throw new Error(selector
+          ? `No active phone-started OMP session matches "${selector}".`
+          : 'No active phone-started OMP session is available to attach.');
+      }
+      if (sessions.length > 1) {
+        console.log('Multiple phone-started OMP sessions are active:');
+        for (const session of sessions) {
+          console.log(`  ${session.happySessionId}  ${session.path ?? ''}  ${session.tmuxSessionId}`);
+        }
+        throw new Error('Run `omp attach <session-id>` to choose one.');
+      }
+      execFileSync('tmux', ['attach-session', '-t', sessions[0].tmuxSessionId!], {
+        stdio: 'inherit',
+      });
+        return;
+      } catch (error) {
+        console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
+        process.exit(1);
+      }
+    }
+
     try {
       let startedBy: 'daemon' | 'terminal' | undefined = undefined;
       let verbose = false;
@@ -378,19 +412,21 @@ Conversation history is preserved on the server, but in-flight tool calls are in
           continue;
         }
         if (!passthroughMode && (args[i] === '-h' || args[i] === '--help')) {
-          console.log(`happy omp - Run the literal omp TUI with Happy sync
+          console.log(`happy omp - Run the native OMP TUI with Happy sync
 
 Usage:
   happy omp [options] [-- <omp-args>]
+  happy omp attach [session-id]
 
 Options:
   --yolo, --dangerously-skip-permissions
                                   Auto-approve tool calls inside OMP
   --started-by <terminal|daemon>  Mark the session launcher
-  --verbose                       Print mirror diagnostics
+  --verbose                       Print bridge diagnostics
 
 Examples:
   happy omp
+  happy omp attach
   happy omp --yolo
   happy omp -- --model claude-sonnet
 `);

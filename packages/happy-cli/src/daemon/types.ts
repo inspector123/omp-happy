@@ -18,6 +18,7 @@ export interface SessionEncryptionData {
  */
 export interface TrackedSession {
   startedBy: 'daemon' | string;
+  agent?: string;
   happySessionId?: string;
   happySessionMetadataFromLocalWebhook?: Metadata;
   encryption?: SessionEncryptionData;

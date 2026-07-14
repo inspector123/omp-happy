@@ -29,6 +29,16 @@ function getPatchFiles(input: any): string[] {
     return [];
 }
 
+const OMP_EDIT_RESULT_SCHEMA = z.object({
+    details: z.object({
+        op: z.string().optional(),
+        path: z.string().optional(),
+        move: z.string().optional(),
+        rename: z.string().optional(),
+        sourcePath: z.string().optional(),
+    }).passthrough(),
+}).passthrough();
+
 const taskLikeTool = {
     title: (opts: { metadata: Metadata | null, tool: ToolCall }) => {
         if (opts.tool.input && opts.tool.input.description && typeof opts.tool.input.description === 'string') {
@@ -255,6 +265,9 @@ export const knownTools = {
                 const path = resolvePath(opts.tool.input.file_path, opts.metadata);
                 return path;
             }
+            if (typeof opts.tool.input.path === 'string') {
+                return resolvePath(opts.tool.input.path, opts.metadata);
+            }
             return t('tools.names.readFile');
         },
         minimal: true,
@@ -262,7 +275,8 @@ export const knownTools = {
         input: z.object({
             items: z.array(z.any()).optional(),
             locations: z.array(z.object({ path: z.string() }).passthrough()).optional(),
-            file_path: z.string().optional()
+            file_path: z.string().optional(),
+            path: z.string().optional(),
         }).partial().passthrough()
     },
     'Edit': {
@@ -329,6 +343,24 @@ export const knownTools = {
         input: z.object({
             file_path: z.string().describe('The absolute path to the file to write'),
             content: z.string().describe('The content to write to the file')
+        }).partial().passthrough()
+    },
+    'write': {
+        title: (opts: { metadata: Metadata | null, tool: ToolCall }) => {
+            if (typeof opts.tool.input.path === 'string') {
+                return resolvePath(opts.tool.input.path, opts.metadata);
+            }
+            if (typeof opts.tool.input.file_path === 'string') {
+                return resolvePath(opts.tool.input.file_path, opts.metadata);
+            }
+            return t('tools.names.writeFile');
+        },
+        icon: ICON_EDIT,
+        isMutable: true,
+        input: z.object({
+            path: z.string().optional(),
+            file_path: z.string().optional(),
+            content: z.string().optional(),
         }).partial().passthrough()
     },
     'WebFetch': {
@@ -626,30 +658,51 @@ export const knownTools = {
     },
     'edit': {
         title: (opts: { metadata: Metadata | null, tool: ToolCall }) => {
-            // Gemini sends data in nested structure, try multiple locations
+            const parsedResult = OMP_EDIT_RESULT_SCHEMA.safeParse(opts.tool.result);
+            const details = parsedResult.success ? parsedResult.data.details : null;
+            if (details) {
+                const path = typeof details.path === 'string'
+                    ? resolvePath(details.path, opts.metadata)
+                    : null;
+                if (details.op === 'delete') {
+                    return path ? `Delete: ${path}` : 'Delete file';
+                }
+                const destination = typeof details.move === 'string'
+                    ? resolvePath(details.move, opts.metadata)
+                    : typeof details.rename === 'string'
+                        ? resolvePath(details.rename, opts.metadata)
+                        : null;
+                if (destination) {
+                    const source = typeof details.sourcePath === 'string'
+                        ? resolvePath(details.sourcePath, opts.metadata)
+                        : path;
+                    return source ? `Move: ${source} → ${destination}` : `Move: ${destination}`;
+                }
+                if (details.op === 'copy') {
+                    return path ? `Copy: ${path}` : 'Copy file';
+                }
+                if (details.op === 'create' && path) {
+                    return `Create: ${path}`;
+                }
+                if (path) {
+                    return path;
+                }
+            }
+
             let filePath: string | undefined;
-            
-            // 1. Check toolCall.content[0].path
             if (opts.tool.input?.toolCall?.content?.[0]?.path) {
                 filePath = opts.tool.input.toolCall.content[0].path;
-            }
-            // 2. Check toolCall.title (has nice "Writing to ..." format)
-            else if (opts.tool.input?.toolCall?.title) {
+            } else if (opts.tool.input?.toolCall?.title) {
                 return opts.tool.input.toolCall.title;
-            }
-            // 3. Check input[0].path (array format)
-            else if (Array.isArray(opts.tool.input?.input) && opts.tool.input.input[0]?.path) {
+            } else if (Array.isArray(opts.tool.input?.input) && opts.tool.input.input[0]?.path) {
                 filePath = opts.tool.input.input[0].path;
-            }
-            // 4. Check direct path field
-            else if (typeof opts.tool.input?.path === 'string') {
+            } else if (typeof opts.tool.input?.path === 'string') {
                 filePath = opts.tool.input.path;
             }
-            
-            if (filePath) {
-                return resolvePath(filePath, opts.metadata);
-            }
-            return t('tools.names.editFile');
+
+            return filePath
+                ? resolvePath(filePath, opts.metadata)
+                : t('tools.names.editFile');
         },
         icon: ICON_EDIT,
         isMutable: true,

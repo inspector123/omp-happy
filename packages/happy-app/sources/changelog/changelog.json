@@ -1,6 +1,11 @@
 {
   "entries": [
     {
+      "title": "July 13 — Native OMP handoff",
+      "summary": "Local and phone-created OMP sessions now use the same native terminal process.",
+      "markdown": "- Starting `omp` locally immediately creates a Happy session without replacing the native TUI.\n- Phone prompts and interrupts travel through OMP's public extension API instead of simulated keystrokes.\n- Sessions created from the phone now launch native OMP rather than ACP."
+    },
+    {
       "title": "June 22 — Goals and cleaner commands",
       "summary": "Agent goals and slash commands are easier to follow, with steadier remote sessions.",
       "markdown": "- Active goals appear above the composer for supported Claude and Codex sessions.\n- `/goal` and skill commands render cleanly in chat instead of showing raw command internals.\n- Codex skills now appear in the slash-command menu.\n- Remote sessions handle first messages and resumed transcripts more reliably."
@@ -61,5 +66,5 @@
       "markdown": "- E2E encrypted sessions.\n- Voice assistant.\n- File manager with syntax highlighting.\n- Real-time sync across devices."
     }
   ],
-  "latestTitle": "June 22 — Goals and cleaner commands"
+  "latestTitle": "July 13 — Native OMP handoff"
 }

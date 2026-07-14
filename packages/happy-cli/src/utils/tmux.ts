@@ -443,6 +443,11 @@ export class TmuxUtilities {
             fullCmd.push(...cmd.slice(1));
 
             return this.executeCommand(fullCmd);
+        } else if (cmd.length > 0 && cmd[0] === 'new-window') {
+            let target = targetSession;
+            if (window) target += `:${window}`;
+            if (pane) target += `.${pane}`;
+            return this.executeCommand([...baseCmd, cmd[0], '-t', target, ...cmd.slice(1)]);
         } else {
             // Non-send-keys commands
             const fullCmd = [...baseCmd, ...cmd];
@@ -812,25 +817,18 @@ export class TmuxUtilities {
                         continue;
                     }
 
-                    // Escape value for shell safety
-                    // Must escape: backslashes, double quotes, dollar signs, backticks
-                    const escapedValue = value
-                        .replace(/\\/g, '\\\\')   // Backslash first!
-                        .replace(/"/g, '\\"')     // Double quotes
-                        .replace(/\$/g, '\\$')    // Dollar signs
-                        .replace(/`/g, '\\`');    // Backticks
-
-                    createWindowArgs.push('-e', `${key}="${escapedValue}"`);
+                    // Arguments are passed directly to tmux without a shell, so the
+                    // value must not be quoted or escaped. Quotes would become data.
+                    createWindowArgs.push('-e', `${key}=${value}`);
                 }
                 logger.debug(`[TMUX] Setting ${Object.keys(env).length} environment variables in tmux window`);
             }
 
-            // Add the command to run in the window (runs immediately when window is created)
-            createWindowArgs.push(fullCommand);
+            // Print the new pane PID before appending the positional shell command.
+            createWindowArgs.push('-P', '-F', '#{pane_pid}');
 
-            // Add -P flag to print the pane PID immediately
-            createWindowArgs.push('-P');
-            createWindowArgs.push('-F', '#{pane_pid}');
+            // The shell command must be the final positional argument.
+            createWindowArgs.push(fullCommand);
 
             // Create window with command and get PID immediately
             const createResult = await this.executeTmuxCommand(createWindowArgs, sessionName);

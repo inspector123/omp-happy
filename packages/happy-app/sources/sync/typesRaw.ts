@@ -321,8 +321,18 @@ const rawAgentRecordSchema = z.discriminatedUnion('type', [z.object({
     data: z.discriminatedUnion('type', [
         // Core message types
         z.object({ type: z.literal('reasoning'), message: z.string() }),
-        z.object({ type: z.literal('message'), message: z.string() }),
-        z.object({ type: z.literal('thinking'), text: z.string() }),
+        z.object({
+            type: z.literal('message'),
+            message: z.string(),
+            streamId: z.string().optional(),
+            append: z.boolean().optional(),
+        }),
+        z.object({
+            type: z.literal('thinking'),
+            text: z.string(),
+            streamId: z.string().optional(),
+            append: z.boolean().optional(),
+        }),
         // Tool interactions
         z.object({
             type: z.literal('tool-call'),
@@ -528,6 +538,8 @@ export type NormalizedMessage = ({
     createdAt: number,
     isSidechain: boolean,
     meta?: MessageMeta,
+    streamId?: string,
+    append?: boolean,
     usage?: UsageData,
     /**
      * Underlying Claude `uuid` for this message — used as the rewind point
@@ -1025,7 +1037,9 @@ export function normalizeRawMessage(id: string, localId: string | null, createdA
                         uuid: id,
                         parentUUID: null
                     }],
-                    meta: raw.meta
+                    meta: raw.meta,
+                    streamId: raw.content.data.streamId,
+                    append: raw.content.data.append,
                 } satisfies NormalizedMessage;
             }
             if (raw.content.data.type === 'reasoning') {
@@ -1113,7 +1127,9 @@ export function normalizeRawMessage(id: string, localId: string | null, createdA
                         uuid: id,
                         parentUUID: null
                     }],
-                    meta: raw.meta
+                    meta: raw.meta,
+                    streamId: raw.content.data.streamId,
+                    append: raw.content.data.append,
                 } satisfies NormalizedMessage;
             }
             if (raw.content.data.type === 'file-edit') {
