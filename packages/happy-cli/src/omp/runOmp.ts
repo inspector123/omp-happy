@@ -33,7 +33,7 @@ const BRIDGE_EXTENSION_FILE = 'omp-happy-bridge.mjs';
 
 type RunMode = 'local' | 'remote';
 
-type BridgeFrame = BridgeReadyFrame | BridgeAgentEventFrame | BridgeInputFrame | BridgeErrorFrame | BridgeAbortedFrame;
+type BridgeFrame = BridgeReadyFrame | BridgeAgentEventFrame | BridgeInputFrame | BridgeErrorFrame | BridgeAbortedFrame | BridgeAskRequestFrame;
 
 type BridgeReadyFrame = {
   type: 'ready';
@@ -65,6 +65,19 @@ type BridgeErrorFrame = {
 
 type BridgeAbortedFrame = {
   type: 'aborted';
+};
+
+type BridgeAskRequestFrame = {
+  type: 'ask_request';
+  id: string;
+  questions: Array<{
+    id: string;
+    question: string;
+    header?: string;
+    options: Array<{ label: string; description?: string; preview?: string }>;
+    multi?: boolean;
+    recommended?: number;
+  }>;
 };
 
 type PhoneAttachment = {
@@ -623,6 +636,9 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         const rawToolName = asString(event.toolName) ?? 'tool';
         const toolName = normalizeBridgeToolName(rawToolName);
         const toolCallId = asString(event.toolCallId) ?? randomUUID();
+        if (rawToolName === 'ask') {
+          return;
+        }
         if (rawToolName === 'todo') {
           compactTodoCallIds.add(toolCallId);
           return;
@@ -638,6 +654,9 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       }
       case 'tool_execution_end': {
         const toolCallId = asString(event.toolCallId) ?? randomUUID();
+        if (asString(event.toolName) === 'ask') {
+          return;
+        }
         if (compactTodoCallIds.delete(toolCallId)) {
           emitPlanTodos(event.result);
           return;
@@ -695,6 +714,22 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       settleBridgeReady();
       return;
     }
+    if (frame.type === 'ask_request') {
+      session.sendAgentMessage('omp', {
+        type: 'permission-request',
+        permissionId: frame.id,
+        toolName: 'AskUserQuestion',
+        description: frame.questions.map((question) => question.question).join('\n'),
+        options: {
+          questions: frame.questions.map((question) => ({
+            ...question,
+            header: question.header ?? question.id,
+            multiSelect: question.multi === true,
+          })),
+        },
+      });
+      return;
+    }
     if (frame.type === 'input') {
       if (frame.source === 'extension') return;
       const text = frame.text.trim();
@@ -725,7 +760,10 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     log(`Spawning native omp ${childArgs.join(' ')}`);
     child = spawnPty(ompBinary, childArgs, {
       cwd: process.cwd(),
-      env: { ...process.env, [BRIDGE_SOCKET_ENV]: socketPath },
+      env: {
+        ...process.env,
+        [BRIDGE_SOCKET_ENV]: socketPath,
+      },
       name: process.env.TERM || 'xterm-256color',
       cols: process.stdout.columns || 80,
       rows: process.stdout.rows || 24,
@@ -864,6 +902,21 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   session.rpcHandlerManager.registerHandler('abort', async () => {
     abortInProgress = true;
     bridgeServer?.send({ type: 'abort' });
+  });
+  session.rpcHandlerManager.registerHandler<{
+    id: string;
+    approved: boolean;
+    updatedInput?: { answers?: Record<string, string> };
+  }, void>('permission', async (response) => {
+    if (!response.approved) {
+      bridgeServer?.send({ type: 'abort' });
+      return;
+    }
+    bridgeServer?.send({
+      type: 'ask_response',
+      id: response.id,
+      answers: response.updatedInput?.answers ?? {},
+    });
   });
 
   registerKillSessionHandler(session.rpcHandlerManager, async () => {

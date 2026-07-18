@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 // The bridge is intentionally plain ESM because native OMP loads it directly.
 // @ts-expect-error TypeScript has no declaration for the runtime extension module.
-import { getModelSnapshot, getThinkingSnapshot, resolveModel, resolveRequestedModel } from './omp-happy-bridge.mjs';
+import { formatAskResult, getModelSnapshot, getThinkingSnapshot, resolveModel, resolveRequestedModel } from './omp-happy-bridge.mjs';
 
 describe('OMP Happy bridge models', () => {
   const models = [
@@ -66,5 +66,48 @@ describe('OMP Happy bridge models', () => {
       { getThinkingLevel: () => 'high' },
       { models: { current: () => models[0] } },
     )).toEqual({ thoughtLevels: [], currentThoughtLevel: undefined });
+  });
+
+  it('formats remote ask answers as an OMP ask result', () => {
+    const questions = [
+      {
+        id: 'phone',
+        question: 'Which phone?',
+        options: [{ label: 'Pixel' }, { label: 'Samsung' }],
+      },
+      {
+        id: 'features',
+        question: 'Which features?',
+        multi: true,
+        options: [{ label: 'Models' }, { label: 'Thinking' }],
+      },
+    ];
+    expect(formatAskResult(questions, {
+      phone: 'Samsung',
+      features: 'Models, Thinking',
+    })).toEqual({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ answers: { phone: 'Samsung', features: 'Models, Thinking' } }),
+      }],
+      details: {
+        results: [
+          {
+            id: 'phone',
+            question: 'Which phone?',
+            options: ['Pixel', 'Samsung'],
+            multi: false,
+            selectedOptions: ['Samsung'],
+          },
+          {
+            id: 'features',
+            question: 'Which features?',
+            options: ['Models', 'Thinking'],
+            multi: true,
+            selectedOptions: ['Models', 'Thinking'],
+          },
+        ],
+      },
+    });
   });
 });

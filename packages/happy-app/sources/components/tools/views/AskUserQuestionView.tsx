@@ -13,10 +13,11 @@ interface QuestionOption {
 }
 
 interface Question {
+    id?: string;
     question: string;
     header: string;
     options: QuestionOption[];
-    multiSelect: boolean;
+    multiSelect?: boolean;
 }
 
 interface AskUserQuestionInput {
@@ -231,7 +232,7 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
                     .map(optIndex => q.options[optIndex]?.label)
                     .filter(Boolean)
                     .join(', ');
-                answers[q.question] = selectedLabels;
+                answers[q.id ?? q.question] = selectedLabels;
             }
         });
 
@@ -297,7 +298,7 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
                                                 isSelected && styles.optionButtonSelected,
                                                 !canInteract && styles.optionButtonDisabled,
                                             ]}
-                                            onPress={() => handleOptionToggle(qIndex, oIndex, question.multiSelect)}
+                                            onPress={() => handleOptionToggle(qIndex, oIndex, question.multiSelect === true)}
                                             disabled={!canInteract}
                                             activeOpacity={0.7}
                                         >

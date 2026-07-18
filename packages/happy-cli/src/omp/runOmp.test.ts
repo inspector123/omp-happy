@@ -915,4 +915,56 @@ describe('runOmp', () => {
     await vi.advanceTimersByTimeAsync(200);
     await runPromise;
   });
+
+  it('routes remote OMP ask requests and answers through the permission RPC', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials, startedBy: 'daemon' });
+    await settleMicrotasks();
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-ask' });
+    await vi.advanceTimersByTimeAsync(1);
+
+    mocks.emitBridgeFrame({
+      type: 'ask_request',
+      id: 'ask-1',
+      questions: [{
+        id: 'phone',
+        question: 'Which phone?',
+        options: [{ label: 'Pixel' }, { label: 'Samsung', description: 'WiFi target' }],
+        multi: false,
+      }],
+    });
+
+    expect(mocks.mockSession.sendAgentMessage).toHaveBeenCalledWith('omp', {
+      type: 'permission-request',
+      permissionId: 'ask-1',
+      toolName: 'AskUserQuestion',
+      description: 'Which phone?',
+      options: {
+        questions: [{
+          id: 'phone',
+          question: 'Which phone?',
+          header: 'phone',
+          options: [{ label: 'Pixel' }, { label: 'Samsung', description: 'WiFi target' }],
+          multi: false,
+          multiSelect: false,
+        }],
+      },
+    });
+
+    const permissionRegistration = mocks.mockSession.rpcHandlerManager.registerHandler.mock.calls
+      .find((call) => call[0] === 'permission');
+    expect(permissionRegistration).toBeDefined();
+    await permissionRegistration?.[1]({
+      id: 'ask-1',
+      approved: true,
+      updatedInput: { answers: { phone: 'Samsung' } },
+    });
+    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
+      `${JSON.stringify({ type: 'ask_response', id: 'ask-1', answers: { phone: 'Samsung' } })}\n`,
+    );
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
 });

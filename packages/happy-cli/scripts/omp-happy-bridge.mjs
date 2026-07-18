@@ -88,6 +88,23 @@ export function getThinkingSnapshot(pi, ctx) {
   return { thoughtLevels, currentThoughtLevel };
 }
 
+export function formatAskResult(questions, answers) {
+  const results = questions.map((question) => {
+    const answer = answers[question.id] ?? answers[question.question] ?? '';
+    return {
+      id: question.id,
+      question: question.question,
+      options: question.options.map((option) => option.label),
+      multi: question.multi === true,
+      selectedOptions: answer ? answer.split(', ').filter(Boolean) : [],
+    };
+  });
+  return {
+    content: [{ type: 'text', text: JSON.stringify({ answers }) }],
+    details: { results },
+  };
+}
+
 export default function happyBridgeExtension(pi) {
   const socketPath = process.env[SOCKET_ENV];
   if (!socketPath) return;
@@ -101,6 +118,8 @@ export default function happyBridgeExtension(pi) {
   let connectedOnce = false;
   let shuttingDown = false;
   let commandQueue = Promise.resolve();
+  const pendingAskRequests = new Map();
+
 
   const send = (frame) => {
     let line;
@@ -112,6 +131,46 @@ export default function happyBridgeExtension(pi) {
     if (connected && socket?.writable) socket.write(line);
     else pendingFrames.push(line);
   };
+  if (typeof pi.registerTool === 'function') {
+    const z = pi.zod;
+    pi.registerTool({
+      name: 'ask',
+      label: 'Ask',
+      description: 'Ask the user one or more questions during execution.',
+      parameters: z.object({
+        questions: z.array(z.object({
+          id: z.string(),
+          question: z.string(),
+          header: z.string().optional(),
+          options: z.array(z.object({
+            label: z.string(),
+            description: z.string().optional(),
+            preview: z.string().optional(),
+          })),
+          multi: z.boolean().optional(),
+          recommended: z.number().optional(),
+        })).min(1),
+      }),
+      async execute(toolCallId, params, signal) {
+        const answers = await new Promise((resolve, reject) => {
+          const abort = () => {
+            pendingAskRequests.delete(toolCallId);
+            reject(new Error('Ask request aborted'));
+          };
+          signal?.addEventListener('abort', abort, { once: true });
+          pendingAskRequests.set(toolCallId, {
+            resolve: (value) => {
+              signal?.removeEventListener('abort', abort);
+              resolve(value);
+            },
+          });
+          send({ type: 'ask_request', id: toolCallId, questions: params.questions });
+        });
+        return formatAskResult(params.questions, answers);
+      },
+    });
+  }
+
 
 
   const publishReady = (ctx) => {
@@ -170,6 +229,15 @@ export default function happyBridgeExtension(pi) {
         pi.setThinkingLevel(command.level);
         publishReady(latestContext);
       }
+    }
+    if (command.type === 'ask_response' && typeof command.id === 'string') {
+      const pending = pendingAskRequests.get(command.id);
+      if (!pending) {
+        send({ type: 'bridge_error', message: `No pending OMP ask request: ${command.id}` });
+        return;
+      }
+      pendingAskRequests.delete(command.id);
+      pending.resolve(command.answers && typeof command.answers === 'object' ? command.answers : {});
     }
   };
 
