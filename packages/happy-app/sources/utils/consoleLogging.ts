@@ -96,7 +96,13 @@ export function initConsoleLogging() {
         source: 'mobile',
         platform: Platform.OS,
       })
-    }).catch(() => {})
+    }).catch((error) => {
+      // A stale/unreachable log receiver must not create an unbounded queue of
+      // failing requests that competes with the app's real API traffic.
+      const failedUrl = remoteLogServerUrl
+      remoteLogServerUrl = null
+      originalConsole?.warn('[ConsoleLogging] Disabled unreachable remote receiver', failedUrl, error)
+    })
   }
 
   // Patch console methods

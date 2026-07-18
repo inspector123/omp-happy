@@ -92,6 +92,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null;
 }
 
+function resolveLocalAttachmentUrl(url: string): string {
+    try {
+        const target = new URL(url);
+        if (!/^\/v1\/sessions\/[^/]+\/attachments\//.test(target.pathname)) {
+            return url;
+        }
+        const server = new URL(configuration.serverUrl);
+        target.protocol = server.protocol;
+        target.hostname = server.hostname;
+        target.port = server.port;
+        return target.toString();
+    } catch {
+        return url;
+    }
+}
+
 function extensionForImageMime(mimeType: string): string {
     switch (mimeType.toLowerCase()) {
         case 'image/jpeg':
@@ -439,14 +455,13 @@ export class ApiSessionClient extends EventEmitter {
             return;
         }
 
+        const uploadUrl = resolveLocalAttachmentUrl(upload.uploadUrl);
         const headers: Record<string, string> = {
             'Content-Type': 'application/octet-stream',
+            'Authorization': `Bearer ${this.token}`,
         };
-        if (upload.uploadUrl.startsWith(configuration.serverUrl)) {
-            headers.Authorization = `Bearer ${this.token}`;
-        }
 
-        await axios.put(upload.uploadUrl, Buffer.from(encrypted), {
+        await axios.put(uploadUrl, Buffer.from(encrypted), {
             headers,
             timeout: 60000,
             maxBodyLength: 10 * 1024 * 1024,
@@ -487,12 +502,13 @@ export class ApiSessionClient extends EventEmitter {
                 timeout: 30000,
             },
         );
-        const downloadUrl = requestRes.data?.downloadUrl;
-        if (typeof downloadUrl !== 'string') {
+        const rawDownloadUrl = requestRes.data?.downloadUrl;
+        if (typeof rawDownloadUrl !== 'string') {
             throw new Error('request-download returned no downloadUrl');
         }
 
-        const isServerUrl = downloadUrl.startsWith(configuration.serverUrl);
+        const downloadUrl = resolveLocalAttachmentUrl(rawDownloadUrl);
+        const isServerUrl = new URL(downloadUrl).origin === new URL(configuration.serverUrl).origin;
         const headers: Record<string, string> = {};
         if (isServerUrl) {
             headers['Authorization'] = `Bearer ${this.token}`;

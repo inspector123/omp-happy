@@ -418,8 +418,6 @@ describe('runOmp', () => {
     expect(mocks.mockBridgeSocket.write).toHaveBeenLastCalledWith('{"type":"abort"}\n');
 
     mocks.emitBridgeFrame({ type: 'aborted' });
-    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledTimes(1);
-    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_end' } });
     expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
       2,
       '{"type":"set_model","spec":"openai/gpt-5.6-sol"}\n',
@@ -432,6 +430,12 @@ describe('runOmp', () => {
       4,
       '{"type":"prompt","text":"Run after stop","images":[]}\n',
     );
+
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_end' } });
+    const taskCompleteCalls = mocks.mockSession.sendAgentMessage.mock.calls.filter(
+      ([, message]) => message.type === 'task_complete',
+    );
+    expect(taskCompleteCalls).toHaveLength(1);
 
     child.emitExit(0);
     await vi.advanceTimersByTimeAsync(200);

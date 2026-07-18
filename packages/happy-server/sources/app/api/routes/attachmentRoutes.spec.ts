@@ -126,7 +126,10 @@ async function createApp() {
 describe("attachmentRoutes — request-upload", () => {
     let app: Fastify;
     beforeEach(() => { resetState(); });
-    afterEach(async () => { if (app) await app.close(); });
+    afterEach(async () => {
+        vi.unstubAllEnvs();
+        if (app) await app.close();
+    });
 
     it("returns 200 with .enc ref + method=PUT in local mode for the session owner", async () => {
         seedSession("s1", "u1");
@@ -146,6 +149,28 @@ describe("attachmentRoutes — request-upload", () => {
         expect(body.ref).toMatch(/^sessions\/s1\/attachments\/[A-Fa-f0-9-]+\.enc$/);
         expect(body.uploadUrl).toContain("/v1/sessions/s1/attachments/");
         expect(body.uploadUrl).toMatch(/\.enc$/);
+    });
+
+    it("uses the incoming host instead of a stale PUBLIC_URL for local uploads", async () => {
+        seedSession("s1", "u1");
+        state.useLocalStorage = true;
+        vi.stubEnv("PUBLIC_URL", "http://50.47.25.31:30003");
+        app = await createApp();
+
+        const res = await app.inject({
+            method: "POST",
+            url: "/v1/sessions/s1/attachments/request-upload",
+            headers: {
+                "x-user-id": "u1",
+                host: "50.47.26.175:30003",
+            },
+            payload: { filename: "photo.jpg", size: 1024 },
+        });
+
+        expect(res.statusCode).toBe(200);
+        expect(res.json().uploadUrl).toMatch(
+            /^http:\/\/50\.47\.26\.175:30003\/v1\/sessions\/s1\/attachments\/.+\.enc$/,
+        );
     });
 
     it("returns 200 with method=POST + formFields and a content-length-range policy in S3 mode", async () => {

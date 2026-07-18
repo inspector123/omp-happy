@@ -105,6 +105,26 @@ export function formatAskResult(questions, answers) {
   };
 }
 
+export async function sendPromptCommand(pi, command) {
+  if (!command || typeof command !== 'object' || command.type !== 'prompt' || typeof command.text !== 'string') {
+    return false;
+  }
+  const options = command.deliverAs === 'followUp' || command.deliverAs === 'steer'
+    ? { deliverAs: command.deliverAs }
+    : undefined;
+  const images = Array.isArray(command.images)
+    ? command.images.filter((image) => image
+      && typeof image.data === 'string'
+      && typeof image.mimeType === 'string')
+    : [];
+  const content = [
+    ...images.map((image) => ({ type: 'image', data: image.data, mimeType: image.mimeType })),
+    ...(command.text.length > 0 ? [{ type: 'text', text: command.text }] : []),
+  ];
+  await pi.sendUserMessage(content.length === 1 && content[0].type === 'text' ? command.text : content, options);
+  return true;
+}
+
 export default function happyBridgeExtension(pi) {
   const socketPath = process.env[SOCKET_ENV];
   if (!socketPath) return;
@@ -192,20 +212,7 @@ export default function happyBridgeExtension(pi) {
 
   const handleCommand = async (command) => {
     if (!command || typeof command !== 'object') return;
-    if (command.type === 'prompt' && typeof command.text === 'string') {
-      const options = command.deliverAs === 'followUp' || command.deliverAs === 'steer'
-        ? { deliverAs: command.deliverAs }
-        : undefined;
-      const images = Array.isArray(command.images)
-        ? command.images.filter((image) => image
-          && typeof image.data === 'string'
-          && typeof image.mimeType === 'string')
-        : [];
-      const content = [
-        ...images.map((image) => ({ type: 'image', data: image.data, mimeType: image.mimeType })),
-        ...(command.text.length > 0 ? [{ type: 'text', text: command.text }] : []),
-      ];
-      await pi.sendUserMessage(content.length === 1 && content[0].type === 'text' ? command.text : content, options);
+    if (await sendPromptCommand(pi, command)) {
       return;
     }
     if (command.type === 'abort') {

@@ -28,15 +28,11 @@ const UPLOAD_RATE_MAX = 60;
 const uploadRateState = new Map<string, { count: number; windowStart: number }>();
 
 /**
- * Build the base URL the client should use to reach our local-mode upload /
- * download endpoints. Prefer an explicit PUBLIC_URL, then x-forwarded-* (for
- * deployments behind a proxy), then the Host header the request itself
- * arrived on. Falling back to localhost would make any non-localhost client
- * (a phone, another LAN device, a desktop pointing at a dev IP) fail with a
- * generic Network request failed when it tries to follow the URL.
+ * Build the public origin from the request that reached this server. Local
+ * attachment URLs must follow the same host the client used; PUBLIC_URL can
+ * become stale when a self-hosted server's public address changes.
  */
 function resolveBaseUrl(request: { headers: Record<string, string | string[] | undefined> }): string {
-    if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL;
     const xfHost = request.headers['x-forwarded-host'];
     const xfProto = request.headers['x-forwarded-proto'];
     const host = (Array.isArray(xfHost) ? xfHost[0] : xfHost) ?? request.headers.host;
@@ -44,7 +40,7 @@ function resolveBaseUrl(request: { headers: Record<string, string | string[] | u
     if (typeof host === 'string' && host.length > 0) {
         return `${proto}://${host}`;
     }
-    return `http://localhost:${process.env.PORT || '3005'}`;
+    return process.env.PUBLIC_URL ?? `http://localhost:${process.env.PORT || '3005'}`;
 }
 
 function checkUploadRate(userId: string): boolean {

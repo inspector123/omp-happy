@@ -16,27 +16,26 @@ import {
     errorMessageFromUnknown,
 } from './attachmentDiagnostics';
 import { getServerUrl } from './serverConfig';
-import { appendFormFile } from './uploadFormFile';
+import { appendFormFile, uploadBinaryFile } from './uploadFormFile';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 /**
- * If a self-hosted server's request-upload / request-download response points
- * at loopback (e.g. PUBLIC_URL not set so it returned http://localhost:3005)
- * the phone can't reach it — that's the server's own loopback. Rewrite the
- * host to whatever the client actually used to talk to the server, since
- * that address is by definition reachable from here. No-op for any non-
- * loopback URL (presigned S3 GET URLs, properly configured PUBLIC_URL, etc.).
+ * URLs under the attachment API are served by the Happy server itself. Always
+ * use the origin the client is connected to, because a self-hosted server can
+ * return an absolute URL containing an obsolete PUBLIC_URL. External object
+ * storage URLs have a different path and remain untouched.
  */
-function rewriteLoopbackHost(url: string): string {
+function resolveLocalAttachmentUrl(url: string): string {
     try {
         const target = new URL(url);
-        if (target.hostname !== 'localhost' && target.hostname !== '127.0.0.1' && target.hostname !== '::1') {
+        if (!/^\/v1\/sessions\/[^/]+\/attachments\//.test(target.pathname)) {
             return url;
         }
         const reachable = new URL(getServerUrl());
         target.protocol = reachable.protocol;
-        target.host = reachable.host; // includes port
+        target.hostname = reachable.hostname;
+        target.port = reachable.port;
         return target.toString();
     } catch {
         return url;
@@ -126,7 +125,7 @@ export async function requestAttachmentUpload(
             message,
         });
     }
-    return { ...result, uploadUrl: rewriteLoopbackHost(result.uploadUrl) };
+    return { ...result, uploadUrl: resolveLocalAttachmentUrl(result.uploadUrl) };
 }
 
 /**
@@ -197,26 +196,10 @@ export async function uploadEncryptedBlob(
         headers['Authorization'] = `Bearer ${credentials.token}`;
     }
 
-    // Build a standalone ArrayBuffer of exactly encryptedData.length bytes.
-    // RN's iOS Blob polyfill rejects Uint8Array/ArrayBuffer constructors
-    // ("Creating blobs from 'ArrayBuffer' and 'ArrayBufferView' are not
-    // supported"), so we can't use a Blob body cross-platform — and
-    // sending `encryptedData.buffer` raw is unsafe if the Uint8Array is
-    // a view onto a larger parent ArrayBuffer (we'd upload the parent's
-    // trailing bytes too, padding the ciphertext into something the
-    // receiver can't decrypt). new Uint8Array(...) copies into a fresh
-    // 32-byte-aligned buffer of exactly the right length, and .buffer
-    // is then guaranteed safe to send directly.
-    const standalone = new Uint8Array(encryptedData);
-    const body = standalone.buffer;
 
-    let response: Response;
+    let response: { ok: boolean; status: number; statusText: string };
     try {
-        response = await fetch(upload.uploadUrl, {
-            method: 'PUT',
-            headers,
-            body,
-        });
+        response = await uploadBinaryFile(upload.uploadUrl, encryptedData, headers);
     } catch (err) {
         const message = errorMessageFromUnknown(err);
         throw createAttachmentDiagnosticError(formatNetworkErrorMessage('Blob upload (PUT) network error', message), {
@@ -299,7 +282,7 @@ export async function downloadEncryptedAttachment(
             message,
         });
     }
-    const downloadUrl = rewriteLoopbackHost(rawDownloadUrl);
+    const downloadUrl = resolveLocalAttachmentUrl(rawDownloadUrl);
 
     const isServerUrl = downloadUrl.startsWith(API_ENDPOINT);
     const headers: Record<string, string> = {};

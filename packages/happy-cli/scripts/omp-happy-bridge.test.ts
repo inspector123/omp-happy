@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 // The bridge is intentionally plain ESM because native OMP loads it directly.
 // @ts-expect-error TypeScript has no declaration for the runtime extension module.
-import { formatAskResult, getModelSnapshot, getThinkingSnapshot, resolveModel, resolveRequestedModel } from './omp-happy-bridge.mjs';
+import { formatAskResult, getModelSnapshot, getThinkingSnapshot, resolveModel, resolveRequestedModel, sendPromptCommand } from './omp-happy-bridge.mjs';
 
 describe('OMP Happy bridge models', () => {
   const models = [
@@ -110,4 +110,39 @@ describe('OMP Happy bridge models', () => {
       },
     });
   });
+  it('delivers bridge prompt images as exact OMP multimodal content', async () => {
+    const sendUserMessage = vi.fn().mockResolvedValue(undefined);
+
+    await expect(sendPromptCommand({ sendUserMessage }, {
+      type: 'prompt',
+      text: 'Inspect this',
+      deliverAs: 'steer',
+      images: [
+        { data: 'AQID', mimeType: 'image/png' },
+        { data: 'BAUG', mimeType: 'image/jpeg' },
+      ],
+    })).resolves.toBe(true);
+
+    expect(sendUserMessage).toHaveBeenCalledOnce();
+    expect(sendUserMessage).toHaveBeenCalledWith([
+      { type: 'image', data: 'AQID', mimeType: 'image/png' },
+      { type: 'image', data: 'BAUG', mimeType: 'image/jpeg' },
+      { type: 'text', text: 'Inspect this' },
+    ], { deliverAs: 'steer' });
+  });
+
+  it('delivers image-only bridge prompts without a placeholder text block', async () => {
+    const sendUserMessage = vi.fn().mockResolvedValue(undefined);
+
+    await sendPromptCommand({ sendUserMessage }, {
+      type: 'prompt',
+      text: '',
+      images: [{ data: 'AQID', mimeType: 'image/png' }],
+    });
+
+    expect(sendUserMessage).toHaveBeenCalledWith([
+      { type: 'image', data: 'AQID', mimeType: 'image/png' },
+    ], undefined);
+  });
+
 });

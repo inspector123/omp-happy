@@ -591,6 +591,25 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
   };
 
+  const completeTurn = (): void => {
+    if (!turnStarted) return;
+    flushPendingText();
+    turnStarted = false;
+    thinking = false;
+    session.keepAlive(false, runMode);
+    session.sendAgentMessage('omp', { type: 'task_complete', id: randomUUID() });
+    session.sendSessionEvent({ type: 'ready' });
+  };
+
+  const releaseQueuedAfterAbort = (): void => {
+    if (!abortInProgress) return;
+    abortInProgress = false;
+    const queued = queuedAfterAbort.splice(0);
+    for (const item of queued) {
+      sendPhonePrompt(item.message, item.attachments, false);
+    }
+  };
+
   const handleBridgeEvent = (event: MirrorEvent): void => {
     switch (event.type) {
       case 'agent_start': {
@@ -671,19 +690,8 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         return;
       }
       case 'agent_end': {
-        flushPendingText();
-        turnStarted = false;
-        thinking = false;
-        session.keepAlive(false, runMode);
-        session.sendAgentMessage('omp', { type: 'task_complete', id: randomUUID() });
-        session.sendSessionEvent({ type: 'ready' });
-        if (abortInProgress) {
-          abortInProgress = false;
-          const queued = queuedAfterAbort.splice(0);
-          for (const item of queued) {
-            sendPhonePrompt(item.message, item.attachments, false);
-          }
-        }
+        completeTurn();
+        releaseQueuedAfterAbort();
         return;
       }
       case 'notice': {
@@ -739,7 +747,11 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       return;
     }
     if (frame.type === 'aborted') {
-      log('OMP abort request accepted; waiting for agent_end');
+      if (abortInProgress) {
+        completeTurn();
+        releaseQueuedAfterAbort();
+      }
+      log('OMP abort request completed');
       return;
     }
     if (frame.type === 'bridge_error') {
@@ -899,9 +911,13 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     flavor: 'omp',
   }));
 
-  session.rpcHandlerManager.registerHandler('abort', async () => {
+  const requestAbort = (): void => {
     abortInProgress = true;
     bridgeServer?.send({ type: 'abort' });
+  };
+
+  session.rpcHandlerManager.registerHandler('abort', async () => {
+    requestAbort();
   });
   session.rpcHandlerManager.registerHandler<{
     id: string;
@@ -909,7 +925,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     updatedInput?: { answers?: Record<string, string> };
   }, void>('permission', async (response) => {
     if (!response.approved) {
-      bridgeServer?.send({ type: 'abort' });
+      requestAbort();
       return;
     }
     bridgeServer?.send({

@@ -12,3 +12,20 @@ export async function appendFormFile(
     formData.append(field, blob, filename);
     return async () => { /* no-op */ };
 }
+
+export async function uploadBinaryFile(
+    url: string,
+    bytes: Uint8Array,
+    headers: Record<string, string>,
+): Promise<{ ok: boolean; status: number; statusText: string }> {
+    const response = await fetch(url, {
+        method: 'PUT',
+        headers,
+        body: new Uint8Array(bytes).buffer,
+    });
+    return {
+        ok: response.ok,
+        status: response.status,
+        statusText: response.statusText,
+    };
+}

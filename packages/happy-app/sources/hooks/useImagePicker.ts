@@ -71,8 +71,12 @@ export async function normalizePickedAssetForUpload(asset: ImagePicker.ImagePick
     };
 }
 
-export function useImagePicker(): UseImagePickerResult {
-    const [selectedImages, setSelectedImages] = useState<AttachmentPreview[]>([]);
+const selectedImagesByComposer = new Map<string, AttachmentPreview[]>();
+
+export function useImagePicker(composerId: string): UseImagePickerResult {
+    const [selectedImages, setSelectedImages] = useState<AttachmentPreview[]>(
+        () => selectedImagesByComposer.get(composerId) ?? [],
+    );
     // Ref tracks current count to avoid stale closures on rapid taps.
     const selectedCountRef = useRef(0);
     useEffect(() => {
@@ -154,25 +158,36 @@ export function useImagePicker(): UseImagePickerResult {
         }
 
         if (previews.length > 0) {
-            setSelectedImages(prev => [...prev, ...previews].slice(0, MAX_IMAGES_PER_MESSAGE));
+            const next = [...(selectedImagesByComposer.get(composerId) ?? []), ...previews]
+                .slice(0, MAX_IMAGES_PER_MESSAGE);
+            selectedImagesByComposer.set(composerId, next);
+            setSelectedImages(next);
         }
-    }, [requestPermission]);
+    }, [composerId, requestPermission]);
 
     const removeImage = useCallback((id: string) => {
-        setSelectedImages(prev => prev.filter(img => img.id !== id));
-    }, []);
+        const next = (selectedImagesByComposer.get(composerId) ?? []).filter(img => img.id !== id);
+        if (next.length > 0) {
+            selectedImagesByComposer.set(composerId, next);
+        } else {
+            selectedImagesByComposer.delete(composerId);
+        }
+        setSelectedImages(next);
+    }, [composerId]);
 
     const clearImages = useCallback(() => {
+        selectedImagesByComposer.delete(composerId);
         setSelectedImages([]);
-    }, []);
+    }, [composerId]);
 
     const addImages = useCallback((images: AttachmentPreview[]) => {
-        setSelectedImages(prev => {
-            const remaining = MAX_IMAGES_PER_MESSAGE - prev.length;
-            if (remaining <= 0) return prev;
-            return [...prev, ...images.slice(0, remaining)];
-        });
-    }, []);
+        const current = selectedImagesByComposer.get(composerId) ?? [];
+        const remaining = MAX_IMAGES_PER_MESSAGE - current.length;
+        if (remaining <= 0) return;
+        const next = [...current, ...images.slice(0, remaining)];
+        selectedImagesByComposer.set(composerId, next);
+        setSelectedImages(next);
+    }, [composerId]);
 
     return { selectedImages, pickImages, removeImage, clearImages, addImages };
 }

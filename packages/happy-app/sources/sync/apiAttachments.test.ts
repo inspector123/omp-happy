@@ -8,9 +8,10 @@ import {
 } from './apiAttachments';
 import { getAttachmentDiagnostic } from './attachmentDiagnostics';
 
-const { appendFormFile, cleanupFormFile } = vi.hoisted(() => ({
+const { appendFormFile, cleanupFormFile, uploadBinaryFile } = vi.hoisted(() => ({
     appendFormFile: vi.fn(),
     cleanupFormFile: vi.fn(),
+    uploadBinaryFile: vi.fn(),
 }));
 
 vi.mock('./serverConfig', () => ({
@@ -19,6 +20,7 @@ vi.mock('./serverConfig', () => ({
 
 vi.mock('./uploadFormFile', () => ({
     appendFormFile,
+    uploadBinaryFile,
 }));
 
 const credentials: AuthCredentials = {
@@ -38,6 +40,11 @@ beforeEach(() => {
     cleanupFormFile.mockResolvedValue(undefined);
     appendFormFile.mockReset();
     appendFormFile.mockResolvedValue(cleanupFormFile);
+    uploadBinaryFile.mockReset();
+    uploadBinaryFile.mockImplementation(async (url, bytes, headers) => {
+        const result = await fetch(url, { method: 'PUT', body: bytes, headers });
+        return { ok: result.ok, status: result.status, statusText: result.statusText };
+    });
 });
 
 afterEach(() => {
@@ -45,6 +52,28 @@ afterEach(() => {
 });
 
 describe('requestAttachmentUpload', () => {
+    it('uses the connected API host for local uploads when PUBLIC_URL is stale', async () => {
+        fetchMock.mockResolvedValueOnce(response({
+            ok: true,
+            json: {
+                ref: 'sessions/session-1/attachments/photo.enc',
+                uploadUrl: 'http://50.47.25.31:30003/v1/sessions/session-1/attachments/photo.enc',
+                method: 'PUT',
+            },
+        }));
+
+        const upload = await requestAttachmentUpload(
+            credentials,
+            'session-1',
+            'photo.jpg',
+            123,
+        );
+
+        expect(upload.uploadUrl).toBe(
+            'https://api.cluster-fluster.com/v1/sessions/session-1/attachments/photo.enc',
+        );
+    });
+
     it('classifies request-upload HTTP failures against the Happy API host', async () => {
         fetchMock.mockResolvedValueOnce(response({
             ok: false,

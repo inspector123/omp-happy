@@ -87,7 +87,7 @@ interface AgentInputProps {
     isSending?: boolean;
     minHeight?: number;
     zenMode?: boolean;
-    /** Image attachments waiting to be sent (expImageUpload feature). */
+    /** Image attachments waiting to be sent. */
     selectedImages?: AttachmentPreview[];
     onPickImages?: () => void;
     onRemoveImage?: (id: string) => void;
@@ -821,10 +821,10 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     }, [props.onAbort]);
 
     const handleBlockedSendAttempt = React.useCallback(() => {
-        if (!isSendBlocked || !hasText || props.isSending) return;
+        if (!isSendBlocked || (!hasText && !hasImages) || props.isSending) return;
         hapticsError();
         sendBlockShakerRef.current?.shake();
-    }, [hasText, isSendBlocked, props.isSending]);
+    }, [hasImages, hasText, isSendBlocked, props.isSending]);
 
     const handleSendPress = React.useCallback(() => {
         if (isSendBlocked) {
@@ -1412,7 +1412,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                 {/* Git Status Badge */}
                                 <GitStatusButton sessionId={props.sessionId} onPress={props.onFileViewerPress} />
 
-                                {/* Image picker button (expImageUpload) */}
+                                {/* Image picker button */}
                                 {props.onPickImages && (
                                     <Pressable
                                         onPress={props.onPickImages}
@@ -1444,7 +1444,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                     style={[
                                         styles.sendButton,
                                         isSendBlocked ? styles.sendButtonLocked :
-                                        (hasText || props.isSending || (props.onMicPress && !props.isMicActive))
+                                        (hasText || hasImages || props.isSending || (props.onMicPress && !props.isMicActive))
                                             ? styles.sendButtonActive
                                             : styles.sendButtonInactive
                                     ]}
@@ -1472,7 +1472,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                                 size={15}
                                                 color={theme.colors.textSecondary}
                                             />
-                                        ) : hasText ? (
+                                        ) : hasText || hasImages ? (
                                             <Octicons
                                                 name="arrow-up"
                                                 size={16}

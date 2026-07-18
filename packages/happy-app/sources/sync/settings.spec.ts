@@ -192,7 +192,6 @@ describe('settings', () => {
                 expResumeSession: false,
                 fileDiffsSidebar: false,
                 groupToolCalls: false,
-                expImageUpload: false,
                 reviewPromptAnswered: false,
                 reviewPromptLikedApp: null,
                 voiceAssistantLanguage: null,
@@ -203,6 +202,8 @@ describe('settings', () => {
                 lastUsedAgent: null,
                 lastUsedPermissionMode: null,
                 lastUsedModelMode: null,
+                modelShortlist: [],
+                showReasoning: true,
                 agentDefaultOverrides: {},
                 dismissedCLIWarnings: { perMachine: {}, global: {} },
             });

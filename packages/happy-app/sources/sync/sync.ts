@@ -97,6 +97,11 @@ type SendMessageOptions = {
     attachments?: AttachmentPreview[];
 };
 
+type SendMessageResult = {
+    queued: boolean;
+    uploadedAttachmentIds: string[];
+};
+
 class Sync {
     private static readonly BACKGROUND_SEND_TIMEOUT_MS = 30_000;
     encryption!: Encryption;
@@ -506,22 +511,23 @@ class Sync {
     private async uploadAttachmentsForSession(
         sessionId: string,
         attachments: AttachmentPreview[],
-    ): Promise<{ uploaded: UploadedAttachment[]; failed: number; error?: string }> {
+    ): Promise<{ uploaded: UploadedAttachment[]; uploadedAttachmentIds: string[]; failed: number; error?: string }> {
         if (!this.credentials) {
             console.error('[attachments] No credentials');
-            return { uploaded: [], failed: attachments.length, error: 'Not authenticated' };
+            return { uploaded: [], uploadedAttachmentIds: [], failed: attachments.length, error: 'Not authenticated' };
         }
 
         const blobKey = this.encryption.getSessionBlobKey(sessionId);
         if (!blobKey) {
             console.error(`[attachments] No blob key for session ${sessionId}`);
-            return { uploaded: [], failed: attachments.length, error: 'Session encryption not ready' };
+            return { uploaded: [], uploadedAttachmentIds: [], failed: attachments.length, error: 'Session encryption not ready' };
         }
 
         const serverUrl = getServerUrl();
         console.log(`[attachments] Uploading ${attachments.length} attachment(s) for session ${sessionId} to ${serverUrl}`);
 
         const uploaded: UploadedAttachment[] = [];
+        const uploadedAttachmentIds: string[] = [];
         let failed = 0;
         let lastError: string | undefined;
 
@@ -549,6 +555,7 @@ class Sync {
                     mimeType: attachment.mimeType,
                     thumbhash: attachment.thumbhash,
                 });
+                uploadedAttachmentIds.push(attachment.id);
             } catch (err) {
                 const diagnostic = getAttachmentDiagnostic(err);
                 if (diagnostic) {
@@ -573,10 +580,10 @@ class Sync {
             }
         }
 
-        return { uploaded, failed, error: lastError };
+        return { uploaded, uploadedAttachmentIds, failed, error: lastError };
     }
 
-    async sendMessage(sessionId: string, text: string, options?: SendMessageOptions) {
+    async sendMessage(sessionId: string, text: string, options?: SendMessageOptions): Promise<SendMessageResult> {
 
         // Get encryption — may not be ready yet if sessions are still syncing
         let encryption = this.encryption.getSessionEncryption(sessionId);
@@ -586,7 +593,7 @@ class Sync {
             encryption = this.encryption.getSessionEncryption(sessionId);
             if (!encryption) {
                 console.error(`Session ${sessionId} not found after sync`);
-                return;
+                return { queued: false, uploadedAttachmentIds: [] };
             }
         }
 
@@ -597,7 +604,7 @@ class Sync {
             session = storage.getState().sessions[sessionId];
             if (!session) {
                 console.error(`Session ${sessionId} not found in storage after sync`);
-                return;
+                return { queued: false, uploadedAttachmentIds: [] };
             }
         }
 
@@ -619,13 +626,19 @@ class Sync {
                 [{ text: t('common.ok'), style: 'cancel' }],
             );
             if (!attachmentPlan.shouldSendText) {
-                return;
+                return { queued: false, uploadedAttachmentIds: [] };
             }
         }
 
+        let uploadedAttachmentCount = 0;
+        let uploadedAttachmentIds: string[] = [];
+
         // Upload attachments and queue file events before the text message.
         if (effectiveAttachments && effectiveAttachments.length > 0) {
-            const { uploaded, failed, error: uploadError } = await this.uploadAttachmentsForSession(sessionId, effectiveAttachments);
+            const uploadResult = await this.uploadAttachmentsForSession(sessionId, effectiveAttachments);
+            const { uploaded, failed, error: uploadError } = uploadResult;
+            uploadedAttachmentCount = uploaded.length;
+            uploadedAttachmentIds = uploadResult.uploadedAttachmentIds;
 
             if (failed > 0) {
                 const detail = uploadError ? ` (${uploadError})` : '';
@@ -634,6 +647,13 @@ class Sync {
                     t('imageUpload.uploadFailedMessage', { count: failed }) + detail,
                     [{ text: t('common.ok'), style: 'cancel' }],
                 );
+            }
+
+            // An attachment send is atomic from the user's perspective. If
+            // every image failed, keep the text and images in the composer
+            // instead of silently sending the text by itself.
+            if (uploaded.length === 0) {
+                return { queued: false, uploadedAttachmentIds: [] };
             }
 
             if (uploaded.length > 0) {
@@ -686,6 +706,10 @@ class Sync {
                     pending.push({ localId: fileLocalId, content: encryptedFileRecord });
                 }
             }
+        }
+
+        if (text.trim().length === 0 && uploadedAttachmentCount === 0) {
+            return { queued: false, uploadedAttachmentIds: [] };
         }
 
         // Generate local ID
@@ -746,6 +770,7 @@ class Sync {
 
         this.getSendSync(sessionId).invalidate();
         this.maybeStartBackgroundSendWatchdog();
+        return { queued: true, uploadedAttachmentIds };
     }
 
     /** Server sent us settings — merge any pending local changes on top, then apply as one update. */

@@ -495,9 +495,10 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
     const isDisconnected = !sessionStatus.isConnected;
     const resumeCommandBlock = getResumeCommandBlock(session);
 
-    // Image attachment state (expImageUpload feature flag)
-    const expImageUpload = useSetting('expImageUpload');
-    const { selectedImages, pickImages, removeImage, clearImages, addImages } = useImagePicker();
+    // Image attachments are a standard composer capability. Agent-specific
+    // support is checked by Sync.sendMessage before upload.
+    const { selectedImages, pickImages, removeImage, addImages } = useImagePicker(sessionId);
+    const sendInFlightRef = React.useRef(false);
 
     // ChatComposer owns the message state + useDraft subscription. We only
     // hold an imperative handle so handleSend can read the live text and
@@ -543,14 +544,28 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
     // handleSend reads the live message via the composer ref, so it doesn't
     // need to re-create on every keystroke.
     const handleSend = React.useCallback(() => {
+        if (sendInFlightRef.current) return;
         const liveMessage = composerHandleRef.current?.getMessage() ?? '';
-        if (liveMessage.trim() || (expImageUpload && selectedImages.length > 0)) {
-            const attachments = expImageUpload ? selectedImages : undefined;
-            composerHandleRef.current?.clearMessage();
-            if (expImageUpload) clearImages();
-            sync.sendMessage(sessionId, liveMessage, { source: 'chat', attachments });
-        }
-    }, [sessionId, expImageUpload, selectedImages, clearImages]);
+        if (!liveMessage.trim() && selectedImages.length === 0) return;
+
+        const attachments = selectedImages;
+        sendInFlightRef.current = true;
+        void sync.sendMessage(sessionId, liveMessage, { source: 'chat', attachments })
+            .then((result) => {
+                if (result.queued && composerHandleRef.current?.getMessage() === liveMessage) {
+                    composerHandleRef.current.clearMessage();
+                }
+                for (const attachmentId of result.uploadedAttachmentIds) {
+                    removeImage(attachmentId);
+                }
+            })
+            .catch((error) => {
+                console.error('[attachments] Background send failed:', error);
+            })
+            .finally(() => {
+                sendInFlightRef.current = false;
+            });
+    }, [sessionId, selectedImages, removeImage]);
 
     const handleAbort = React.useCallback(() => {
         storage.getState().resetSessionAgentOverrides(sessionId);
@@ -716,15 +731,16 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
             connectionStatus={connectionStatus}
             blockSend={false}
             onSend={handleSend}
+            isSending={false}
             onMicPress={isDisconnected ? undefined : micButtonState.onMicPress}
             isMicActive={isDisconnected ? false : micButtonState.isMicActive}
             onAbort={isDisconnected ? undefined : handleAbort}
             showAbortButton={sessionStatus.state === 'thinking' || sessionStatus.state === 'waiting'}
             onFileViewerPress={experiments && !isTablet ? handleFileViewerPress : undefined}
-            selectedImages={expImageUpload ? selectedImages : undefined}
-            onPickImages={expImageUpload ? pickImages : undefined}
-            onRemoveImage={expImageUpload ? removeImage : undefined}
-            onAddImages={expImageUpload ? addImages : undefined}
+            selectedImages={selectedImages}
+            onPickImages={pickImages}
+            onRemoveImage={removeImage}
+            onAddImages={addImages}
             autocompletePrefixes={AGENT_INPUT_AUTOCOMPLETE_PREFIXES}
             autocompleteSuggestions={handleAutocompleteSuggestions}
             usageData={usageData}
