@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Text, View, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
+import { Text, View, TouchableOpacity, ActivityIndicator, Platform, Pressable } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Ionicons, Octicons } from '@expo/vector-icons';
 import { getToolViewComponent } from './views/_all';
@@ -17,6 +17,7 @@ import { formatMCPTitle } from './views/MCPToolView';
 import { t } from '@/text';
 import { getTerminalToolCommand, shouldRenderToolCardHeader } from '@/utils/toolDisplay';
 
+const UNKNOWN_TOOL_PREVIEW_LINES = 5;
 interface ToolViewProps {
     metadata: Metadata | null;
     tool: ToolCall;
@@ -30,6 +31,7 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
     const { tool, onPress, sessionId, messageId } = props;
     const router = useRouter();
     const { theme } = useUnistyles();
+    const [unknownToolExpanded, setUnknownToolExpanded] = React.useState(false);
 
     // For file-editing tools, navigate to file route instead of message detail
     const fileEditTools = ['Edit', 'MultiEdit', 'Write'];
@@ -71,6 +73,11 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
     if (!knownTool && isGemini) {
         minimal = true;
     }
+
+    // For OMP: unknown tools render collapsed with a 5-line preview cap
+    // to prevent large raw JSON dumps in chat
+    const isOMP = props.metadata?.flavor === 'omp';
+    const isUnknownOMPTool = !knownTool && isOMP;
 
     // Extract status first to potentially use as title
     if (knownTool && typeof knownTool.extractStatus === 'function') {
@@ -238,6 +245,58 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
                 // Check if minimal first - minimal tools don't show content
                 if (minimal || isCompactTerminalTool) {
                     return null;
+                }
+
+                // Unknown OMP tools: render collapsed with 5-line preview cap
+                if (isUnknownOMPTool) {
+                    return (
+                        <View style={styles.content}>
+                            {tool.state === 'error' && tool.result &&
+                                !(tool.permission && (tool.permission.status === 'denied' || tool.permission.status === 'canceled')) && (
+                                    <ToolError message={String(tool.result)} />
+                                )}
+                            <Pressable
+                                onPress={() => setUnknownToolExpanded((value) => !value)}
+                                style={({ pressed }) => [
+                                    styles.unknownToolToggle,
+                                    pressed && styles.unknownToolTogglePressed,
+                                ]}
+                            >
+                                <Text style={styles.unknownToolToggleText}>
+                                    {unknownToolExpanded ? 'Hide details' : 'Show details'}
+                                </Text>
+                                <Ionicons
+                                    name={unknownToolExpanded ? 'chevron-down' : 'chevron-forward'}
+                                    size={14}
+                                    color={theme.colors.textSecondary}
+                                />
+                            </Pressable>
+                            {unknownToolExpanded ? (
+                                <View>
+                                    {tool.input && (
+                                        <ToolSectionView title={t('toolView.input')}>
+                                            <CodeView
+                                                code={truncateToLines(
+                                                    JSON.stringify(tool.input, null, 2),
+                                                    UNKNOWN_TOOL_PREVIEW_LINES,
+                                                )}
+                                            />
+                                        </ToolSectionView>
+                                    )}
+                                    {tool.state === 'completed' && tool.result && (
+                                        <ToolSectionView title={t('toolView.output')}>
+                                            <CodeView
+                                                code={truncateToLines(
+                                                    typeof tool.result === 'string' ? tool.result : JSON.stringify(tool.result, null, 2),
+                                                    UNKNOWN_TOOL_PREVIEW_LINES,
+                                                )}
+                                            />
+                                        </ToolSectionView>
+                                    )}
+                                </View>
+                            ) : null}
+                        </View>
+                    );
                 }
 
                 // Try to use a specific tool view component first
@@ -417,4 +476,33 @@ const styles = StyleSheet.create((theme) => ({
         paddingTop: 8,
         overflow: 'visible'
     },
+    unknownToolToggle: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        paddingVertical: 6,
+        paddingHorizontal: 8,
+        backgroundColor: theme.colors.surfaceHighest,
+        borderRadius: 6,
+        marginTop: 4,
+    },
+    unknownToolTogglePressed: {
+        opacity: 0.7,
+    },
+    unknownToolToggleText: {
+        fontSize: 13,
+        color: theme.colors.textSecondary,
+    },
 }));
+
+// Truncate code to the first N lines, appending a truncation indicator if more lines exist
+export function truncateToLines(code: string, maxLines: number): string {
+    const lines = code.split('\n');
+    if (lines.length <= maxLines) {
+        return code;
+    }
+    const remaining = lines.length - maxLines;
+    return lines
+        .slice(0, maxLines)
+        .join('\n') + '\n… +' + remaining + ' more line' + (remaining === 1 ? '' : 's') + ' (tap to expand)';
+}

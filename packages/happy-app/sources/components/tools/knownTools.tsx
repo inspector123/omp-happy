@@ -91,6 +91,16 @@ export const knownTools = {
         icon: ICON_WEB,
         minimal: true,
     },
+    'yield': {
+        title: (opts: { metadata: Metadata | null, tool: ToolCall }) => opts.tool.description || 'Yield',
+        icon: ICON_EXIT,
+        minimal: true,
+    },
+    'irc': {
+        title: (opts: { metadata: Metadata | null, tool: ToolCall }) => opts.tool.description || 'IRC',
+        icon: ICON_TASK,
+        minimal: true,
+    },
     'Bash': {
         title: (opts: { metadata: Metadata | null, tool: ToolCall }) => {
             if (opts.tool.description) {
