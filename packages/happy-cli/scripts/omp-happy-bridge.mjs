@@ -16,6 +16,78 @@ function safeStringify(value) {
   });
 }
 
+export function getModelSnapshot(ctx) {
+  const modelFacade = ctx?.models;
+  if (!modelFacade || typeof modelFacade.list !== 'function') {
+    return { models: [], currentModel: undefined };
+  }
+  const available = modelFacade.list();
+  const models = Array.isArray(available)
+    ? available.flatMap((model) => {
+        if (!model || typeof model !== 'object' || typeof model.id !== 'string' || typeof model.provider !== 'string') {
+          return [];
+        }
+        return [{
+          code: `${model.provider}/${model.id}`,
+          value: typeof model.name === 'string' && model.name.length > 0 ? model.name : model.id,
+          ...(typeof model.description === 'string' && model.description.length > 0
+            ? { description: model.description }
+            : {}),
+        }];
+      })
+    : [];
+  const current = typeof modelFacade.current === 'function' ? modelFacade.current() : undefined;
+  const currentModel = current
+    && typeof current.id === 'string'
+    && typeof current.provider === 'string'
+    ? `${current.provider}/${current.id}`
+    : undefined;
+  return { models, currentModel };
+}
+
+export function resolveModel(models, spec) {
+  if (!Array.isArray(models)) return undefined;
+  const canonicalMatches = models.filter((model) => `${model.provider}/${model.id}` === spec);
+  if (canonicalMatches.length === 1) return canonicalMatches[0];
+  const shortMatches = models.filter((model) => model.id === spec || model.name === spec);
+  return shortMatches.length === 1 ? shortMatches[0] : undefined;
+}
+
+export function resolveRequestedModel(modelFacade, spec) {
+  const available = typeof modelFacade?.list === 'function' ? modelFacade.list() : [];
+  if (typeof modelFacade?.resolve === 'function') {
+    return modelFacade.resolve(spec) ?? resolveModel(available, spec);
+  }
+  return resolveModel(available, spec);
+}
+
+const THINKING_LABELS = {
+  off: 'Off',
+  minimal: 'Minimal',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'XHigh',
+  max: 'Max',
+};
+
+export function getThinkingSnapshot(pi, ctx) {
+  const currentModel = typeof ctx?.models?.current === 'function' ? ctx.models.current() : undefined;
+  const efforts = Array.isArray(currentModel?.thinking?.efforts) ? currentModel.thinking.efforts : [];
+  const thoughtLevels = efforts.length > 0
+    ? ['off', ...efforts].flatMap((code) => (
+        typeof code === 'string' && THINKING_LABELS[code]
+          ? [{ code, value: THINKING_LABELS[code] }]
+          : []
+      ))
+    : [];
+  const reportedLevel = typeof pi?.getThinkingLevel === 'function' ? pi.getThinkingLevel() ?? 'off' : 'off';
+  const currentThoughtLevel = thoughtLevels.some((level) => level.code === reportedLevel)
+    ? reportedLevel
+    : thoughtLevels.length > 0 ? 'off' : undefined;
+  return { thoughtLevels, currentThoughtLevel };
+}
+
 export default function happyBridgeExtension(pi) {
   const socketPath = process.env[SOCKET_ENV];
   if (!socketPath) return;
@@ -28,6 +100,7 @@ export default function happyBridgeExtension(pi) {
   let reconnectTimer;
   let connectedOnce = false;
   let shuttingDown = false;
+  let commandQueue = Promise.resolve();
 
   const send = (frame) => {
     let line;
@@ -40,14 +113,21 @@ export default function happyBridgeExtension(pi) {
     else pendingFrames.push(line);
   };
 
+
   const publishReady = (ctx) => {
     latestContext = ctx;
+    const modelSnapshot = getModelSnapshot(ctx);
+    const thinkingSnapshot = getThinkingSnapshot(pi, ctx);
     send({
       type: 'ready',
       protocolVersion: PROTOCOL_VERSION,
       sessionId: ctx.sessionManager.getSessionId(),
       sessionFile: ctx.sessionManager.getSessionFile(),
       cwd: ctx.cwd,
+      models: modelSnapshot.models,
+      currentModel: modelSnapshot.currentModel,
+      thoughtLevels: thinkingSnapshot.thoughtLevels,
+      currentThoughtLevel: thinkingSnapshot.currentThoughtLevel,
     });
   };
 
@@ -66,17 +146,29 @@ export default function happyBridgeExtension(pi) {
         ...images.map((image) => ({ type: 'image', data: image.data, mimeType: image.mimeType })),
         ...(command.text.length > 0 ? [{ type: 'text', text: command.text }] : []),
       ];
-      pi.sendUserMessage(content.length === 1 && content[0].type === 'text' ? command.text : content, options);
+      await pi.sendUserMessage(content.length === 1 && content[0].type === 'text' ? command.text : content, options);
       return;
     }
     if (command.type === 'abort') {
-      latestContext?.abort();
+      await latestContext?.abort();
+      send({ type: 'aborted' });
       return;
     }
     if (command.type === 'set_model' && typeof command.spec === 'string' && latestContext) {
-      const model = latestContext.models.resolve(command.spec);
+      const model = resolveRequestedModel(latestContext.models, command.spec);
       if (!model || !(await pi.setModel(model))) {
         send({ type: 'bridge_error', message: `Unable to select OMP model: ${command.spec}` });
+      } else {
+        publishReady(latestContext);
+      }
+    }
+    if (command.type === 'set_thinking_level' && typeof command.level === 'string' && latestContext) {
+      const snapshot = getThinkingSnapshot(pi, latestContext);
+      if (!snapshot.thoughtLevels.some((level) => level.code === command.level)) {
+        send({ type: 'bridge_error', message: `Unable to select OMP thinking level: ${command.level}` });
+      } else {
+        pi.setThinkingLevel(command.level);
+        publishReady(latestContext);
       }
     }
   };
@@ -99,9 +191,12 @@ export default function happyBridgeExtension(pi) {
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          void handleCommand(JSON.parse(line)).catch((error) => {
-            send({ type: 'bridge_error', message: error instanceof Error ? error.message : String(error) });
-          });
+          const command = JSON.parse(line);
+          commandQueue = commandQueue
+            .then(() => handleCommand(command))
+            .catch((error) => {
+              send({ type: 'bridge_error', message: error instanceof Error ? error.message : String(error) });
+            });
         } catch {
           send({ type: 'bridge_error', message: 'Invalid bridge command JSON' });
         }

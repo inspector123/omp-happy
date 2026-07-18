@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     getAvailableModels,
+    getAvailableEffortLevels,
     getAvailablePermissionModes,
     getCodexModelModes,
     getClaudePermissionModes,
@@ -77,6 +78,22 @@ describe('modelModeOptions', () => {
         expect(models).toEqual([
             { key: 'default', name: 'default model', description: null },
             { key: 'gpt-5.4', name: 'gpt-5.4', description: 'Latest' },
+        ]);
+    });
+
+    it('uses dynamic OMP thinking levels independently from models', () => {
+        const levels = getAvailableEffortLevels('omp', 'openai-codex/gpt-5.6-sol', {
+            path: '/repo',
+            host: 'test-host',
+            thoughtLevels: [
+                { code: 'off', value: 'Off' },
+                { code: 'high', value: 'High' },
+            ],
+        });
+
+        expect(levels).toEqual([
+            { key: 'off', name: 'Off', description: null },
+            { key: 'high', name: 'High', description: null },
         ]);
     });
 

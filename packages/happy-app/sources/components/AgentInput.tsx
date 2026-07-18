@@ -1,6 +1,6 @@
 import { Ionicons, Octicons } from '@expo/vector-icons';
 import * as React from 'react';
-import { View, Platform, useWindowDimensions, ViewStyle, Text, ActivityIndicator, TouchableWithoutFeedback, Image as RNImage, Pressable } from 'react-native';
+import { View, Platform, useWindowDimensions, ViewStyle, Text, TextInput, ScrollView, ActivityIndicator, TouchableWithoutFeedback, Image as RNImage, Pressable } from 'react-native';
 import { Image } from 'expo-image';
 import { AgentInputAttachmentStrip } from './AgentInputAttachmentStrip';
 import type { AttachmentPreview } from '@/sync/attachmentTypes';
@@ -574,12 +574,25 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     const availableModels = props.availableModels ?? [];
     const router = useRouter();
     const [modelShortlist] = useSettingMutable('modelShortlist');
-    // Curated shortlist: if any of the user's picks are in this agent's model
-    // list, show only those; otherwise show all (so other agents are unaffected).
+    const [modelQuery, setModelQuery] = React.useState('');
+    const hasDynamicOmpModels = props.metadata?.flavor === 'omp';
+    // OMP publishes a live catalog, so keep it fully searchable. Static agent
+    // catalogs still honor the user's shortlist.
     const shownModels = React.useMemo(() => {
+        if (hasDynamicOmpModels) return availableModels;
         const curated = availableModels.filter((m) => modelShortlist.includes(m.key));
         return curated.length > 0 ? curated : availableModels;
-    }, [availableModels, modelShortlist]);
+    }, [availableModels, hasDynamicOmpModels, modelShortlist]);
+    const filteredModels = React.useMemo(() => {
+        const query = modelQuery.trim().toLowerCase();
+        const candidates = query ? availableModels : shownModels;
+        if (!query) return candidates;
+        return candidates.filter((model) => (
+            model.name.toLowerCase().includes(query)
+            || model.key.toLowerCase().includes(query)
+            || model.description?.toLowerCase().includes(query)
+        ));
+    }, [availableModels, modelQuery, shownModels]);
     const availableEffortLevels = props.availableEffortLevels ?? [];
     const isSandboxEnabled = React.useMemo(() => {
         const sandbox = props.metadata?.sandbox as unknown;
@@ -1024,66 +1037,114 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                             {t('agentInput.model.title')}
                                         </Text>
                                         {availableModels.length > 0 ? (
-                                            shownModels.map((model) => {
-                                                const isSelected = props.modelMode?.key === model.key;
-
-                                                return (
-                                                    <Pressable
-                                                        key={model.key}
-                                                        onPress={() => {
-                                                            hapticsLight();
-                                                            props.onModelModeChange?.(model);
-                                                            setShowSettings(false);
-                                                        }}
-                                                        style={({ pressed }) => ({
-                                                            flexDirection: 'row',
-                                                            alignItems: 'flex-start',
-                                                            paddingHorizontal: 16,
-                                                            paddingVertical: 8,
-                                                            backgroundColor: pressed ? theme.colors.surfacePressed : 'transparent'
-                                                        })}
-                                                    >
-                                                        <View style={{
-                                                            width: 16,
-                                                            height: 16,
-                                                            borderRadius: 8,
-                                                            borderWidth: 2,
-                                                            borderColor: isSelected ? theme.colors.radio.active : theme.colors.radio.inactive,
-                                                            alignItems: 'center',
-                                                            justifyContent: 'center',
-                                                            marginRight: 12,
-                                                            marginTop: 2,
-                                                        }}>
-                                                            {isSelected && (
+                                            <>
+                                                {availableModels.length > 4 && (
+                                                    <View style={{
+                                                        flexDirection: 'row',
+                                                        alignItems: 'center',
+                                                        marginHorizontal: 12,
+                                                        marginBottom: 4,
+                                                        paddingHorizontal: 10,
+                                                        borderRadius: 8,
+                                                        backgroundColor: theme.colors.surfacePressed,
+                                                    }}>
+                                                        <Ionicons name="search" size={14} color={theme.colors.textSecondary} />
+                                                        <TextInput
+                                                            value={modelQuery}
+                                                            onChangeText={setModelQuery}
+                                                            placeholder="Search models"
+                                                            placeholderTextColor={theme.colors.textSecondary}
+                                                            autoCapitalize="none"
+                                                            autoCorrect={false}
+                                                            style={{
+                                                                flex: 1,
+                                                                paddingHorizontal: 8,
+                                                                paddingVertical: 7,
+                                                                color: theme.colors.text,
+                                                                fontSize: 13,
+                                                                ...Typography.default(),
+                                                            }}
+                                                        />
+                                                    </View>
+                                                )}
+                                                <ScrollView
+                                                    style={{ maxHeight: 280 }}
+                                                    keyboardShouldPersistTaps="handled"
+                                                    nestedScrollEnabled
+                                                >
+                                                    {filteredModels.map((model) => {
+                                                        const isSelected = props.modelMode?.key === model.key;
+                                                        return (
+                                                            <Pressable
+                                                                key={model.key}
+                                                                onPress={() => {
+                                                                    hapticsLight();
+                                                                    props.onModelModeChange?.(model);
+                                                                    setModelQuery('');
+                                                                    setShowSettings(false);
+                                                                }}
+                                                                style={({ pressed }) => ({
+                                                                    flexDirection: 'row',
+                                                                    alignItems: 'flex-start',
+                                                                    paddingHorizontal: 16,
+                                                                    paddingVertical: 8,
+                                                                    backgroundColor: pressed ? theme.colors.surfacePressed : 'transparent'
+                                                                })}
+                                                            >
                                                                 <View style={{
-                                                                    width: 6,
-                                                                    height: 6,
-                                                                    borderRadius: 3,
-                                                                    backgroundColor: theme.colors.radio.dot
-                                                                }} />
-                                                            )}
-                                                        </View>
-                                                        <View>
-                                                            <Text style={{
-                                                                fontSize: 14,
-                                                                color: isSelected ? theme.colors.radio.active : theme.colors.text,
-                                                                ...Typography.default()
-                                                            }}>
-                                                                {model.name}
-                                                            </Text>
-                                                            {!!model.description && (
-                                                                <Text style={{
-                                                                    fontSize: 11,
-                                                                    color: theme.colors.textSecondary,
-                                                                    ...Typography.default()
+                                                                    width: 16,
+                                                                    height: 16,
+                                                                    borderRadius: 8,
+                                                                    borderWidth: 2,
+                                                                    borderColor: isSelected ? theme.colors.radio.active : theme.colors.radio.inactive,
+                                                                    alignItems: 'center',
+                                                                    justifyContent: 'center',
+                                                                    marginRight: 12,
+                                                                    marginTop: 2,
                                                                 }}>
-                                                                    {model.description}
-                                                                </Text>
-                                                            )}
-                                                        </View>
-                                                    </Pressable>
-                                                );
-                                            })
+                                                                    {isSelected && (
+                                                                        <View style={{
+                                                                            width: 6,
+                                                                            height: 6,
+                                                                            borderRadius: 3,
+                                                                            backgroundColor: theme.colors.radio.dot
+                                                                        }} />
+                                                                    )}
+                                                                </View>
+                                                                <View style={{ flex: 1 }}>
+                                                                    <Text style={{
+                                                                        fontSize: 14,
+                                                                        color: isSelected ? theme.colors.radio.active : theme.colors.text,
+                                                                        ...Typography.default()
+                                                                    }}>
+                                                                        {model.name}
+                                                                    </Text>
+                                                                    {!!model.description && (
+                                                                        <Text style={{
+                                                                            fontSize: 11,
+                                                                            color: theme.colors.textSecondary,
+                                                                            ...Typography.default()
+                                                                        }}>
+                                                                            {model.description}
+                                                                        </Text>
+                                                                    )}
+                                                                </View>
+                                                            </Pressable>
+                                                        );
+                                                    })}
+                                                    {filteredModels.length === 0 && (
+                                                        <Text style={{
+                                                            fontSize: 13,
+                                                            color: theme.colors.textSecondary,
+                                                            paddingHorizontal: 16,
+                                                            paddingVertical: 12,
+                                                            ...Typography.default()
+                                                        }}>
+                                                            No models found
+                                                        </Text>
+                                                    )}
+                                                </ScrollView>
+                                            </>
                                         ) : (
                                             <Text style={{
                                                 fontSize: 13,
@@ -1095,7 +1156,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                                 {t('agentInput.model.configureInCli')}
                                             </Text>
                                         )}
-                                        {availableModels.length > 6 && (
+                                        {!hasDynamicOmpModels && availableModels.length > 6 && (
                                             <Pressable
                                                 onPress={() => {
                                                     setShowSettings(false);

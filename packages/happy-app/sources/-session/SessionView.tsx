@@ -7,7 +7,7 @@ import { layout } from '@/components/layout';
 import {
     getAvailableModels,
     getAvailablePermissionModes,
-    getEffortLevelsForModel,
+    getAvailableEffortLevels,
     resolveCurrentOption,
     EffortLevel,
 } from '@/components/modelModeOptions';
@@ -476,14 +476,15 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
     // Effort level state
     const modelKey = modelMode?.key ?? 'default';
     const availableEffortLevels = React.useMemo<EffortLevel[]>(() => (
-        getEffortLevelsForModel(flavor, modelKey)
-    ), [flavor, modelKey]);
+        getAvailableEffortLevels(flavor, modelKey, session.metadata)
+    ), [flavor, modelKey, session.metadata]);
     const effortLevel = React.useMemo<EffortLevel | null>(() => (
         resolveCurrentOption(availableEffortLevels, [
             session.effortLevel,
+            session.metadata?.currentThoughtLevelCode,
             effectiveAgentDefaults.effortLevel,
         ])
-    ), [availableEffortLevels, session.effortLevel, effectiveAgentDefaults.effortLevel]);
+    ), [availableEffortLevels, session.effortLevel, session.metadata?.currentThoughtLevelCode, effectiveAgentDefaults.effortLevel]);
 
     const sessionStatus = useSessionStatus(session);
     const sessionUsage = useSessionUsage(sessionId);

@@ -305,6 +305,51 @@ describe('ApiSessionClient v3 messages API migration', () => {
         expect((client as any).lastSeq).toBe(3);
     });
 
+    it('preserves enqueue order across outbox batch boundaries', async () => {
+        const client = new ApiSessionClient('fake-token', session);
+        type PostResponse = {
+            data: {
+                messages: Array<{ id: string; seq: number; localId: string; createdAt: number; updatedAt: number }>;
+            };
+        };
+        let resolveFirstPost!: (value: PostResponse) => void;
+        mockAxiosPost
+            .mockImplementationOnce(() => new Promise<PostResponse>((resolve) => {
+                resolveFirstPost = resolve;
+            }))
+            .mockResolvedValue({ data: { messages: [] } });
+
+        client.sendCodexMessage({ type: 'ordered', index: 0 });
+        await waitForCheck(() => {
+            expect(mockAxiosPost).toHaveBeenCalledTimes(1);
+        });
+        for (let index = 1; index <= 55; index += 1) {
+            client.sendCodexMessage({ type: 'ordered', index });
+        }
+        resolveFirstPost({
+            data: {
+                messages: [{ id: 'msg-1', seq: 1, localId: 'local-1', createdAt: 1, updatedAt: 1 }]
+            }
+        });
+        await waitForCheck(() => {
+            expect(mockAxiosPost).toHaveBeenCalledTimes(3);
+        });
+
+        const decryptPayload = (payload: { content: string }) => decrypt(
+            session.encryptionKey,
+            session.encryptionVariant,
+            decodeBase64(payload.content),
+        );
+        const secondBatch = mockAxiosPost.mock.calls[1][1].messages;
+        const thirdBatch = mockAxiosPost.mock.calls[2][1].messages;
+        expect(secondBatch).toHaveLength(50);
+        expect(thirdBatch).toHaveLength(5);
+        expect(decryptPayload(secondBatch[0])).toMatchObject({ content: { data: { index: 1 } } });
+        expect(decryptPayload(secondBatch[49])).toMatchObject({ content: { data: { index: 50 } } });
+        expect(decryptPayload(thirdBatch[0])).toMatchObject({ content: { data: { index: 51 } } });
+        expect(decryptPayload(thirdBatch[4])).toMatchObject({ content: { data: { index: 55 } } });
+    });
+
     it('retries failed POST and succeeds without dropping queued messages', async () => {
         const client = new ApiSessionClient('fake-token', session);
 

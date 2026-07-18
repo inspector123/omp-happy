@@ -4,6 +4,7 @@ export const MessageMetaSchema = z.object({
   sentFrom: z.string().optional(),
   permissionMode: z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'read-only', 'safe-yolo', 'yolo']).optional(),
   model: z.string().nullable().optional(),
+  effort: z.string().nullable().optional(),
   fallbackModel: z.string().nullable().optional(),
   customSystemPrompt: z.string().nullable().optional(),
   appendSystemPrompt: z.string().nullable().optional(),

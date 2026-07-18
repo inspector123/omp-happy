@@ -2022,7 +2022,10 @@ class Sync {
         messages: ApiMessage[]
     ) => {
         if (messages.length === 0) return;
-        const decryptedMessages = await encryption.decryptMessages(messages);
+        // Backward pagination is returned newest-first. Normalize every fetch
+        // to server sequence order before stream deltas reach the reducer.
+        const orderedMessages = [...messages].sort((left, right) => left.seq - right.seq);
+        const decryptedMessages = await encryption.decryptMessages(orderedMessages);
         const normalizedMessages: NormalizedMessage[] = [];
         for (let i = 0; i < decryptedMessages.length; i++) {
             const decrypted = decryptedMessages[i];

@@ -33,7 +33,7 @@ const BRIDGE_EXTENSION_FILE = 'omp-happy-bridge.mjs';
 
 type RunMode = 'local' | 'remote';
 
-type BridgeFrame = BridgeReadyFrame | BridgeAgentEventFrame | BridgeInputFrame | BridgeErrorFrame;
+type BridgeFrame = BridgeReadyFrame | BridgeAgentEventFrame | BridgeInputFrame | BridgeErrorFrame | BridgeAbortedFrame;
 
 type BridgeReadyFrame = {
   type: 'ready';
@@ -41,6 +41,10 @@ type BridgeReadyFrame = {
   sessionId: string;
   sessionFile?: string;
   cwd?: string;
+  models?: Array<{ code: string; value: string; description?: string }>;
+  currentModel?: string;
+  thoughtLevels?: Array<{ code: string; value: string; description?: string }>;
+  currentThoughtLevel?: string;
 };
 
 type BridgeAgentEventFrame = {
@@ -57,6 +61,16 @@ type BridgeInputFrame = {
 type BridgeErrorFrame = {
   type: 'bridge_error';
   message: string;
+};
+
+type BridgeAbortedFrame = {
+  type: 'aborted';
+};
+
+type PhoneAttachment = {
+  data: Uint8Array;
+  mimeType: string;
+  name: string;
 };
 
 type MirrorEvent = {
@@ -99,6 +113,14 @@ function normalizeBridgeToolName(toolName: string): string {
       return 'Glob';
     case 'write':
       return 'Write';
+    // Native OMP tools use lowercase names, while the app's compact cards
+    // are keyed by the established Happy tool identities.
+    case 'todo':
+      return 'TodoWrite';
+    case 'task':
+      return 'delegate_task';
+    case 'browser':
+      return 'fetch';
     default:
       return toolName;
   }
@@ -122,8 +144,31 @@ function normalizeBridgeToolInput(toolName: string, input: unknown): unknown {
   ) {
     return { ...input, file_path: input.path };
   }
+  if (toolName === 'TodoWrite' && !Array.isArray(input.todos) && Array.isArray(input.items)) {
+    return { ...input, todos: input.items };
+  }
+  if (toolName === 'delegate_task' && Array.isArray(input.tasks)) {
+    const tasks = input.tasks.flatMap((entry, index) => {
+      if (!isRecord(entry)) return [];
+      const id = asString(entry.id) ?? asString(entry.name) ?? `task-${index + 1}`;
+      const description = asString(entry.description) ?? asString(entry.task) ?? id;
+      const role = asString(entry.role) ?? asString(entry.agent);
+      return [{ ...entry, id, description, ...(role ? { role } : {}) }];
+    });
+    return { ...input, tasks };
+  }
+  if (toolName === 'delegate_task' && !Array.isArray(input.tasks)) {
+    const description = asString(input.prompt) ?? asString(input.description);
+    if (description) {
+      return { ...input, tasks: [{ id: 'task-1', description }] };
+    }
+  }
+  if (toolName === 'fetch' && typeof input.url !== 'string' && typeof input.uri === 'string') {
+    return { ...input, url: input.uri };
+  }
   return input;
 }
+
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
@@ -186,15 +231,20 @@ function extractToolError(result: unknown, isErrorFlag?: unknown): boolean {
 }
 
 function extractTodoEntries(result: unknown): Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }> {
-  const phases = isRecord(result) ? result.phases : undefined;
+  const directPhases = isRecord(result) ? result.phases : undefined;
+  const details = isRecord(result) && isRecord(result.details) ? result.details : undefined;
+  const phases = Array.isArray(directPhases) ? directPhases : details?.phases;
   if (!Array.isArray(phases)) {
     return [];
   }
   return phases.flatMap((phase) => {
-    if (!isRecord(phase) || !Array.isArray(phase.items)) {
+    const items = isRecord(phase) && Array.isArray(phase.items)
+      ? phase.items
+      : isRecord(phase) && Array.isArray(phase.tasks) ? phase.tasks : undefined;
+    if (!items) {
       return [];
     }
-    return phase.items.flatMap((item) => {
+    return items.flatMap((item) => {
       if (!isRecord(item)) {
         return [];
       }
@@ -224,34 +274,63 @@ async function startBridgeServer(
   onFrame: (frame: BridgeFrame) => void,
   log: (message: string, data?: unknown) => void,
 ): Promise<BridgeServer> {
-  let activeSocket: Socket | null = null;
-  let pending = '';
+  type BridgeConnection = {
+    pending: string;
+    sessionId?: string;
+  };
+
+  const connections = new Map<Socket, BridgeConnection>();
+  let primarySessionId: string | null = null;
+  let primarySocket: Socket | null = null;
   const outgoing: string[] = [];
 
-  const processLine = (line: string): void => {
+  const flushOutgoing = (socket: Socket): void => {
+    if (!socket.writable) return;
+    for (const line of outgoing.splice(0)) socket.write(line);
+  };
+
+  const processLine = (line: string, socket: Socket): void => {
     const trimmed = line.trim();
     if (!trimmed) return;
     try {
-      onFrame(JSON.parse(trimmed) as BridgeFrame);
+      const frame = JSON.parse(trimmed) as BridgeFrame;
+      const connection = connections.get(socket);
+      if (!connection) return;
+
+      if (frame.type === 'ready') {
+        connection.sessionId = frame.sessionId;
+        if (primarySessionId === null || primarySocket === socket || frame.sessionId === primarySessionId) {
+          primarySessionId = frame.sessionId;
+          primarySocket = socket;
+          flushOutgoing(socket);
+          onFrame(frame);
+        } else {
+          log(`Ignoring child OMP bridge session ${frame.sessionId}; primary is ${primarySessionId}`);
+        }
+        return;
+      }
+
+      if (primarySocket === socket) {
+        onFrame(frame);
+      }
     } catch (error) {
       log(`Failed to parse OMP bridge frame: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
   const server: Server = createServer((socket) => {
-    activeSocket?.destroy();
-    activeSocket = socket;
-    pending = '';
+    const connection: BridgeConnection = { pending: '' };
+    connections.set(socket, connection);
     socket.setEncoding('utf8');
-    for (const line of outgoing.splice(0)) socket.write(line);
     socket.on('data', (chunk) => {
-      pending += chunk;
-      const lines = pending.split('\n');
-      pending = lines.pop() ?? '';
-      for (const line of lines) processLine(line);
+      connection.pending += chunk;
+      const lines = connection.pending.split('\n');
+      connection.pending = lines.pop() ?? '';
+      for (const line of lines) processLine(line, socket);
     });
     socket.on('close', () => {
-      if (activeSocket === socket) activeSocket = null;
+      connections.delete(socket);
+      if (primarySocket === socket) primarySocket = null;
     });
     socket.on('error', (error) => {
       log(`OMP bridge socket error: ${error.message}`);
@@ -275,13 +354,14 @@ async function startBridgeServer(
   return {
     send(frame: unknown): boolean {
       const line = `${JSON.stringify(frame)}\n`;
-      if (activeSocket?.writable) activeSocket.write(line);
+      if (primarySocket?.writable) primarySocket.write(line);
       else outgoing.push(line);
       return true;
     },
     async close(): Promise<void> {
-      activeSocket?.destroy();
-      activeSocket = null;
+      for (const socket of connections.keys()) socket.destroy();
+      connections.clear();
+      primarySocket = null;
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
@@ -341,6 +421,8 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   let child: IPty | null = null;
   let shouldExit = false;
   let turnStarted = false;
+  let abortInProgress = false;
+  const queuedAfterAbort: Array<{ message: UserMessage; attachments: PhoneAttachment[] }> = [];
   let assistantTextEmitted = false;
   let thinking = false;
   let pendingText = '';
@@ -349,6 +431,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   let outputStreamId = randomUUID();
   let thinkingStreamId = randomUUID();
   let lastPlanJson = '';
+  const compactTodoCallIds = new Set<string>();
   let bridgeServer: BridgeServer | null = null;
   let bridgeReadyResolved = false;
   let resolveBridgeReady: (() => void) | null = null;
@@ -537,8 +620,13 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         flushPendingText();
         outputStreamId = randomUUID();
         thinkingStreamId = randomUUID();
-        const toolName = normalizeBridgeToolName(asString(event.toolName) ?? 'tool');
+        const rawToolName = asString(event.toolName) ?? 'tool';
+        const toolName = normalizeBridgeToolName(rawToolName);
         const toolCallId = asString(event.toolCallId) ?? randomUUID();
+        if (rawToolName === 'todo') {
+          compactTodoCallIds.add(toolCallId);
+          return;
+        }
         session.sendAgentMessage('omp', {
           type: 'tool-call',
           name: toolName,
@@ -550,6 +638,10 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       }
       case 'tool_execution_end': {
         const toolCallId = asString(event.toolCallId) ?? randomUUID();
+        if (compactTodoCallIds.delete(toolCallId)) {
+          emitPlanTodos(event.result);
+          return;
+        }
         session.sendAgentMessage('omp', {
           type: 'tool-result',
           callId: toolCallId,
@@ -557,7 +649,6 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
           id: randomUUID(),
           isError: extractToolError(event.result, event.isError),
         });
-        emitPlanTodos(event.result);
         return;
       }
       case 'agent_end': {
@@ -567,6 +658,13 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         session.keepAlive(false, runMode);
         session.sendAgentMessage('omp', { type: 'task_complete', id: randomUUID() });
         session.sendSessionEvent({ type: 'ready' });
+        if (abortInProgress) {
+          abortInProgress = false;
+          const queued = queuedAfterAbort.splice(0);
+          for (const item of queued) {
+            sendPhonePrompt(item.message, item.attachments, false);
+          }
+        }
         return;
       }
       case 'notice': {
@@ -589,6 +687,10 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         ...currentMetadata,
         flavor: 'omp',
         ompSessionId: frame.sessionId,
+        ...(Array.isArray(frame.models) ? { models: frame.models } : {}),
+        ...(typeof frame.currentModel === 'string' ? { currentModelCode: frame.currentModel } : {}),
+        ...(Array.isArray(frame.thoughtLevels) ? { thoughtLevels: frame.thoughtLevels } : {}),
+        ...(typeof frame.currentThoughtLevel === 'string' ? { currentThoughtLevelCode: frame.currentThoughtLevel } : {}),
       }));
       settleBridgeReady();
       return;
@@ -599,6 +701,10 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       if (!text) return;
       if (runMode !== 'local') setRunMode('local');
       session.sendSessionProtocolMessage(createEnvelope('user', { t: 'text', text }));
+      return;
+    }
+    if (frame.type === 'aborted') {
+      log('OMP abort request accepted; waiting for agent_end');
       return;
     }
     if (frame.type === 'bridge_error') {
@@ -679,6 +785,31 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       }
     })());
   });
+  const sendPhonePrompt = (message: UserMessage, attachments: PhoneAttachment[], steering: boolean): void => {
+    const text = message.content.text?.trim() ?? '';
+    if (runMode !== 'remote') {
+      log('Switching native OMP control to remote');
+      flushPendingText();
+      setRunMode('remote');
+    }
+    if (!steering && typeof message.meta?.model === 'string') {
+      bridgeServer?.send({ type: 'set_model', spec: message.meta.model });
+    }
+    if (!steering && typeof message.meta?.effort === 'string') {
+      bridgeServer?.send({ type: 'set_thinking_level', level: message.meta.effort });
+    }
+    bridgeServer?.send({
+      type: 'prompt',
+      text,
+      ...(steering ? { deliverAs: 'steer' as const } : {}),
+      images: attachments.map((attachment) => ({
+        data: Buffer.from(attachment.data).toString('base64'),
+        mimeType: attachment.mimeType || 'image/jpeg',
+      })),
+    });
+    log(steering ? 'Sent remote steering message through the OMP extension bridge' : 'Sent remote prompt through the OMP extension bridge');
+  };
+
   session.onUserMessage(async (message: UserMessage) => {
     const attachmentsForThisMessage = await session.drainAttachmentsForUserMessage();
     if (!message.content.text && attachmentsForThisMessage.length === 0) {
@@ -686,44 +817,38 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
     const text = message.content.text?.trim() ?? '';
     log(`Received phone prompt (${text.length} chars, ${attachmentsForThisMessage.length} images)`);
-    if (runMode !== 'remote') {
-      log('Switching native OMP control to remote');
-      flushPendingText();
-      setRunMode('remote');
-    }
-    if (typeof message.meta?.model === 'string') {
-      bridgeServer?.send({ type: 'set_model', spec: message.meta.model });
-    }
-    bridgeServer?.send({
-      type: 'prompt',
-      text,
-      images: attachmentsForThisMessage.map((attachment) => ({
-        data: Buffer.from(attachment.data).toString('base64'),
-        mimeType: attachment.mimeType || 'image/jpeg',
-      })),
-    });
-    log('Sent remote prompt through the OMP extension bridge');
-  });
-
-  process.stdin.resume();
-  stdinResumed = true;
-  if (process.stdin.isTTY) {
-    process.stdin.setRawMode(true);
-    stdinRawModeEnabled = true;
-  }
-  process.stdin.setEncoding('utf8');
-  stdinDataHandler = (data) => {
-    const text = typeof data === 'string' ? data : data.toString('utf8');
-    if (text.length === 0) {
+    if (abortInProgress) {
+      queuedAfterAbort.push({ message, attachments: attachmentsForThisMessage });
+      log('Queued phone prompt until OMP abort completes');
       return;
     }
-    if (runMode !== 'local') {
-      flushPendingText();
-      setRunMode('local');
+    sendPhonePrompt(message, attachmentsForThisMessage, turnStarted);
+  });
+
+  // Daemon-created sessions run inside a PTY, whose startup bytes are not
+  // explicit local user input. Only terminal-created sessions may take over
+  // control through this process's stdin.
+  if (opts.startedBy !== 'daemon') {
+    process.stdin.resume();
+    stdinResumed = true;
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(true);
+      stdinRawModeEnabled = true;
     }
-    writeToChild(text);
-  };
-  process.stdin.on('data', stdinDataHandler);
+    process.stdin.setEncoding('utf8');
+    stdinDataHandler = (data) => {
+      const text = typeof data === 'string' ? data : data.toString('utf8');
+      if (text.length === 0) {
+        return;
+      }
+      if (runMode !== 'local') {
+        flushPendingText();
+        setRunMode('local');
+      }
+      writeToChild(text);
+    };
+    process.stdin.on('data', stdinDataHandler);
+  }
 
   resizeHandler = () => {
     child?.resize(process.stdout.columns || 80, process.stdout.rows || 24);
@@ -737,6 +862,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   }));
 
   session.rpcHandlerManager.registerHandler('abort', async () => {
+    abortInProgress = true;
     bridgeServer?.send({ type: 'abort' });
   });
 

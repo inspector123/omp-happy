@@ -247,6 +247,15 @@ export function getEffortLevelsForModel(flavor: AgentFlavor, _modelKey: string):
     return [];
 }
 
+export function getAvailableEffortLevels(
+    flavor: AgentFlavor,
+    modelKey: string,
+    metadata: Metadata | null | undefined,
+): EffortLevel[] {
+    const metadataLevels = mapMetadataOptions(metadata?.thoughtLevels);
+    return metadataLevels.length > 0 ? metadataLevels : getEffortLevelsForModel(flavor, modelKey);
+}
+
 // Default effort for a model — highest the model allows
 export function getDefaultEffortKeyForModel(flavor: AgentFlavor, modelKey: string): string | null {
     const levels = getEffortLevelsForModel(flavor, modelKey);

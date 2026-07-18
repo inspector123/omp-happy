@@ -18,19 +18,23 @@ const mocks = vi.hoisted(() => {
   let userMessageHandler: UserMessageHandler | null = null;
   let fileEventHandler: FileEventHandler | null = null;
   let bridgeConnectionHandler: BridgeConnectionHandler | null = null;
-  let bridgeDataHandler: BridgeDataHandler | null = null;
   let listeningHandler: BridgeEventHandler | null = null;
+  const bridgeDataHandlers = new Map<object, BridgeDataHandler>();
 
-  const mockBridgeSocket = {
-    writable: true,
-    setEncoding: vi.fn(),
-    write: vi.fn(),
-    destroy: vi.fn(),
-    on: vi.fn((event: string, handler: BridgeEventHandler) => {
-      if (event === 'data') bridgeDataHandler = handler as BridgeDataHandler;
-      return mockBridgeSocket;
-    }),
+  const createBridgeSocket = () => {
+    const socket = {
+      writable: true,
+      setEncoding: vi.fn(),
+      write: vi.fn(),
+      destroy: vi.fn(),
+      on: vi.fn((event: string, handler: BridgeEventHandler) => {
+        if (event === 'data') bridgeDataHandlers.set(socket, handler as BridgeDataHandler);
+        return socket;
+      }),
+    };
+    return socket;
   };
+  const mockBridgeSocket = createBridgeSocket();
   const mockNetServer = {
     once: vi.fn((event: string, handler: BridgeEventHandler) => {
       if (event === 'listening') listeningHandler = handler;
@@ -98,15 +102,23 @@ const mocks = vi.hoisted(() => {
     mockSession,
     getUserMessageHandler: () => userMessageHandler,
     getFileEventHandler: () => fileEventHandler,
+    connectBridgeSocket: () => {
+      const socket = createBridgeSocket();
+      bridgeConnectionHandler?.(socket);
+      return socket;
+    },
     emitBridgeFrame: (frame: unknown) => {
-      if (!bridgeDataHandler) bridgeConnectionHandler?.(mockBridgeSocket);
-      bridgeDataHandler?.(`${JSON.stringify(frame)}\n`);
+      if (!bridgeDataHandlers.has(mockBridgeSocket)) bridgeConnectionHandler?.(mockBridgeSocket);
+      bridgeDataHandlers.get(mockBridgeSocket)?.(`${JSON.stringify(frame)}\n`);
+    },
+    emitBridgeFrameOn: (socket: object, frame: unknown) => {
+      bridgeDataHandlers.get(socket)?.(`${JSON.stringify(frame)}\n`);
     },
     resetHandlers: () => {
       userMessageHandler = null;
       fileEventHandler = null;
       bridgeConnectionHandler = null;
-      bridgeDataHandler = null;
+      bridgeDataHandlers.clear();
       listeningHandler = null;
     },
   };
@@ -275,7 +287,21 @@ describe('runOmp', () => {
     expect(child.onData).toHaveBeenCalledTimes(1);
     expect(child.onExit).toHaveBeenCalledTimes(1);
 
-    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-session-1' });
+    mocks.emitBridgeFrame({
+      type: 'ready',
+      protocolVersion: 1,
+      sessionId: 'omp-session-1',
+      models: [
+        { code: 'openai/gpt-5.6-sol', value: 'GPT-5.6 Sol' },
+        { code: 'anthropic/claude-opus-4-6', value: 'Claude Opus 4.6', description: 'Most capable' },
+      ],
+      currentModel: 'openai/gpt-5.6-sol',
+      thoughtLevels: [
+        { code: 'off', value: 'Off' },
+        { code: 'high', value: 'High' },
+      ],
+      currentThoughtLevel: 'high',
+    });
     await vi.advanceTimersByTimeAsync(1);
     expect(mocks.mockSession.updateMetadata).toHaveBeenCalledWith(expect.any(Function));
     const readyMetadataUpdater = mocks.mockSession.updateMetadata.mock.calls[1]?.[0];
@@ -283,6 +309,18 @@ describe('runOmp', () => {
       path: '/repo',
       flavor: 'omp',
       ompSessionId: 'omp-session-1',
+    });
+    expect(readyMetadataUpdater?.({ path: '/repo', flavor: 'omp' })).toMatchObject({
+      models: [
+        { code: 'openai/gpt-5.6-sol', value: 'GPT-5.6 Sol' },
+        { code: 'anthropic/claude-opus-4-6', value: 'Claude Opus 4.6', description: 'Most capable' },
+      ],
+      currentModelCode: 'openai/gpt-5.6-sol',
+      thoughtLevels: [
+        { code: 'off', value: 'Off' },
+        { code: 'high', value: 'High' },
+      ],
+      currentThoughtLevelCode: 'high',
     });
 
     child.emitExit(0);
@@ -321,6 +359,85 @@ describe('runOmp', () => {
     await runPromise;
   });
 
+  it('routes mid-flight phone prompts as steering on the root bridge', async () => {
+    vi.useFakeTimers();
+
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-root-session' });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: { type: 'agent_start' },
+    });
+    const childSocket = mocks.connectBridgeSocket();
+    mocks.emitBridgeFrameOn(childSocket, {
+      type: 'ready',
+      protocolVersion: 1,
+      sessionId: 'omp-child-session',
+    });
+    mocks.emitBridgeFrameOn(childSocket, {
+      type: 'agent_event',
+      event: { type: 'agent_start' },
+    });
+
+    await mocks.getUserMessageHandler()?.({
+      content: { text: 'Correction from phone' },
+      meta: { model: 'openai/gpt-5.6-sol', effort: 'high' },
+    });
+
+    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
+      '{"type":"prompt","text":"Correction from phone","deliverAs":"steer","images":[]}\n',
+    );
+    expect(childSocket.write).not.toHaveBeenCalled();
+    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledTimes(1);
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
+  it('queues a phone prompt received while stop is completing', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-abort-queue' });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_start' } });
+
+    const abortHandler = mocks.mockSession.rpcHandlerManager.registerHandler.mock.calls.find(
+      ([name]) => name === 'abort',
+    )?.[1] as (() => Promise<void>) | undefined;
+    await abortHandler?.();
+    await mocks.getUserMessageHandler()?.({
+      content: { text: 'Run after stop' },
+      meta: { model: 'openai/gpt-5.6-sol', effort: 'high' },
+    });
+    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledTimes(1);
+    expect(mocks.mockBridgeSocket.write).toHaveBeenLastCalledWith('{"type":"abort"}\n');
+
+    mocks.emitBridgeFrame({ type: 'aborted' });
+    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledTimes(1);
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_end' } });
+    expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
+      2,
+      '{"type":"set_model","spec":"openai/gpt-5.6-sol"}\n',
+    );
+    expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
+      3,
+      '{"type":"set_thinking_level","level":"high"}\n',
+    );
+    expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
+      4,
+      '{"type":"prompt","text":"Run after stop","images":[]}\n',
+    );
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
 
   it('routes phone images and model selection through the extension bridge', async () => {
     vi.useFakeTimers();
@@ -336,13 +453,19 @@ describe('runOmp', () => {
     const userMessageHandler = mocks.getUserMessageHandler();
     await userMessageHandler?.({
       content: { text: '' },
-      meta: { model: 'openai/gpt-5.6-sol' },
+      meta: { model: 'openai/gpt-5.6-sol', effort: 'high' },
     });
 
-    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
+    expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
+      1,
       '{"type":"set_model","spec":"openai/gpt-5.6-sol"}\n',
     );
-    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
+    expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
+      2,
+      '{"type":"set_thinking_level","level":"high"}\n',
+    );
+    expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
+      3,
       '{"type":"prompt","text":"","images":[{"data":"AQID","mimeType":"image/png"}]}\n',
     );
 
@@ -564,6 +687,101 @@ describe('runOmp', () => {
     );
   });
 
+  it('renders lowercase OMP tools through compact app contracts', async () => {
+    vi.useFakeTimers();
+
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-session-compact-tools' });
+    await vi.advanceTimersByTimeAsync(1);
+
+    for (const event of [
+      { toolCallId: 'yield-call', toolName: 'yield', args: { i: 'Finishing turn' } },
+      { toolCallId: 'irc-call', toolName: 'irc', args: { i: 'Messaging agent', op: 'send' } },
+      {
+        toolCallId: 'task-call',
+        toolName: 'task',
+        args: {
+          i: 'Delegating review',
+          tasks: [{ name: 'ReviewWorker', agent: 'reviewer', task: 'Review the change' }],
+        },
+      },
+      { toolCallId: 'browser-call', toolName: 'browser', args: { i: 'Opening app', action: 'open' } },
+      { toolCallId: 'todo-call', toolName: 'todo', args: { i: 'Updating work', op: 'done' } },
+    ]) {
+      mocks.emitBridgeFrame({
+        type: 'agent_event',
+        event: { type: 'tool_execution_start', ...event },
+      });
+    }
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_end',
+        toolCallId: 'todo-call',
+        result: {
+          details: {
+            phases: [{
+              name: 'Repair',
+              tasks: [
+                { content: 'Fix bridge', status: 'completed' },
+                { content: 'Verify phone', status: 'in_progress' },
+              ],
+            }],
+          },
+        },
+        isError: false,
+      },
+    });
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+
+    for (const expected of [
+      { callId: 'yield-call', name: 'yield' },
+      { callId: 'irc-call', name: 'irc' },
+      { callId: 'browser-call', name: 'fetch' },
+    ]) {
+      expect(mocks.mockSession.sendAgentMessage).toHaveBeenCalledWith(
+        'omp',
+        expect.objectContaining({ type: 'tool-call', ...expected }),
+      );
+    }
+    expect(mocks.mockSession.sendAgentMessage).toHaveBeenCalledWith(
+      'omp',
+      expect.objectContaining({
+        type: 'tool-call',
+        callId: 'task-call',
+        name: 'delegate_task',
+        input: expect.objectContaining({
+          tasks: [expect.objectContaining({
+            id: 'ReviewWorker',
+            description: 'Review the change',
+            role: 'reviewer',
+          })],
+        }),
+      }),
+    );
+    expect(mocks.mockSession.sendAgentMessage).toHaveBeenCalledWith(
+      'omp',
+      expect.objectContaining({
+        type: 'tool-call',
+        name: 'TodoWrite',
+        input: {
+          todos: [
+            { content: 'Fix bridge', status: 'completed' },
+            { content: 'Verify phone', status: 'in_progress' },
+          ],
+        },
+      }),
+    );
+    expect(mocks.mockSession.sendAgentMessage).not.toHaveBeenCalledWith(
+      'omp',
+      expect.objectContaining({ type: 'tool-call', callId: 'todo-call' }),
+    );
+  });
+
   it('preserves output identity across thinking and starts a new segment after tools', async () => {
     vi.useFakeTimers();
 
@@ -688,6 +906,10 @@ describe('runOmp', () => {
     expect(mocks.mockSession.sendSessionEvent).toHaveBeenNthCalledWith(1, { type: 'switch', mode: 'remote' });
     const initialAgentStateUpdater = mocks.mockSession.updateAgentState.mock.calls[0]?.[0];
     expect(initialAgentStateUpdater?.({})).toMatchObject({ controlledByUser: false });
+
+    process.stdin.emit('data', 'unexpected startup input');
+    expect(mocks.mockSession.sendSessionEvent).toHaveBeenCalledTimes(1);
+    expect(child.write).not.toHaveBeenCalled();
 
     child.emitExit(0);
     await vi.advanceTimersByTimeAsync(200);
