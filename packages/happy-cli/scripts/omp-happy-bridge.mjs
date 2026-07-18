@@ -189,6 +189,33 @@ export default function happyBridgeExtension(pi) {
         return formatAskResult(params.questions, answers);
       },
     });
+    pi.registerTool({
+      name: 'change_title',
+      label: 'Change title',
+      description: 'Change the title of the current Happy chat session.',
+      parameters: z.object({
+        title: z.string().min(1),
+      }),
+      async execute(_toolCallId, params) {
+        const title = params.title.trim();
+        if (!title) {
+          return {
+            content: [{ type: 'text', text: 'Title must not be empty.' }],
+            isError: true,
+          };
+        }
+        if (typeof pi.setSessionName === 'function') {
+          await pi.setSessionName(title);
+        } else if (typeof latestContext?.sessionManager?.setSessionName === 'function') {
+          await latestContext.sessionManager.setSessionName(title);
+        }
+        send({ type: 'change_title', title });
+        return {
+          content: [{ type: 'text', text: `Changed Happy session title to "${title}".` }],
+          details: { title, ompSessionName: typeof pi.getSessionName === 'function' ? pi.getSessionName() : title },
+        };
+      },
+    });
   }
 
 
@@ -207,6 +234,9 @@ export default function happyBridgeExtension(pi) {
       currentModel: modelSnapshot.currentModel,
       thoughtLevels: thinkingSnapshot.thoughtLevels,
       currentThoughtLevel: thinkingSnapshot.currentThoughtLevel,
+      title: typeof pi.getSessionName === 'function'
+        ? pi.getSessionName()
+        : ctx.sessionManager.getSessionName?.(),
     });
   };
 

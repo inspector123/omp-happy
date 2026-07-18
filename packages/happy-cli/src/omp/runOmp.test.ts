@@ -301,6 +301,7 @@ describe('runOmp', () => {
         { code: 'high', value: 'High' },
       ],
       currentThoughtLevel: 'high',
+      title: 'Native OMP title',
     });
     await vi.advanceTimersByTimeAsync(1);
     expect(mocks.mockSession.updateMetadata).toHaveBeenCalledWith(expect.any(Function));
@@ -321,6 +322,39 @@ describe('runOmp', () => {
         { code: 'high', value: 'High' },
       ],
       currentThoughtLevelCode: 'high',
+    });
+    const nativeTitleUpdater = mocks.mockSession.updateMetadata.mock.calls[2]?.[0];
+    expect(nativeTitleUpdater?.({ path: '/repo' })).toMatchObject({
+      summary: {
+        text: 'Native OMP title',
+        updatedAt: expect.any(Number),
+      },
+    });
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
+  it('updates the Happy app title from the OMP change_title tool', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-title' });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.emitBridgeFrame({ type: 'change_title', title: 'Image upload repair' });
+
+    const titleUpdater = mocks.mockSession.updateMetadata.mock.calls.at(-1)?.[0];
+    expect(titleUpdater?.({
+      path: '/repo',
+      summary: { text: 'Old title', updatedAt: 1 },
+    })).toEqual({
+      path: '/repo',
+      summary: {
+        text: 'Image upload repair',
+        updatedAt: expect.any(Number),
+      },
     });
 
     child.emitExit(0);

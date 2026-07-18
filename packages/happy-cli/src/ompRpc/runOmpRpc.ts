@@ -577,7 +577,10 @@ export async function runOmpRpc(opts: RunOmpRpcOptions): Promise<void> {
       if (title) {
         session.updateMetadata((currentMetadata) => ({
           ...currentMetadata,
-          name: title,
+          summary: {
+            text: title,
+            updatedAt: Date.now(),
+          },
         }));
       }
       return;

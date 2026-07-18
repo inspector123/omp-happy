@@ -33,7 +33,7 @@ const BRIDGE_EXTENSION_FILE = 'omp-happy-bridge.mjs';
 
 type RunMode = 'local' | 'remote';
 
-type BridgeFrame = BridgeReadyFrame | BridgeAgentEventFrame | BridgeInputFrame | BridgeErrorFrame | BridgeAbortedFrame | BridgeAskRequestFrame;
+type BridgeFrame = BridgeReadyFrame | BridgeAgentEventFrame | BridgeInputFrame | BridgeErrorFrame | BridgeAbortedFrame | BridgeAskRequestFrame | BridgeChangeTitleFrame;
 
 type BridgeReadyFrame = {
   type: 'ready';
@@ -45,6 +45,7 @@ type BridgeReadyFrame = {
   currentModel?: string;
   thoughtLevels?: Array<{ code: string; value: string; description?: string }>;
   currentThoughtLevel?: string;
+  title?: string;
 };
 
 type BridgeAgentEventFrame = {
@@ -78,6 +79,11 @@ type BridgeAskRequestFrame = {
     multi?: boolean;
     recommended?: number;
   }>;
+};
+
+type BridgeChangeTitleFrame = {
+  type: 'change_title';
+  title: string;
 };
 
 type PhoneAttachment = {
@@ -719,6 +725,16 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         ...(Array.isArray(frame.thoughtLevels) ? { thoughtLevels: frame.thoughtLevels } : {}),
         ...(typeof frame.currentThoughtLevel === 'string' ? { currentThoughtLevelCode: frame.currentThoughtLevel } : {}),
       }));
+      if (typeof frame.title === 'string' && frame.title.trim()) {
+        const title = frame.title.trim();
+        session.updateMetadata((currentMetadata) => ({
+          ...currentMetadata,
+          summary: {
+            text: title,
+            updatedAt: Date.now(),
+          },
+        }));
+      }
       settleBridgeReady();
       return;
     }
@@ -736,6 +752,20 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
           })),
         },
       });
+      return;
+    }
+    if (frame.type === 'change_title') {
+      const title = frame.title.trim();
+      if (title) {
+        session.updateMetadata((currentMetadata) => ({
+          ...currentMetadata,
+          summary: {
+            text: title,
+            updatedAt: Date.now(),
+          },
+        }));
+        log(`Changed Happy session title to "${title}"`);
+      }
       return;
     }
     if (frame.type === 'input') {
