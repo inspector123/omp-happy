@@ -905,10 +905,9 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     sendPhonePrompt(message, attachmentsForThisMessage, turnStarted);
   });
 
-  // Daemon-created sessions run inside a PTY, whose startup bytes are not
-  // explicit local user input. Only terminal-created sessions may take over
-  // control through this process's stdin.
-  if (opts.startedBy !== 'daemon') {
+  // Daemon sessions ignore inherited startup bytes unless the wrapper is
+  // attached to a real TTY, where local keystrokes are intentional input.
+  if (opts.startedBy !== 'daemon' || Boolean(process.stdin.isTTY)) {
     process.stdin.resume();
     stdinResumed = true;
     if (process.stdin.isTTY) {

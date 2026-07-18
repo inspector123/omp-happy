@@ -954,6 +954,35 @@ describe('runOmp', () => {
     await runPromise;
   });
 
+  it('forwards daemon-session input when attached to a TTY', async () => {
+    vi.useFakeTimers();
+    const stdin = process.stdin as typeof process.stdin & { setRawMode?: (mode: boolean) => void };
+    const originalIsTTY = stdin.isTTY;
+    const originalSetRawMode = stdin.setRawMode;
+    Object.defineProperty(stdin, 'isTTY', { configurable: true, value: true });
+    Object.defineProperty(stdin, 'setRawMode', { configurable: true, value: vi.fn() });
+
+    try {
+      const runPromise = runOmp({ credentials, startedBy: 'daemon' });
+      await settleMicrotasks();
+      mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-session-tty' });
+      await vi.advanceTimersByTimeAsync(1);
+
+      process.stdin.emit('data', '/advisor off\r');
+      expect(child.write).toHaveBeenCalledWith('/advisor off\r');
+
+      child.emitExit(0);
+      await vi.advanceTimersByTimeAsync(200);
+      await runPromise;
+    } finally {
+      Object.defineProperty(stdin, 'isTTY', { configurable: true, value: originalIsTTY });
+      Object.defineProperty(stdin, 'setRawMode', {
+        configurable: true,
+        value: originalSetRawMode,
+      });
+    }
+  });
+
   it('routes remote OMP ask requests and answers through the permission RPC', async () => {
     vi.useFakeTimers();
     const runPromise = runOmp({ credentials, startedBy: 'daemon' });
