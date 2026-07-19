@@ -955,16 +955,14 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   session.rpcHandlerManager.registerHandler<{
     id: string;
     approved: boolean;
-    updatedInput?: { answers?: Record<string, string> };
+    updatedInput?: { answers?: Record<string, string | string[]> };
   }, void>('permission', async (response) => {
-    if (!response.approved) {
-      requestAbort();
-      return;
-    }
+    // Ask is a tool-level interaction, not a permission gate. Always resolve
+    // the pending bridge request so OMP can finish the tool call and continue.
     bridgeServer?.send({
       type: 'ask_response',
       id: response.id,
-      answers: response.updatedInput?.answers ?? {},
+      answers: response.approved ? (response.updatedInput?.answers ?? {}) : {},
     });
   });
 

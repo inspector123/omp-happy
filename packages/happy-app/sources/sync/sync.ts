@@ -93,6 +93,10 @@ type OutboxMessage = {
 type SendMessageOptions = {
     displayText?: string;
     source?: MessageSentSource;
+    /** Explicit mode values for the first message of a newly spawned session. */
+    model?: string | null;
+    effort?: string | null;
+    permissionMode?: string;
     /** Optional image attachments to send before the text message. */
     attachments?: AttachmentPreview[];
 };
@@ -608,8 +612,13 @@ class Sync {
             }
         }
 
-        const modeMeta = resolveMessageModeMeta(session, storage.getState().settings);
-        const { displayText, source = 'chat', attachments } = options ?? {};
+        const { displayText, source = 'chat', attachments, model, effort, permissionMode } = options ?? {};
+        const modeMeta = {
+            ...resolveMessageModeMeta(session, storage.getState().settings),
+            ...(model !== undefined ? { model } : {}),
+            ...(effort !== undefined ? { effort } : {}),
+            ...(permissionMode !== undefined ? { permissionMode } : {}),
+        };
 
         const flavor = session.metadata?.flavor;
         const attachmentPlan = getImageAttachmentSendPlan({

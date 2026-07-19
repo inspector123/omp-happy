@@ -788,22 +788,23 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                             result: undefined,
                         };
 
-                        // Add permission info if found
-                        if (permission) {
-                            if (ENABLE_LOGGING) {
+                        // Ask requests arrive as direct tool-call messages, without
+                        // a corresponding entry in state.permissions.
+                        const pendingQuestion = c.name === 'AskUserQuestion' && !permission;
+                        if (permission || pendingQuestion) {
+                            if (permission && ENABLE_LOGGING) {
                                 console.log(`[REDUCER] Found stored permission for tool ${c.id}`);
                             }
                             toolCall.permission = {
                                 id: c.id,
-                                status: permission.status,
-                                reason: permission.reason,
-                                mode: permission.mode,
-                                allowedTools: permission.allowedTools,
-                                decision: permission.decision
+                                status: permission?.status ?? 'pending',
+                                reason: permission?.reason,
+                                mode: permission?.mode,
+                                allowedTools: permission?.allowedTools,
+                                decision: permission?.decision
                             };
 
-                            // Update state based on permission status
-                            if (permission.status !== 'approved') {
+                            if (permission && permission.status !== 'approved') {
                                 toolCall.state = 'error';
                                 toolCall.completedAt = permission.completedAt || msg.createdAt;
                                 if (permission.reason) {

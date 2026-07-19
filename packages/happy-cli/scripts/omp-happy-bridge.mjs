@@ -93,13 +93,14 @@ export function getThinkingSnapshot(pi, ctx) {
 
 export function formatAskResult(questions, answers) {
   const results = questions.map((question) => {
-    const answer = answers[question.id] ?? answers[question.question] ?? '';
+    const rawAnswer = answers[question.id] ?? answers[question.question] ?? '';
+    const answer = Array.isArray(rawAnswer) ? rawAnswer : (rawAnswer ? String(rawAnswer).split(', ').filter(Boolean) : []);
     return {
       id: question.id,
       question: question.question,
       options: question.options.map((option) => option.label),
       multi: question.multi === true,
-      selectedOptions: answer ? answer.split(', ').filter(Boolean) : [],
+      selectedOptions: answer,
     };
   });
   return {

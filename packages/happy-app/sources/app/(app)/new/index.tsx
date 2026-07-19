@@ -972,9 +972,13 @@ function NewSessionScreen() {
                     const trimmedPrompt = draftState.input.trim();
                     draftState.setInput('');
 
-                    // Send initial message if provided
                     if (trimmedPrompt) {
-                        await sync.sendMessage(result.sessionId, trimmedPrompt, { source: 'new_session' });
+                        await sync.sendMessage(result.sessionId, trimmedPrompt, {
+                            source: 'new_session',
+                            model: modelOverride === 'default' ? null : modelOverride,
+                            effort: effortOverride,
+                            permissionMode: permissionOverride ?? undefined,
+                        });
                     }
 
                     router.back();
