@@ -180,7 +180,8 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
     }
 
     const isRunning = tool.state === 'running';
-    const canInteract = isRunning && !isSubmitted;
+    const permissionId = tool.permission?.id;
+    const canInteract = isRunning && !isSubmitting && !isSubmitted;
 
     // Check if all questions have at least one selection
     const allQuestionsAnswered = questions.every((_, qIndex) => {
@@ -214,15 +215,9 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
     }, [canInteract]);
 
     const handleSubmit = React.useCallback(async () => {
-        if (!sessionId || !allQuestionsAnswered || isSubmitting) return;
+        if (!sessionId || !permissionId || !allQuestionsAnswered || isSubmitting) return;
 
         setIsSubmitting(true);
-
-        // HACK: Disable the form immediately by switching to the submitted view.
-        // Without this, users could edit their selections while the network calls
-        // are in flight, but those edits would be ignored since we've already
-        // captured the values above. TODO: Revisit this logic.
-        setIsSubmitted(true);
 
         const answers: Record<string, string> = {};
         questions.forEach((q, qIndex) => {
@@ -239,15 +234,14 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
         try {
             // AskUserQuestion expects answers to be returned as part of the tool input,
             // not as a follow-up plain text message.
-            if (tool.permission?.id) {
-                await sessionAllow(sessionId, tool.permission.id, undefined, undefined, 'approved', { answers });
-            }
+            await sessionAllow(sessionId, permissionId, undefined, undefined, 'approved', { answers });
+            setIsSubmitted(true);
         } catch (error) {
             console.error('Failed to submit answer:', error);
         } finally {
             setIsSubmitting(false);
         }
-    }, [sessionId, questions, selections, allQuestionsAnswered, isSubmitting, tool.permission?.id]);
+    }, [sessionId, permissionId, questions, selections, allQuestionsAnswered, isSubmitting]);
 
     // Show submitted state
     if (isSubmitted || tool.state === 'completed') {
@@ -338,10 +332,10 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
                         <TouchableOpacity
                             style={[
                                 styles.submitButton,
-                                (!allQuestionsAnswered || isSubmitting) && styles.submitButtonDisabled,
+                                (!permissionId || !allQuestionsAnswered || isSubmitting) && styles.submitButtonDisabled,
                             ]}
                             onPress={handleSubmit}
-                            disabled={!allQuestionsAnswered || isSubmitting}
+                            disabled={!permissionId || !allQuestionsAnswered || isSubmitting}
                             activeOpacity={0.7}
                         >
                             {isSubmitting ? (
