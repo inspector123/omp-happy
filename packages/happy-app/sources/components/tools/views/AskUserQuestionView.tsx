@@ -1,11 +1,12 @@
 import * as React from 'react';
-import { View, Text, TextInput, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { ToolViewProps } from './_all';
 import { ToolSectionView } from '../ToolSectionView';
 import { sessionAllow } from '@/sync/ops';
 import { t } from '@/text';
 import { Ionicons } from '@expo/vector-icons';
+import { Modal } from '@/modal';
 import {
     AskQuestion,
     buildAskAnswers,
@@ -49,18 +50,6 @@ const styles = StyleSheet.create((theme) => ({
     },
     optionsContainer: {
         gap: 4,
-    },
-    customInput: {
-        minHeight: 44,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        marginLeft: 42,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: theme.colors.divider,
-        backgroundColor: theme.colors.input.background,
-        color: theme.colors.input.text,
-        fontSize: 14,
     },
     optionButton: {
         flexDirection: 'row',
@@ -219,13 +208,41 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
         });
     }, [canInteract]);
 
-    const handleCustomAnswerChange = React.useCallback((questionIndex: number, value: string) => {
+    const handleOtherPress = React.useCallback(async (questionIndex: number, multiSelect: boolean) => {
+        if (!canInteract) return;
+        const question = questions[questionIndex];
+        if (!question) return;
+
+        const response = await Modal.prompt(
+            t('tools.askUserQuestion.other'),
+            question.question,
+            {
+                placeholder: t('tools.askUserQuestion.otherPlaceholder'),
+                defaultValue: customAnswers.get(questionIndex) ?? '',
+                cancelText: t('common.cancel'),
+                confirmText: t('tools.askUserQuestion.submit'),
+            },
+        );
+        if (response === null || response === undefined) return;
+
+        const value = response.trim();
         setCustomAnswers(previous => {
             const next = new Map(previous);
-            next.set(questionIndex, value);
+            if (value) next.set(questionIndex, value);
+            else next.delete(questionIndex);
             return next;
         });
-    }, []);
+        setSelections(previous => {
+            const next = new Map(previous);
+            const selected = multiSelect
+                ? new Set(previous.get(questionIndex) ?? [])
+                : new Set<number>();
+            if (value) selected.add(OTHER_OPTION_INDEX);
+            else selected.delete(OTHER_OPTION_INDEX);
+            next.set(questionIndex, selected);
+            return next;
+        });
+    }, [canInteract, customAnswers, questions]);
 
 
     const handleSubmit = React.useCallback(async () => {
@@ -328,7 +345,7 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
                                         isOtherSelected && styles.optionButtonSelected,
                                         !canInteract && styles.optionButtonDisabled,
                                     ]}
-                                    onPress={() => handleOptionToggle(qIndex, OTHER_OPTION_INDEX, question.multiSelect === true)}
+                                    onPress={() => handleOtherPress(qIndex, question.multiSelect === true)}
                                     disabled={!canInteract}
                                     activeOpacity={0.7}
                                     accessibilityRole={question.multiSelect ? 'checkbox' : 'radio'}
@@ -353,23 +370,11 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
                                     )}
                                     <View style={styles.optionContent}>
                                         <Text style={styles.optionLabel}>{t('tools.askUserQuestion.other')}</Text>
-                                        <Text style={styles.optionDescription}>{t('tools.askUserQuestion.otherDescription')}</Text>
+                                        <Text style={styles.optionDescription}>
+                                            {customAnswers.get(qIndex) || t('tools.askUserQuestion.otherDescription')}
+                                        </Text>
                                     </View>
                                 </TouchableOpacity>
-                                {isOtherSelected && (
-                                    <TextInput
-                                        style={styles.customInput}
-                                        value={customAnswers.get(qIndex) ?? ''}
-                                        onChangeText={value => handleCustomAnswerChange(qIndex, value)}
-                                        placeholder={t('tools.askUserQuestion.otherPlaceholder')}
-                                        placeholderTextColor={theme.colors.input.placeholder}
-                                        editable={canInteract}
-                                        autoFocus
-                                        autoCapitalize="sentences"
-                                        autoCorrect
-                                        returnKeyType="done"
-                                    />
-                                )}
                             </View>
                         </View>
                     );
