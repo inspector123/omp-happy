@@ -1,6 +1,9 @@
 import { createConnection } from 'node:net';
 
 const SOCKET_ENV = 'OMP_HAPPY_BRIDGE_SOCKET';
+const CONTROL_MODE_ENV = 'OMP_HAPPY_CONTROL_MODE';
+const LOCAL_ASK_TOOL = 'ask';
+const REMOTE_ASK_TOOL = 'happy_ask';
 const PROTOCOL_VERSION = 1;
 
 function safeStringify(value) {
@@ -105,6 +108,24 @@ export function formatAskResult(questions, answers) {
   };
 }
 
+export function selectAskTools(activeTools, mode) {
+  const selectedAskTool = mode === 'remote' ? REMOTE_ASK_TOOL : LOCAL_ASK_TOOL;
+  const askToolNames = new Set([LOCAL_ASK_TOOL, REMOTE_ASK_TOOL]);
+  const nextTools = [];
+  let insertedAskTool = false;
+  for (const toolName of activeTools) {
+    if (!askToolNames.has(toolName)) {
+      nextTools.push(toolName);
+      continue;
+    }
+    if (!insertedAskTool) {
+      nextTools.push(selectedAskTool);
+      insertedAskTool = true;
+    }
+  }
+  return nextTools;
+}
+
 export async function sendPromptCommand(pi, command) {
   if (!command || typeof command !== 'object' || command.type !== 'prompt' || typeof command.text !== 'string') {
     return false;
@@ -138,6 +159,7 @@ export default function happyBridgeExtension(pi) {
   let connectedOnce = false;
   let shuttingDown = false;
   let commandQueue = Promise.resolve();
+  let controlMode = process.env[CONTROL_MODE_ENV] === 'remote' ? 'remote' : 'local';
   const pendingAskRequests = new Map();
 
 
@@ -151,10 +173,22 @@ export default function happyBridgeExtension(pi) {
     if (connected && socket?.writable) socket.write(line);
     else pendingFrames.push(line);
   };
+  const setControlMode = (mode) => {
+    if (mode !== 'local' && mode !== 'remote') return false;
+    controlMode = mode;
+    if (typeof pi.getActiveTools === 'function' && typeof pi.setActiveTools === 'function') {
+      const activeTools = pi.getActiveTools();
+      const nextTools = selectAskTools(activeTools, controlMode);
+      if (nextTools.length !== activeTools.length || nextTools.some((name, index) => name !== activeTools[index])) {
+        pi.setActiveTools(nextTools);
+      }
+    }
+    return true;
+  };
   if (typeof pi.registerTool === 'function') {
     const z = pi.zod;
     pi.registerTool({
-      name: 'ask',
+      name: REMOTE_ASK_TOOL,
       label: 'Ask',
       description: 'Ask the user one or more questions during execution.',
       parameters: z.object({
@@ -245,6 +279,12 @@ export default function happyBridgeExtension(pi) {
     if (await sendPromptCommand(pi, command)) {
       return;
     }
+    if (command.type === 'set_control_mode') {
+      if (!setControlMode(command.mode)) {
+        send({ type: 'bridge_error', message: `Invalid OMP control mode: ${String(command.mode)}` });
+      }
+      return;
+    }
     if (command.type === 'abort') {
       await latestContext?.abort();
       send({ type: 'aborted' });
@@ -325,6 +365,7 @@ export default function happyBridgeExtension(pi) {
   connect();
 
   pi.on('session_start', async (_event, ctx) => {
+    setControlMode(controlMode);
     publishReady(ctx);
   });
   pi.on('session_switch', async (event, ctx) => {
@@ -332,6 +373,7 @@ export default function happyBridgeExtension(pi) {
     send({ type: 'agent_event', event });
   });
   pi.on('input', async (event, ctx) => {
+    if (event.source !== 'extension') setControlMode('local');
     latestContext = ctx;
     send({ type: 'input', text: event.text, source: event.source, images: event.images });
   });

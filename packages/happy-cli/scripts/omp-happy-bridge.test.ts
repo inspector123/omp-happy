@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 // The bridge is intentionally plain ESM because native OMP loads it directly.
 // @ts-expect-error TypeScript has no declaration for the runtime extension module.
-import { formatAskResult, getModelSnapshot, getThinkingSnapshot, resolveModel, resolveRequestedModel, sendPromptCommand } from './omp-happy-bridge.mjs';
+import { formatAskResult, getModelSnapshot, getThinkingSnapshot, resolveModel, resolveRequestedModel, selectAskTools, sendPromptCommand } from './omp-happy-bridge.mjs';
 
 describe('OMP Happy bridge models', () => {
   const models = [
@@ -109,6 +109,14 @@ describe('OMP Happy bridge models', () => {
         ],
       },
     });
+  });
+
+  it('keeps native ask local and activates the bridge ask only for remote control', () => {
+    const activeTools = ['read', 'ask', 'happy_ask', 'bash'];
+    expect(selectAskTools(activeTools, 'local')).toEqual(['read', 'ask', 'bash']);
+    expect(selectAskTools(activeTools, 'remote')).toEqual(['read', 'happy_ask', 'bash']);
+    expect(selectAskTools(['read', 'bash'], 'local')).toEqual(['read', 'bash']);
+    expect(selectAskTools(['read', 'bash'], 'remote')).toEqual(['read', 'bash']);
   });
   it('delivers bridge prompt images as exact OMP multimodal content', async () => {
     const sendUserMessage = vi.fn().mockResolvedValue(undefined);

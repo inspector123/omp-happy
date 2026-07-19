@@ -29,6 +29,7 @@ const BRIDGE_READY_TIMEOUT_MS = 15_000;
 const SESSION_CLOSE_TIMEOUT_MS = 5_000;
 const BRIDGE_EXIT_GRACE_MS = 300;
 const BRIDGE_SOCKET_ENV = 'OMP_HAPPY_BRIDGE_SOCKET';
+const BRIDGE_CONTROL_MODE_ENV = 'OMP_HAPPY_CONTROL_MODE';
 const BRIDGE_EXTENSION_FILE = 'omp-happy-bridge.mjs';
 
 type RunMode = 'local' | 'remote';
@@ -563,6 +564,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       controlledByUser: runMode === 'local',
     }));
     session.keepAlive(thinking, runMode);
+    bridgeServer?.send({ type: 'set_control_mode', mode: runMode });
   };
 
 
@@ -661,7 +663,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         const rawToolName = asString(event.toolName) ?? 'tool';
         const toolName = normalizeBridgeToolName(rawToolName);
         const toolCallId = asString(event.toolCallId) ?? randomUUID();
-        if (rawToolName === 'ask') {
+        if (rawToolName === 'happy_ask') {
           return;
         }
         if (rawToolName === 'todo') {
@@ -679,7 +681,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       }
       case 'tool_execution_end': {
         const toolCallId = asString(event.toolCallId) ?? randomUUID();
-        if (asString(event.toolName) === 'ask') {
+        if (asString(event.toolName) === 'happy_ask') {
           return;
         }
         if (compactTodoCallIds.delete(toolCallId)) {
@@ -736,6 +738,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         }));
       }
       settleBridgeReady();
+      bridgeServer?.send({ type: 'set_control_mode', mode: runMode });
       return;
     }
     if (frame.type === 'ask_request') {
@@ -805,6 +808,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       env: {
         ...process.env,
         [BRIDGE_SOCKET_ENV]: socketPath,
+        [BRIDGE_CONTROL_MODE_ENV]: runMode,
       },
       name: process.env.TERM || 'xterm-256color',
       cols: process.stdout.columns || 80,

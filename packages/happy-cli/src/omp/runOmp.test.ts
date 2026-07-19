@@ -278,6 +278,7 @@ describe('runOmp', () => {
         cwd: process.cwd(),
         env: expect.objectContaining({
           OMP_HAPPY_BRIDGE_SOCKET: '/tmp/happy-omp-test/bridge.sock',
+          OMP_HAPPY_CONTROL_MODE: 'local',
         }),
         name: expect.any(String),
         cols: expect.any(Number),
@@ -401,6 +402,7 @@ describe('runOmp', () => {
 
     mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-root-session' });
     await vi.advanceTimersByTimeAsync(1);
+    mocks.mockBridgeSocket.write.mockClear();
     mocks.emitBridgeFrame({
       type: 'agent_event',
       event: { type: 'agent_start' },
@@ -425,7 +427,7 @@ describe('runOmp', () => {
       '{"type":"prompt","text":"Correction from phone","deliverAs":"steer","images":[]}\n',
     );
     expect(childSocket.write).not.toHaveBeenCalled();
-    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledTimes(1);
+    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledTimes(2);
 
     child.emitExit(0);
     await vi.advanceTimersByTimeAsync(200);
@@ -438,6 +440,7 @@ describe('runOmp', () => {
     await settleMicrotasks();
     mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-abort-queue' });
     await vi.advanceTimersByTimeAsync(1);
+    mocks.mockBridgeSocket.write.mockClear();
     mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_start' } });
 
     const abortHandler = mocks.mockSession.rpcHandlerManager.registerHandler.mock.calls.find(
@@ -454,14 +457,18 @@ describe('runOmp', () => {
     mocks.emitBridgeFrame({ type: 'aborted' });
     expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
       2,
-      '{"type":"set_model","spec":"openai/gpt-5.6-sol"}\n',
+      '{"type":"set_control_mode","mode":"remote"}\n',
     );
     expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
       3,
-      '{"type":"set_thinking_level","level":"high"}\n',
+      '{"type":"set_model","spec":"openai/gpt-5.6-sol"}\n',
     );
     expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
       4,
+      '{"type":"set_thinking_level","level":"high"}\n',
+    );
+    expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
+      5,
       '{"type":"prompt","text":"Run after stop","images":[]}\n',
     );
 
@@ -487,6 +494,7 @@ describe('runOmp', () => {
     await settleMicrotasks();
     mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-session-images' });
     await vi.advanceTimersByTimeAsync(1);
+    mocks.mockBridgeSocket.write.mockClear();
 
     const userMessageHandler = mocks.getUserMessageHandler();
     await userMessageHandler?.({
@@ -496,14 +504,18 @@ describe('runOmp', () => {
 
     expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
       1,
-      '{"type":"set_model","spec":"openai/gpt-5.6-sol"}\n',
+      '{"type":"set_control_mode","mode":"remote"}\n',
     );
     expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
       2,
-      '{"type":"set_thinking_level","level":"high"}\n',
+      '{"type":"set_model","spec":"openai/gpt-5.6-sol"}\n',
     );
     expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
       3,
+      '{"type":"set_thinking_level","level":"high"}\n',
+    );
+    expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
+      4,
       '{"type":"prompt","text":"","images":[{"data":"AQID","mimeType":"image/png"}]}\n',
     );
 
@@ -944,6 +956,16 @@ describe('runOmp', () => {
     expect(mocks.mockSession.sendSessionEvent).toHaveBeenNthCalledWith(1, { type: 'switch', mode: 'remote' });
     const initialAgentStateUpdater = mocks.mockSession.updateAgentState.mock.calls[0]?.[0];
     expect(initialAgentStateUpdater?.({})).toMatchObject({ controlledByUser: false });
+    expect(mocks.mockSpawnPty).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Array),
+      expect.objectContaining({
+        env: expect.objectContaining({ OMP_HAPPY_CONTROL_MODE: 'remote' }),
+      }),
+    );
+    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
+      '{"type":"set_control_mode","mode":"remote"}\n',
+    );
 
     process.stdin.emit('data', 'unexpected startup input');
     expect(mocks.mockSession.sendSessionEvent).toHaveBeenCalledTimes(1);
@@ -970,6 +992,9 @@ describe('runOmp', () => {
 
       process.stdin.emit('data', '/advisor off\r');
       expect(child.write).toHaveBeenCalledWith('/advisor off\r');
+      expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
+        '{"type":"set_control_mode","mode":"local"}\n',
+      );
 
       child.emitExit(0);
       await vi.advanceTimersByTimeAsync(200);
