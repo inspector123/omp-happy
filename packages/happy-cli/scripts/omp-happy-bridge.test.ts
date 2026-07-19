@@ -111,6 +111,45 @@ describe('OMP Happy bridge models', () => {
     });
   });
 
+  it('separates typed Ask answers from predefined selections', () => {
+    const questions = [
+      {
+        id: 'phone',
+        question: 'Which phone?',
+        options: [{ label: 'Pixel' }, { label: 'Samsung' }],
+      },
+      {
+        id: 'features',
+        question: 'Which features?',
+        multi: true,
+        options: [{ label: 'Models' }, { label: 'Thinking' }],
+      },
+    ];
+    expect(formatAskResult(questions, {
+      phone: 'Fairphone',
+      features: ['Models', 'Custom themes'],
+    }).details).toEqual({
+      results: [
+        {
+          id: 'phone',
+          question: 'Which phone?',
+          options: ['Pixel', 'Samsung'],
+          multi: false,
+          selectedOptions: [],
+          customInput: 'Fairphone',
+        },
+        {
+          id: 'features',
+          question: 'Which features?',
+          options: ['Models', 'Thinking'],
+          multi: true,
+          selectedOptions: ['Models'],
+          customInput: 'Custom themes',
+        },
+      ],
+    });
+  });
+
   it('keeps native ask local and activates the bridge ask only for remote control', () => {
     const activeTools = ['read', 'ask', 'happy_ask', 'bash'];
     expect(selectAskTools(activeTools, 'local')).toEqual(['read', 'ask', 'bash']);
