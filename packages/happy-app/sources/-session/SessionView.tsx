@@ -24,7 +24,7 @@ import { Modal } from '@/modal';
 import { voiceHooks } from '@/realtime/hooks/voiceHooks';
 import { getCurrentVoiceConversationId, getCurrentVoiceSessionDurationSeconds, startRealtimeSession, stopRealtimeSession } from '@/realtime/RealtimeSession';
 import { gitStatusSync } from '@/sync/gitStatusSync';
-import { sessionAbort, sessionCompactSnapcompact, sessionGoalAction, sessionSetAdvisor } from '@/sync/ops';
+import { sessionAbort, sessionCompactSnapcompact, sessionGoalAction, sessionSetAdvisor, sessionSetModel } from '@/sync/ops';
 import { storage, useIsDataReady, useLocalSetting, useRealtimeStatus, useSessionMessages, useSessionUsage, useSetting } from '@/sync/storage';
 import { useSession } from '@/sync/storage';
 import { Session } from '@/sync/storageTypes';
@@ -525,7 +525,19 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
 
     const updateModelMode = React.useCallback((mode: ModelMode) => {
         storage.getState().updateSessionModelMode(sessionId, mode.key);
-    }, [sessionId]);
+        if (flavor !== 'omp') {
+            return;
+        }
+        void sessionSetModel(sessionId, mode.key)
+            .then((result) => {
+                if (!result.success) {
+                    Modal.alert(t('common.error'), 'Could not persist the selected OMP model.');
+                }
+            })
+            .catch(() => {
+                Modal.alert(t('common.error'), 'Could not persist the selected OMP model.');
+            });
+    }, [flavor, sessionId]);
 
     const updateEffortLevel = React.useCallback((level: EffortLevel) => {
         storage.getState().updateSessionEffortLevel(sessionId, level.key);

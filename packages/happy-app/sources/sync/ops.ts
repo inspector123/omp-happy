@@ -575,6 +575,17 @@ export async function sessionChangeTitle(
     >(sessionId, 'change-title', { title });
 }
 
+export async function sessionSetModel(
+    sessionId: string,
+    model: string,
+): Promise<{ success: boolean }> {
+    return apiSocket.sessionRPC<{ success: boolean }, { model: string }>(
+        sessionId,
+        'set-model',
+        { model },
+    );
+}
+
 export async function sessionSetAdvisor(
     sessionId: string,
     enabled: boolean,

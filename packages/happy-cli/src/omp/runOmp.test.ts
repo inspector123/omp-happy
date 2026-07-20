@@ -99,6 +99,7 @@ const mocks = vi.hoisted(() => {
     mockSetBackend: vi.fn(),
     mockLoggerDebug: vi.fn(),
     mockCancel: vi.fn(),
+    mockPersistOmpDefaultModel: vi.fn(async () => {}),
     mockSession,
     getUserMessageHandler: () => userMessageHandler,
     getFileEventHandler: () => fileEventHandler,
@@ -184,6 +185,11 @@ vi.mock('@/utils/serverConnectionErrors', () => ({
 
 vi.mock('@/utils/setupOfflineReconnection', () => ({
   setupOfflineReconnection: mocks.mockSetupOfflineReconnection,
+}));
+
+vi.mock('./ompModelConfig', () => ({
+  createOmpConfigCommandRunner: vi.fn(() => vi.fn()),
+  persistOmpDefaultModel: mocks.mockPersistOmpDefaultModel,
 }));
 
 import { runOmp } from './runOmp';
@@ -1027,6 +1033,32 @@ describe('runOmp', () => {
         value: originalSetRawMode,
       });
     }
+  });
+
+  it('applies and persists model selections immediately through session RPC', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials, startedBy: 'daemon' });
+    await settleMicrotasks();
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-model-control' });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.mockBridgeSocket.write.mockClear();
+
+    const modelHandler = mocks.mockSession.rpcHandlerManager.registerHandler.mock.calls.find(
+      ([name]) => name === 'set-model',
+    )?.[1] as ((request: { model: string }) => Promise<{ success: boolean }>) | undefined;
+
+    await expect(modelHandler?.({ model: 'openai-codex/gpt-5.6-sol' })).resolves.toEqual({ success: true });
+    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
+      '{"type":"set_model","spec":"openai-codex/gpt-5.6-sol"}\n',
+    );
+    expect(mocks.mockPersistOmpDefaultModel).toHaveBeenCalledWith(
+      'openai-codex/gpt-5.6-sol',
+      expect.any(Function),
+    );
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
   });
 
   it('executes advisor and snapcompact controls through the session PTY', async () => {

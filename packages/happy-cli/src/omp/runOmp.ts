@@ -22,6 +22,7 @@ import { logger } from '@/ui/logger';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
+import { createOmpConfigCommandRunner, persistOmpDefaultModel } from './ompModelConfig';
 
 const KEEPALIVE_INTERVAL_MS = 2_000;
 const MIRROR_FLUSH_DELAY_MS = 150;
@@ -468,6 +469,12 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   let stdinRawModeEnabled = false;
   let stdinResumed = false;
   let resizeHandler: (() => void) | null = null;
+  const installedOmpBinary = join(homedir(), '.local', 'bin', 'omp');
+  const ompBinary = process.env.OMP_HAPPY_REAL_BIN || (existsSync(installedOmpBinary) ? installedOmpBinary : 'omp');
+  const runOmpConfigCommand = createOmpConfigCommandRunner(ompBinary);
+  let lastPersistedModel: string | undefined;
+  let modelPersistenceQueue = Promise.resolve();
+
 
   const log = (message: string, data?: unknown) => {
     logger.debug(`[happy-omp] ${message}`, data);
@@ -475,6 +482,28 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       console.log(`[happy-omp] ${message}`);
     }
   };
+  const persistSelectedModel = (modelSpec: string): Promise<boolean> => {
+    if (lastPersistedModel === modelSpec) {
+      return Promise.resolve(true);
+    }
+    let succeeded = false;
+    const operation = modelPersistenceQueue.then(async () => {
+      if (lastPersistedModel === modelSpec) {
+        succeeded = true;
+        return;
+      }
+      try {
+        await persistOmpDefaultModel(modelSpec, runOmpConfigCommand);
+        lastPersistedModel = modelSpec;
+        succeeded = true;
+      } catch (error) {
+        log('Failed to persist OMP default model', error);
+      }
+    });
+    modelPersistenceQueue = operation;
+    return operation.then(() => succeeded);
+  };
+
 
   const settleBridgeReady = (error?: Error): void => {
     if (bridgeReadyResolved) {
@@ -813,8 +842,6 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
 
   const startChild = (socketPath: string, extensionPath: string): void => {
     const childArgs = buildOmpArgs(opts, extensionPath);
-    const installedOmpBinary = join(homedir(), '.local', 'bin', 'omp');
-    const ompBinary = process.env.OMP_HAPPY_REAL_BIN || (existsSync(installedOmpBinary) ? installedOmpBinary : 'omp');
     log(`Spawning native omp ${childArgs.join(' ')}`);
     child = spawnPty(ompBinary, childArgs, {
       cwd: process.cwd(),
@@ -888,6 +915,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     // Ask tool remains active, so creating or typing locally cannot flip mode.
     if (!steering && typeof message.meta?.model === 'string') {
       bridgeServer?.send({ type: 'set_model', spec: message.meta.model });
+      void persistSelectedModel(message.meta.model);
     }
     if (!steering && typeof message.meta?.effort === 'string') {
       bridgeServer?.send({ type: 'set_thinking_level', level: message.meta.effort });
@@ -971,6 +999,19 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
     bridgeServer?.send({ type: 'set_title', title });
     return { success: true };
+  });
+  session.rpcHandlerManager.registerHandler<{
+    model: string;
+  }, {
+    success: boolean;
+  }>('set-model', async ({ model }) => {
+    const normalizedModel = model.trim();
+    if (!normalizedModel) {
+      return { success: false };
+    }
+    const sent = bridgeServer?.send({ type: 'set_model', spec: normalizedModel }) ?? false;
+    const persisted = await persistSelectedModel(normalizedModel);
+    return { success: sent && persisted };
   });
   session.rpcHandlerManager.registerHandler<{
     enabled: boolean;
