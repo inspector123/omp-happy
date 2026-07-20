@@ -150,9 +150,9 @@ describe('OMP Happy bridge models', () => {
     });
   });
 
-  it('keeps native ask local and activates the bridge ask only for remote control', () => {
+  it('keeps the app-backed ask active for either controller', () => {
     const activeTools = ['read', 'ask', 'happy_ask', 'bash'];
-    expect(selectAskTools(activeTools, 'local')).toEqual(['read', 'ask', 'bash']);
+    expect(selectAskTools(activeTools, 'local')).toEqual(['read', 'happy_ask', 'bash']);
     expect(selectAskTools(activeTools, 'remote')).toEqual(['read', 'happy_ask', 'bash']);
     expect(selectAskTools(['read', 'bash'], 'local')).toEqual(['read', 'bash']);
     expect(selectAskTools(['read', 'bash'], 'remote')).toEqual(['read', 'bash']);

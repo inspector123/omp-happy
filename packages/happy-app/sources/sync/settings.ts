@@ -45,6 +45,7 @@ export const SettingsSchema = z.object({
     lastUsedModelMode: z.string().nullable().describe('Last selected model mode for new sessions'),
     modelShortlist: z.array(z.string()).default([]).describe('Curated model keys to show in the model picker; empty = show all'),
     showReasoning: z.boolean().default(true).describe('Show the agent reasoning/thinking blocks in chat'),
+    advisorEnabled: z.boolean().default(true).describe('Enable OMP advisor feedback'),
     agentDefaultOverrides: AgentDefaultOverridesSchema.describe('User-selected agent defaults. Missing values use code defaults and are not sent as agent metadata.'),
     // Dismissed CLI warning banners (supports both per-machine and global dismissal)
     dismissedCLIWarnings: z.object({
@@ -114,6 +115,7 @@ export const settingsDefaults: Settings = {
     lastUsedModelMode: null,
     modelShortlist: [],
     showReasoning: true,
+    advisorEnabled: true,
     agentDefaultOverrides: {},
     dismissedCLIWarnings: { perMachine: {}, global: {} },
 };

@@ -120,7 +120,9 @@ export function formatAskResult(questions, answers) {
 }
 
 export function selectAskTools(activeTools, mode) {
-  const selectedAskTool = mode === 'remote' ? REMOTE_ASK_TOOL : LOCAL_ASK_TOOL;
+  // OMP sessions are controlled by both the terminal and Happy. Keep the
+  // app-backed ask tool active regardless of which side sent the prompt.
+  const selectedAskTool = REMOTE_ASK_TOOL;
   const askToolNames = new Set([LOCAL_ASK_TOOL, REMOTE_ASK_TOOL]);
   const nextTools = [];
   let insertedAskTool = false;
@@ -399,7 +401,7 @@ export default function happyBridgeExtension(pi) {
     send({ type: 'agent_event', event });
   });
   pi.on('input', async (event, ctx) => {
-    if (event.source !== 'extension') setControlMode('local');
+    // Inputs from either controller must preserve the app-backed ask tool.
     latestContext = ctx;
     send({ type: 'input', text: event.text, source: event.source, images: event.images });
   });

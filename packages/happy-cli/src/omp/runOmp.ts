@@ -456,7 +456,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   let bridgeReadyResolved = false;
   let resolveBridgeReady: (() => void) | null = null;
   let rejectBridgeReady: ((error: Error) => void) | null = null;
-  const initialRunMode: RunMode = opts.startedBy === 'daemon' ? 'remote' : 'local';
+  const initialRunMode: RunMode = 'remote';
   let runMode: RunMode = initialRunMode;
   let stdinDataHandler: ((data: string | Buffer) => void) | null = null;
   let stdinRawModeEnabled = false;
@@ -868,11 +868,8 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   });
   const sendPhonePrompt = (message: UserMessage, attachments: PhoneAttachment[], steering: boolean): void => {
     const text = message.content.text?.trim() ?? '';
-    if (runMode !== 'remote') {
-      log('Switching native OMP control to remote');
-      flushPendingText();
-      setRunMode('remote');
-    }
+    // Both terminal and phone input share one control path. The app-backed
+    // Ask tool remains active, so creating or typing locally cannot flip mode.
     if (!steering && typeof message.meta?.model === 'string') {
       bridgeServer?.send({ type: 'set_model', spec: message.meta.model });
     }
@@ -921,10 +918,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       if (text.length === 0) {
         return;
       }
-      if (runMode !== 'local') {
-        flushPendingText();
-        setRunMode('local');
-      }
+      // Local keystrokes are forwarded without changing the shared control mode.
       writeToChild(text);
     };
     process.stdin.on('data', stdinDataHandler);

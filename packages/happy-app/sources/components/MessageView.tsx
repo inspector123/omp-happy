@@ -216,6 +216,10 @@ function AgentEventBlock(props: {
   event: AgentEvent;
   metadata: Metadata | null;
 }) {
+  const advisorEnabled = useSetting('advisorEnabled');
+  if (props.event.type === 'advisor' && !advisorEnabled) {
+    return null;
+  }
   if (props.event.type === 'switch') {
     return (
       <View style={styles.agentEventContainer}>
