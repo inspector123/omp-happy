@@ -137,6 +137,17 @@ export function selectAskTools(activeTools, mode) {
   return nextTools;
 }
 
+export async function setOmpSessionTitle(pi, ctx, value) {
+  const title = typeof value === 'string' ? value.trim() : '';
+  if (!title) return undefined;
+  if (typeof pi.setSessionName === 'function') {
+    await pi.setSessionName(title);
+  } else if (typeof ctx?.sessionManager?.setSessionName === 'function') {
+    await ctx.sessionManager.setSessionName(title);
+  }
+  return title;
+}
+
 export async function sendPromptCommand(pi, command) {
   if (!command || typeof command !== 'object' || command.type !== 'prompt' || typeof command.text !== 'string') {
     return false;
@@ -242,17 +253,12 @@ export default function happyBridgeExtension(pi) {
         title: z.string().min(1),
       }),
       async execute(_toolCallId, params) {
-        const title = params.title.trim();
+        const title = await setOmpSessionTitle(pi, latestContext, params.title);
         if (!title) {
           return {
             content: [{ type: 'text', text: 'Title must not be empty.' }],
             isError: true,
           };
-        }
-        if (typeof pi.setSessionName === 'function') {
-          await pi.setSessionName(title);
-        } else if (typeof latestContext?.sessionManager?.setSessionName === 'function') {
-          await latestContext.sessionManager.setSessionName(title);
         }
         send({ type: 'change_title', title });
         return {
@@ -293,6 +299,15 @@ export default function happyBridgeExtension(pi) {
     if (command.type === 'set_control_mode') {
       if (!setControlMode(command.mode)) {
         send({ type: 'bridge_error', message: `Invalid OMP control mode: ${String(command.mode)}` });
+      }
+      return;
+    }
+    if (command.type === 'set_title') {
+      const title = await setOmpSessionTitle(pi, latestContext, command.title);
+      if (!title) {
+        send({ type: 'bridge_error', message: 'OMP session title must not be empty' });
+      } else {
+        send({ type: 'change_title', title });
       }
       return;
     }

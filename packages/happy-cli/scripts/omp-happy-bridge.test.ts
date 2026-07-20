@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 // The bridge is intentionally plain ESM because native OMP loads it directly.
 // @ts-expect-error TypeScript has no declaration for the runtime extension module.
-import { formatAskResult, getModelSnapshot, getThinkingSnapshot, resolveModel, resolveRequestedModel, selectAskTools, sendPromptCommand } from './omp-happy-bridge.mjs';
+import { formatAskResult, getModelSnapshot, getThinkingSnapshot, resolveModel, resolveRequestedModel, selectAskTools, sendPromptCommand, setOmpSessionTitle } from './omp-happy-bridge.mjs';
 
 describe('OMP Happy bridge models', () => {
   const models = [
@@ -157,6 +157,18 @@ describe('OMP Happy bridge models', () => {
     expect(selectAskTools(['read', 'bash'], 'local')).toEqual(['read', 'bash']);
     expect(selectAskTools(['read', 'bash'], 'remote')).toEqual(['read', 'bash']);
   });
+  it('persists app-originated titles through OMP session naming', async () => {
+    const setSessionName = vi.fn().mockResolvedValue(undefined);
+    await expect(setOmpSessionTitle({ setSessionName }, undefined, '  Renamed from phone  '))
+      .resolves.toBe('Renamed from phone');
+    expect(setSessionName).toHaveBeenCalledWith('Renamed from phone');
+
+    const fallback = vi.fn().mockResolvedValue(undefined);
+    await expect(setOmpSessionTitle({}, { sessionManager: { setSessionName: fallback } }, 'Fallback title'))
+      .resolves.toBe('Fallback title');
+    expect(fallback).toHaveBeenCalledWith('Fallback title');
+  });
+
   it('delivers bridge prompt images as exact OMP multimodal content', async () => {
     const sendUserMessage = vi.fn().mockResolvedValue(undefined);
 

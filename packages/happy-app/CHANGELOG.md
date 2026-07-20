@@ -1,3 +1,8 @@
+# July 18 — Rename OMP sessions
+
+- Rename an active OMP session directly from its session-list quick actions.
+- Renamed titles now stay synchronized between Happy and the underlying OMP session.
+
 # June 22 — Goals and cleaner commands
 
 Agent goals and slash commands are easier to follow, with steadier remote sessions.

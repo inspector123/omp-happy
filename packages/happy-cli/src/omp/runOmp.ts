@@ -715,6 +715,19 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
   };
 
+  const updateSessionTitle = (value: string): string | undefined => {
+    const title = value.trim();
+    if (!title) return undefined;
+    session.updateMetadata((currentMetadata) => ({
+      ...currentMetadata,
+      summary: {
+        text: title,
+        updatedAt: Date.now(),
+      },
+    }));
+    return title;
+  };
+
   const handleBridgeFrame = (frame: BridgeFrame): void => {
     if (frame.type === 'ready') {
       log(`OMP Happy extension ready for session ${frame.sessionId}`);
@@ -727,15 +740,8 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         ...(Array.isArray(frame.thoughtLevels) ? { thoughtLevels: frame.thoughtLevels } : {}),
         ...(typeof frame.currentThoughtLevel === 'string' ? { currentThoughtLevelCode: frame.currentThoughtLevel } : {}),
       }));
-      if (typeof frame.title === 'string' && frame.title.trim()) {
-        const title = frame.title.trim();
-        session.updateMetadata((currentMetadata) => ({
-          ...currentMetadata,
-          summary: {
-            text: title,
-            updatedAt: Date.now(),
-          },
-        }));
+      if (typeof frame.title === 'string') {
+        updateSessionTitle(frame.title);
       }
       settleBridgeReady();
       bridgeServer?.send({ type: 'set_control_mode', mode: runMode });
@@ -758,17 +764,8 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       return;
     }
     if (frame.type === 'change_title') {
-      const title = frame.title.trim();
-      if (title) {
-        session.updateMetadata((currentMetadata) => ({
-          ...currentMetadata,
-          summary: {
-            text: title,
-            updatedAt: Date.now(),
-          },
-        }));
-        log(`Changed Happy session title to "${title}"`);
-      }
+      const title = updateSessionTitle(frame.title);
+      if (title) log(`Changed Happy session title to "${title}"`);
       return;
     }
     if (frame.type === 'input') {
@@ -951,6 +948,19 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
 
   session.rpcHandlerManager.registerHandler('abort', async () => {
     requestAbort();
+  });
+  session.rpcHandlerManager.registerHandler<{
+    title: string;
+  }, {
+    success: boolean;
+    message?: string;
+  }>('change-title', async (request) => {
+    const title = updateSessionTitle(request.title);
+    if (!title) {
+      return { success: false, message: 'Session title must not be empty' };
+    }
+    bridgeServer?.send({ type: 'set_title', title });
+    return { success: true };
   });
   session.rpcHandlerManager.registerHandler<{
     id: string;

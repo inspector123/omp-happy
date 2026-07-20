@@ -2,7 +2,7 @@ import * as React from 'react';
 import { useHappyAction } from '@/hooks/useHappyAction';
 import { useNavigateToSession } from '@/hooks/useNavigateToSession';
 import { Modal } from '@/modal';
-import { machineResumeSession, sessionArchive, sessionKill, forkAndSpawn, type ForkSource } from '@/sync/ops';
+import { machineResumeSession, sessionArchive, sessionChangeTitle, sessionKill, forkAndSpawn, type ForkSource } from '@/sync/ops';
 import { maybeCleanupWorktree } from '@/hooks/useWorktreeCleanup';
 import { storage, useLocalSetting, useMachine, useSetting } from '@/sync/storage';
 import { Machine, Session } from '@/sync/storageTypes';
@@ -11,7 +11,7 @@ import { resolveMessageModeMeta } from '@/sync/messageMeta';
 import { t } from '@/text';
 import { HappyError } from '@/utils/errors';
 import { copySessionMetadataToClipboard, copySessionMetadataAndLogsToClipboard } from '@/utils/copySessionMetadataToClipboard';
-import { useSessionStatus } from '@/utils/sessionUtils';
+import { getSessionName, useSessionStatus } from '@/utils/sessionUtils';
 import { isMachineOnline } from '@/utils/machineUtils';
 import { getSessionForkSource } from '@/utils/sessionFork';
 import { useRouter } from 'expo-router';
@@ -159,6 +159,28 @@ export function useSessionQuickActions(
         })();
     }, [onAfterCopySessionMetadata, session]);
 
+    const canRename = session.metadata?.flavor === 'omp' && sessionStatus.isConnected;
+    const [renamingSession, performRename] = useHappyAction(async () => {
+        const currentTitle = getSessionName(session);
+        const response = await Modal.prompt(t('common.rename'), undefined, {
+            placeholder: currentTitle,
+            defaultValue: currentTitle,
+            cancelText: t('common.cancel'),
+            confirmText: t('common.rename'),
+        });
+        if (response === null || response === undefined) return;
+        const title = response.trim();
+        if (!title || title === currentTitle) return;
+
+        const result = await sessionChangeTitle(session.id, title);
+        if (!result.success) {
+            throw new HappyError(result.message || 'Failed to rename session', false);
+        }
+    });
+    const renameSession = React.useCallback(() => {
+        performRename();
+    }, [performRename]);
+
     const [resumingSession, performResume] = useHappyAction(async () => {
         if (!resumeAvailability.canResume) {
             throw new HappyError(resumeAvailability.message, false);
@@ -253,6 +275,9 @@ export function useSessionQuickActions(
         const items: SessionActionItem[] = [
             { id: 'details', icon: 'information-circle-outline', label: t('profile.details'), onPress: openDetails },
         ];
+        if (canRename) {
+            items.push({ id: 'rename', icon: 'pencil-outline', label: t('common.rename'), onPress: renameSession });
+        }
 
         if (resumeAvailability.canShowResume) {
             items.push({ id: 'resume', icon: 'play-circle-outline', label: t('sessionInfo.resumeSession'), onPress: resumeSession });
@@ -273,6 +298,7 @@ export function useSessionQuickActions(
         return items;
     }, [
         archiveSession,
+        canRename,
         canCopySessionMetadata,
         canFork,
         copySessionMetadata,
@@ -282,6 +308,7 @@ export function useSessionQuickActions(
         openDetails,
         openDuplicateSheet,
         resumeAvailability.canShowResume,
+        renameSession,
         resumeSession,
     ]);
 
@@ -301,6 +328,7 @@ export function useSessionQuickActions(
         archiveSession,
         archivingSession,
         canArchive: true,
+        canRename,
         canCopySessionMetadata,
         canResume: resumeAvailability.canResume,
         canShowResume: resumeAvailability.canShowResume,
@@ -311,6 +339,8 @@ export function useSessionQuickActions(
         forking,
         openDetails,
         openDuplicateSheet,
+        renameSession,
+        renamingSession,
         resumeSession,
         resumeSessionSubtitle: resumeAvailability.subtitle,
         resumingSession,

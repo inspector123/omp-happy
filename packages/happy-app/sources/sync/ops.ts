@@ -565,6 +565,16 @@ export async function sessionAbort(sessionId: string): Promise<void> {
     });
 }
 
+export async function sessionChangeTitle(
+    sessionId: string,
+    title: string,
+): Promise<{ success: boolean; message?: string }> {
+    return apiSocket.sessionRPC<
+        { success: boolean; message?: string },
+        { title: string }
+    >(sessionId, 'change-title', { title });
+}
+
 /**
  * Allow a permission request
  */

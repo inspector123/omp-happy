@@ -363,6 +363,35 @@ describe('runOmp', () => {
     await runPromise;
   });
 
+  it('renames an active OMP session from the Happy app', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-title' });
+    await vi.advanceTimersByTimeAsync(1);
+    const registration = mocks.mockSession.rpcHandlerManager.registerHandler.mock.calls
+      .find((call) => call[0] === 'change-title');
+    expect(registration).toBeDefined();
+
+    await expect(registration?.[1]({ title: '  Renamed from phone  ' })).resolves.toEqual({ success: true });
+    const titleUpdater = mocks.mockSession.updateMetadata.mock.calls.at(-1)?.[0];
+    expect(titleUpdater?.({ path: '/repo' })).toEqual({
+      path: '/repo',
+      summary: {
+        text: 'Renamed from phone',
+        updatedAt: expect.any(Number),
+      },
+    });
+    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
+      '{"type":"set_title","title":"Renamed from phone"}\n',
+    );
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
   it('switches to remote mode and sends a phone prompt through the extension bridge', async () => {
     vi.useFakeTimers();
 
