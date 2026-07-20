@@ -183,6 +183,8 @@ export default function happyBridgeExtension(pi) {
   let connectedOnce = false;
   let shuttingDown = false;
   let commandQueue = Promise.resolve();
+  let pendingTuiCommand;
+  let pendingEditorRestore;
   let controlMode = process.env[CONTROL_MODE_ENV] === 'remote' ? 'remote' : 'local';
   const pendingAskRequests = new Map();
 
@@ -304,6 +306,22 @@ export default function happyBridgeExtension(pi) {
       }
       return;
     }
+    const tuiCommand = command.type === 'set_advisor' && typeof command.enabled === 'boolean'
+      ? `/advisor ${command.enabled ? 'on' : 'off'}`
+      : command.type === 'compact_snapcompact'
+        ? '/compact snapcompact'
+        : undefined;
+    if (tuiCommand) {
+      if (!latestContext?.ui) {
+        send({ type: 'bridge_error', message: 'OMP command control requires an interactive session' });
+        return;
+      }
+      pendingTuiCommand = tuiCommand;
+      pendingEditorRestore = latestContext.ui.getEditorText();
+      latestContext.ui.setEditorText(tuiCommand);
+      send({ type: 'tui_command_ready', command: tuiCommand });
+      return;
+    }
     if (command.type === 'set_title') {
       const title = await setOmpSessionTitle(pi, latestContext, command.title);
       if (!title) {
@@ -401,6 +419,12 @@ export default function happyBridgeExtension(pi) {
     send({ type: 'agent_event', event });
   });
   pi.on('input', async (event, ctx) => {
+    if (pendingTuiCommand === event.text.trim() && pendingEditorRestore !== undefined) {
+      const editorText = pendingEditorRestore;
+      pendingTuiCommand = undefined;
+      pendingEditorRestore = undefined;
+      ctx.setTimeout(() => ctx.ui.setEditorText(editorText), 0);
+    }
     // Inputs from either controller must preserve the app-backed ask tool.
     latestContext = ctx;
     send({ type: 'input', text: event.text, source: event.source, images: event.images });

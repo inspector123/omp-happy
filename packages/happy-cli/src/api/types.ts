@@ -325,6 +325,7 @@ export type Metadata = {
   ompSessionId?: string
   sandbox?: SandboxConfig | null
   dangerouslySkipPermissions?: boolean | null
+  advisorEnabled?: boolean
   /** Lineage for sessions created via the fork / duplicate flow. */
   parentSessionId?: string
   forkedFromMessageId?: string

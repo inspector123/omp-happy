@@ -204,7 +204,6 @@ describe('settings', () => {
                 lastUsedModelMode: null,
                 modelShortlist: [],
                 showReasoning: true,
-                advisorEnabled: true,
                 agentDefaultOverrides: {},
                 dismissedCLIWarnings: { perMachine: {}, global: {} },
             });

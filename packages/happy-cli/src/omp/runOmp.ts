@@ -34,7 +34,7 @@ const BRIDGE_EXTENSION_FILE = 'omp-happy-bridge.mjs';
 
 type RunMode = 'local' | 'remote';
 
-type BridgeFrame = BridgeReadyFrame | BridgeAgentEventFrame | BridgeInputFrame | BridgeErrorFrame | BridgeAbortedFrame | BridgeAskRequestFrame | BridgeChangeTitleFrame;
+type BridgeFrame = BridgeReadyFrame | BridgeAgentEventFrame | BridgeInputFrame | BridgeErrorFrame | BridgeAbortedFrame | BridgeAskRequestFrame | BridgeChangeTitleFrame | BridgeTuiCommandReadyFrame;
 
 type BridgeReadyFrame = {
   type: 'ready';
@@ -85,6 +85,11 @@ type BridgeAskRequestFrame = {
 type BridgeChangeTitleFrame = {
   type: 'change_title';
   title: string;
+};
+
+type BridgeTuiCommandReadyFrame = {
+  type: 'tui_command_ready';
+  command: '/advisor on' | '/advisor off' | '/compact snapcompact';
 };
 
 type PhoneAttachment = {
@@ -458,6 +463,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   let rejectBridgeReady: ((error: Error) => void) | null = null;
   const initialRunMode: RunMode = 'remote';
   let runMode: RunMode = initialRunMode;
+  let advisorEnabled = opts.extraArgs?.includes('--advisor') ?? false;
   let stdinDataHandler: ((data: string | Buffer) => void) | null = null;
   let stdinRawModeEnabled = false;
   let stdinResumed = false;
@@ -735,6 +741,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         ...currentMetadata,
         flavor: 'omp',
         ompSessionId: frame.sessionId,
+        advisorEnabled,
         ...(Array.isArray(frame.models) ? { models: frame.models } : {}),
         ...(typeof frame.currentModel === 'string' ? { currentModelCode: frame.currentModel } : {}),
         ...(Array.isArray(frame.thoughtLevels) ? { thoughtLevels: frame.thoughtLevels } : {}),
@@ -768,11 +775,20 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       if (title) log(`Changed Happy session title to "${title}"`);
       return;
     }
+    if (frame.type === 'tui_command_ready') {
+      writeToChild('\r');
+      return;
+    }
     if (frame.type === 'input') {
       if (frame.source === 'extension') return;
       const text = frame.text.trim();
       if (!text) return;
-      if (runMode !== 'local') setRunMode('local');
+      const advisorMatch = /^\/advisor(?:\s+(on|off|toggle))?\s*$/i.exec(text);
+      if (advisorMatch) {
+        const action = advisorMatch[1]?.toLowerCase() ?? 'toggle';
+        advisorEnabled = action === 'toggle' ? !advisorEnabled : action === 'on';
+        session.updateMetadata((currentMetadata) => ({ ...currentMetadata, advisorEnabled }));
+      }
       session.sendSessionProtocolMessage(createEnvelope('user', { t: 'text', text }));
       return;
     }
@@ -955,6 +971,20 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
     bridgeServer?.send({ type: 'set_title', title });
     return { success: true };
+  });
+  session.rpcHandlerManager.registerHandler<{
+    enabled: boolean;
+  }, {
+    success: boolean;
+  }>('set-advisor', async ({ enabled }) => {
+    const success = bridgeServer?.send({ type: 'set_advisor', enabled }) ?? false;
+    return { success };
+  });
+  session.rpcHandlerManager.registerHandler<Record<string, never>, {
+    success: boolean;
+  }>('compact-snapcompact', async () => {
+    const success = bridgeServer?.send({ type: 'compact_snapcompact' }) ?? false;
+    return { success };
   });
   session.rpcHandlerManager.registerHandler<{
     id: string;

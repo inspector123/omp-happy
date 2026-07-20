@@ -48,6 +48,7 @@ export const MetadataSchema = z.object({
     ompSessionId: z.string().nullish(), // omp's own session id, for resume via session/load
     sandbox: z.any().nullish(), // Sandbox config metadata from CLI (or null when disabled)
     dangerouslySkipPermissions: z.boolean().nullish(), // Claude --dangerously-skip-permissions mode (or null when unknown)
+    advisorEnabled: z.boolean().optional(),
     lifecycleState: z.string().optional(),
     lifecycleStateSince: z.number().optional(),
     archivedBy: z.string().optional(),

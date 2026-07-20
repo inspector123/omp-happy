@@ -24,7 +24,7 @@ import { Modal } from '@/modal';
 import { voiceHooks } from '@/realtime/hooks/voiceHooks';
 import { getCurrentVoiceConversationId, getCurrentVoiceSessionDurationSeconds, startRealtimeSession, stopRealtimeSession } from '@/realtime/RealtimeSession';
 import { gitStatusSync } from '@/sync/gitStatusSync';
-import { sessionAbort, sessionGoalAction } from '@/sync/ops';
+import { sessionAbort, sessionCompactSnapcompact, sessionGoalAction, sessionSetAdvisor } from '@/sync/ops';
 import { storage, useIsDataReady, useLocalSetting, useRealtimeStatus, useSessionMessages, useSessionUsage, useSetting } from '@/sync/storage';
 import { useSession } from '@/sync/storage';
 import { Session } from '@/sync/storageTypes';
@@ -531,6 +531,35 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
         storage.getState().updateSessionEffortLevel(sessionId, level.key);
     }, [sessionId]);
 
+    const [advisorControlPending, setAdvisorControlPending] = React.useState(false);
+    const [compactPending, setCompactPending] = React.useState(false);
+    const updateAdvisorEnabled = React.useCallback(async (enabled: boolean) => {
+        setAdvisorControlPending(true);
+        try {
+            const result = await sessionSetAdvisor(sessionId, enabled);
+            if (!result.success) {
+                Modal.alert(t('common.error'), 'Could not update the advisor for this session.');
+            }
+        } catch {
+            Modal.alert(t('common.error'), 'Could not update the advisor for this session.');
+        } finally {
+            setAdvisorControlPending(false);
+        }
+    }, [sessionId]);
+    const compactSnapcompact = React.useCallback(async () => {
+        setCompactPending(true);
+        try {
+            const result = await sessionCompactSnapcompact(sessionId);
+            if (!result.success) {
+                Modal.alert(t('common.error'), 'Could not start snapcompact for this session.');
+            }
+        } catch {
+            Modal.alert(t('common.error'), 'Could not start snapcompact for this session.');
+        } finally {
+            setCompactPending(false);
+        }
+    }, [sessionId]);
+
     // Memoize header-dependent styles to prevent re-renders
     const headerDependentStyles = React.useMemo(() => ({
         contentContainer: {
@@ -727,6 +756,11 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
             effortLevel={effortLevel}
             availableEffortLevels={availableEffortLevels}
             onEffortLevelChange={updateEffortLevel}
+            advisorEnabled={session.metadata?.advisorEnabled}
+            onAdvisorEnabledChange={updateAdvisorEnabled}
+            advisorControlDisabled={advisorControlPending}
+            onCompactSnapcompact={compactSnapcompact}
+            compactSnapcompactDisabled={compactPending || sessionStatus.state === 'thinking'}
             metadata={session.metadata}
             connectionStatus={connectionStatus}
             blockSend={false}

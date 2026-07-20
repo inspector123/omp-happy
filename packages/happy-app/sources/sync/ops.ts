@@ -575,6 +575,25 @@ export async function sessionChangeTitle(
     >(sessionId, 'change-title', { title });
 }
 
+export async function sessionSetAdvisor(
+    sessionId: string,
+    enabled: boolean,
+): Promise<{ success: boolean }> {
+    return apiSocket.sessionRPC<{ success: boolean }, { enabled: boolean }>(
+        sessionId,
+        'set-advisor',
+        { enabled },
+    );
+}
+
+export async function sessionCompactSnapcompact(sessionId: string): Promise<{ success: boolean }> {
+    return apiSocket.sessionRPC<{ success: boolean }, Record<string, never>>(
+        sessionId,
+        'compact-snapcompact',
+        {},
+    );
+}
+
 /**
  * Allow a permission request
  */

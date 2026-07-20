@@ -13,6 +13,7 @@ import { EffortLevel } from './modelModeOptions';
 import { hapticsLight, hapticsError } from './haptics';
 import { Shaker, ShakeInstance } from './Shaker';
 import { StatusDot } from './StatusDot';
+import { Switch } from './Switch';
 import { useActiveWord } from './autocomplete/useActiveWord';
 import { useActiveSuggestions } from './autocomplete/useActiveSuggestions';
 import { AgentInputAutocomplete } from './AgentInputAutocomplete';
@@ -51,6 +52,11 @@ interface AgentInputProps {
     effortLevel?: EffortLevel | null;
     availableEffortLevels?: EffortLevel[];
     onEffortLevelChange?: (level: EffortLevel) => void;
+    advisorEnabled?: boolean;
+    onAdvisorEnabledChange?: (enabled: boolean) => void;
+    advisorControlDisabled?: boolean;
+    onCompactSnapcompact?: () => void;
+    compactSnapcompactDisabled?: boolean;
     metadata?: Metadata | null;
     onAbort?: () => void | Promise<void>;
     showAbortButton?: boolean;
@@ -1260,6 +1266,55 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                         </>
                                     )}
                                 </View>
+                                {props.metadata?.flavor === 'omp' && (
+                                    <>
+                                        <View style={{
+                                            height: 1,
+                                            backgroundColor: theme.colors.divider,
+                                            marginHorizontal: 16,
+                                        }} />
+                                        <View style={{
+                                            flexDirection: 'row',
+                                            alignItems: 'center',
+                                            paddingHorizontal: 16,
+                                            paddingVertical: 10,
+                                            gap: 12,
+                                        }}>
+                                            <View style={{ flex: 1 }}>
+                                                <Text style={{ fontSize: 14, color: theme.colors.text, ...Typography.default() }}>
+                                                    Advisor
+                                                </Text>
+                                                <Text style={{ fontSize: 11, color: theme.colors.textSecondary, ...Typography.default() }}>
+                                                    Review this session after each turn
+                                                </Text>
+                                            </View>
+                                            <Switch
+                                                value={props.advisorEnabled === true}
+                                                disabled={props.advisorControlDisabled}
+                                                onValueChange={props.onAdvisorEnabledChange}
+                                            />
+                                            <Pressable
+                                                disabled={props.compactSnapcompactDisabled}
+                                                onPress={() => {
+                                                    hapticsLight();
+                                                    props.onCompactSnapcompact?.();
+                                                    setShowSettings(false);
+                                                }}
+                                                style={({ pressed }) => ({
+                                                    paddingHorizontal: 12,
+                                                    paddingVertical: 8,
+                                                    borderRadius: 8,
+                                                    backgroundColor: pressed ? theme.colors.surfacePressed : theme.colors.surface,
+                                                    opacity: props.compactSnapcompactDisabled ? 0.5 : 1,
+                                                })}
+                                            >
+                                                <Text style={{ fontSize: 13, color: theme.colors.radio.active, ...Typography.default() }}>
+                                                    Snapcompact
+                                                </Text>
+                                            </Pressable>
+                                        </View>
+                                    </>
+                                )}
                             </FloatingOverlay>
                         </View>
                     </>

@@ -1,17 +1,14 @@
-import * as React from 'react';
 import { Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { Item } from '@/components/Item';
 import { ItemGroup } from '@/components/ItemGroup';
 import { ItemList } from '@/components/ItemList';
-import { useSettingMutable, useLocalSettingMutable, useSessions } from '@/sync/storage';
-import { sync } from '@/sync/sync';
+import { useSettingMutable, useLocalSettingMutable } from '@/sync/storage';
 import { Switch } from '@/components/Switch';
 import { t } from '@/text';
 export default function FeaturesSettingsScreen() {
     const router = useRouter();
-    const sessions = useSessions();
     const [experiments, setExperiments] = useSettingMutable('experiments');
     const [analyticsOptOut, setAnalyticsOptOut] = useSettingMutable('analyticsOptOut');
     const [agentInputEnterToSend, setAgentInputEnterToSend] = useSettingMutable('agentInputEnterToSend');
@@ -21,14 +18,6 @@ export default function FeaturesSettingsScreen() {
     const [expResumeSession, setExpResumeSession] = useSettingMutable('expResumeSession');
     const [fileDiffsSidebar, setFileDiffsSidebar] = useSettingMutable('fileDiffsSidebar');
     const [groupToolCalls, setGroupToolCalls] = useSettingMutable('groupToolCalls');
-    const [advisorEnabled, setAdvisorEnabled] = useSettingMutable('advisorEnabled');
-    const handleAdvisorChange = React.useCallback(async (enabled: boolean) => {
-        setAdvisorEnabled(enabled);
-        const command = `/advisor ${enabled ? 'on' : 'off'}`;
-        await Promise.all((sessions ?? [])
-            .filter(session => session.metadata?.flavor === 'omp')
-            .map(session => sync.sendMessage(session.id, command, { source: 'settings' })));
-    }, [sessions, setAdvisorEnabled]);
     return (
         <ItemList style={{ paddingTop: 0 }}>
             {/* Models */}
@@ -69,18 +58,6 @@ export default function FeaturesSettingsScreen() {
                         <Switch
                             value={groupToolCalls}
                             onValueChange={setGroupToolCalls}
-                        />
-                    }
-                    showChevron={false}
-                />
-                <Item
-                    title="OMP Advisor"
-                    subtitle={advisorEnabled ? 'Show advisor feedback in OMP sessions' : 'Advisor feedback disabled'}
-                    icon={<Ionicons name="document-text-outline" size={29} color="#FF9500" />}
-                    rightElement={
-                        <Switch
-                            value={advisorEnabled}
-                            onValueChange={handleAdvisorChange}
                         />
                     }
                     showChevron={false}
