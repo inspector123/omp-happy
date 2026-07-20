@@ -423,7 +423,7 @@ export default function happyBridgeExtension(pi) {
       const editorText = pendingEditorRestore;
       pendingTuiCommand = undefined;
       pendingEditorRestore = undefined;
-      ctx.setTimeout(() => ctx.ui.setEditorText(editorText), 0);
+      queueMicrotask(() => ctx.ui.setEditorText(editorText));
     }
     // Inputs from either controller must preserve the app-backed ask tool.
     latestContext = ctx;
