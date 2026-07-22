@@ -87,10 +87,12 @@ export function parseMarkdownBlock(markdown: string) {
         // Code block
         if (trimmed.startsWith('```')) {
             const language = trimmed.slice(3).trim() || null;
+            const fenceIndent = line.match(/^\s*/)?.[0] ?? '';
             let content = [];
             while (index < lines.length) {
                 const nextLine = lines[index];
-                if (nextLine.trim() === '```') {
+                const nextIndent = nextLine.match(/^\s*/)?.[0] ?? '';
+                if (nextIndent === fenceIndent && nextLine.trim() === '```') {
                     index++;
                     break;
                 }

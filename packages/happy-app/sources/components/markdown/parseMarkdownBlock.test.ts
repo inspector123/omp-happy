@@ -106,3 +106,37 @@ describe('parseMarkdownBlock - table parsing', () => {
         expect(textBlocks).toHaveLength(1);
     });
 });
+
+describe('parseMarkdownBlock - fenced code blocks', () => {
+    it('keeps indented nested fences inside an outer Markdown fence', () => {
+        const md = [
+            '```markdown',
+            '## Verification',
+            '',
+            '  ```json',
+            '  {"topics":[]}',
+            '  ```',
+            '',
+            '## Rollout',
+            '',
+            '1. Release Commonwedge.',
+            '```',
+        ].join('\n');
+
+        expect(parseMarkdown(md)).toEqual([{
+            type: 'code-block',
+            language: 'markdown',
+            content: [
+                '## Verification',
+                '',
+                '  ```json',
+                '  {"topics":[]}',
+                '  ```',
+                '',
+                '## Rollout',
+                '',
+                '1. Release Commonwedge.',
+            ].join('\n'),
+        }]);
+    });
+});
