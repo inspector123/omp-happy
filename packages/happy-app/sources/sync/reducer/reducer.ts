@@ -151,6 +151,7 @@ export type ReducerState = {
     localIds: Map<string, string>;
     messageIds: Map<string, string>; // originalId -> internalId
     streamIds: Map<string, string>; // agent stream ID -> canonical rendered message ID
+    streamChunks: Map<string, Map<number, { text: string; createdAt: number }>>; // stream ID -> server-sequenced text chunks
     messages: Map<string, ReducerMessage>;
     sidechains: Map<string, ReducerMessage[]>;
     tracerState: TracerState; // Tracer state for sidechain processing
@@ -177,6 +178,7 @@ export function createReducer(): ReducerState {
         localIds: new Map(),
         messageIds: new Map(),
         streamIds: new Map(),
+        streamChunks: new Map(),
         sidechains: new Map(),
         tracerState: createTracer()
     }
@@ -705,10 +707,21 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                 if (existingStreamMessageId) {
                     const streamedMessage = state.messages.get(existingStreamMessageId);
                     if (streamedMessage && streamedMessage.isThinking === isThinking) {
-                        const currentText = streamedMessage.text ?? '';
-                        streamedMessage.text = isThinking && currentText.endsWith('*')
-                            ? `${currentText.slice(0, -1)}${delta}*`
-                            : `${currentText}${delta}`;
+                        const streamChunks = msg.append && msg.streamId && msg.seq !== undefined
+                            ? state.streamChunks.get(msg.streamId)
+                            : undefined;
+                        if (streamChunks && msg.seq !== undefined) {
+                            streamChunks.set(msg.seq, { text: delta, createdAt: msg.createdAt });
+                            const orderedChunks = [...streamChunks.entries()].sort(([left], [right]) => left - right);
+                            const orderedText = orderedChunks.map(([, chunk]) => chunk.text).join('');
+                            streamedMessage.text = isThinking ? `*${orderedText}*` : orderedText;
+                            streamedMessage.createdAt = orderedChunks[0][1].createdAt;
+                        } else {
+                            const currentText = streamedMessage.text ?? '';
+                            streamedMessage.text = isThinking && currentText.endsWith('*')
+                                ? `${currentText.slice(0, -1)}${delta}*`
+                                : `${currentText}${delta}`;
+                        }
                         state.messageIds.set(msg.id, existingStreamMessageId);
                         changed.add(existingStreamMessageId);
                         continue;
@@ -730,6 +743,11 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                 state.messageIds.set(msg.id, mid);
                 if (msg.append && msg.streamId) {
                     state.streamIds.set(msg.streamId, mid);
+                    if (msg.seq !== undefined) {
+                        state.streamChunks.set(msg.streamId, new Map([
+                            [msg.seq, { text: delta, createdAt: msg.createdAt }],
+                        ]));
+                    }
                 }
                 changed.add(mid);
             }

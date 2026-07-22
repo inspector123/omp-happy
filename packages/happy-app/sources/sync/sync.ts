@@ -2066,6 +2066,9 @@ class Sync {
             if (!decrypted) continue;
             const normalized = normalizeRawMessage(decrypted.id, decrypted.localId, decrypted.createdAt, decrypted.content);
             if (normalized) {
+                if (typeof decrypted.seq === 'number') {
+                    normalized.seq = decrypted.seq;
+                }
                 normalizedMessages.push(normalized);
             }
         }
@@ -2210,6 +2213,9 @@ class Sync {
                 const decrypted = await encryption.decryptMessage(updateData.body.message);
                 if (decrypted) {
                     lastMessage = normalizeRawMessage(decrypted.id, decrypted.localId, decrypted.createdAt, decrypted.content);
+                    if (lastMessage && typeof decrypted.seq === 'number') {
+                        lastMessage.seq = decrypted.seq;
+                    }
 
                     // Check for task lifecycle events to update thinking state
                     // This ensures UI updates even if volatile activity updates are lost

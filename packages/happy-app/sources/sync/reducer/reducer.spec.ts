@@ -238,6 +238,7 @@ describe('reducer', () => {
                 role: 'agent',
                 isSidechain: false,
                 streamId: 'omp-stream-1',
+                seq: 1,
                 append: true,
                 content: [{
                     type: 'text',
@@ -253,6 +254,7 @@ describe('reducer', () => {
                 role: 'agent',
                 isSidechain: false,
                 streamId: 'omp-stream-1',
+                seq: 2,
                 append: true,
                 content: [{
                     type: 'text',
@@ -269,6 +271,70 @@ describe('reducer', () => {
             expect(result.messages[0]).toMatchObject({
                 kind: 'agent-text',
                 text: 'Hi! What can I help you with?',
+            });
+        });
+
+        it('orders backfilled streamed chunks by server sequence', () => {
+            const state = createReducer();
+            const tailChunk: NormalizedMessage = {
+                id: 'stream-chunk-3',
+                localId: null,
+                createdAt: 1200,
+                seq: 3,
+                role: 'agent',
+                isSidechain: false,
+                streamId: 'omp-stream-backfill',
+                append: true,
+                content: [{
+                    type: 'text',
+                    text: ' no longer consulted.',
+                    uuid: 'stream-chunk-3',
+                    parentUUID: null,
+                }],
+            };
+            const earlierChunks: NormalizedMessage[] = [
+                {
+                    id: 'stream-chunk-1',
+                    localId: null,
+                    createdAt: 1000,
+                    seq: 1,
+                    role: 'agent',
+                    isSidechain: false,
+                    streamId: 'omp-stream-backfill',
+                    append: true,
+                    content: [{
+                        type: 'text',
+                        text: 'The old rollout',
+                        uuid: 'stream-chunk-1',
+                        parentUUID: null,
+                    }],
+                },
+                {
+                    id: 'stream-chunk-2',
+                    localId: null,
+                    createdAt: 1100,
+                    seq: 2,
+                    role: 'agent',
+                    isSidechain: false,
+                    streamId: 'omp-stream-backfill',
+                    append: true,
+                    content: [{
+                        type: 'text',
+                        text: ' markers are',
+                        uuid: 'stream-chunk-2',
+                        parentUUID: null,
+                    }],
+                },
+            ];
+
+            reducer(state, [tailChunk]);
+            const result = reducer(state, earlierChunks);
+
+            expect(result.messages).toHaveLength(1);
+            expect(result.messages[0]).toMatchObject({
+                kind: 'agent-text',
+                text: 'The old rollout markers are no longer consulted.',
+                createdAt: 1000,
             });
         });
     });
