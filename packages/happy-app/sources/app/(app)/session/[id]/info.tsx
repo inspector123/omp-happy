@@ -310,6 +310,21 @@ function SessionInfoContent({ session }: { session: Session }) {
                             }}
                         />
                     )}
+                    {session.metadata?.ompSessionId && (
+                        <Item
+                            title={t('sessionInfo.ompSessionId')}
+                            subtitle={`${session.metadata.ompSessionId.substring(0, 8)}...${session.metadata.ompSessionId.substring(session.metadata.ompSessionId.length - 8)}`}
+                            icon={<Ionicons name="cube-outline" size={29} color="#FF9500" />}
+                            onPress={async () => {
+                                try {
+                                    await Clipboard.setStringAsync(session.metadata!.ompSessionId!);
+                                    Modal.alert(t('common.success'), t('sessionInfo.ompSessionIdCopied'));
+                                } catch (error) {
+                                    Modal.alert(t('common.error'), t('sessionInfo.failedToCopyOmpSessionId'));
+                                }
+                            }}
+                        />
+                    )}
                     {/* Resume command — shown for disconnected sessions with a backend session ID */}
                     {/* TODO: migrate to `happy resume <happy-session-id>` once it works without happy-agent auth */}
                     {!sessionStatus.isConnected && getResumeCommand(session) && (
