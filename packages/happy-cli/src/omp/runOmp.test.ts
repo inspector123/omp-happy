@@ -279,7 +279,7 @@ describe('runOmp', () => {
 
     expect(mocks.mockSpawnPty).toHaveBeenCalledWith(
       expect.stringMatching(/(?:^omp$|\/\.local\/bin\/omp$)/),
-      ['--allow-home', '--extension', expect.stringMatching(/scripts\/omp-happy-bridge\.mjs$/), '--model', 'test-model'],
+      ['--allow-home', '--extension', expect.stringMatching(/scripts\/omp-happy-bridge\.mjs$/), '--model', 'test-model', '--config', expect.stringMatching(/scripts\/omp-happy-config\.overlay\.yml$/)],
       expect.objectContaining({
         cwd: process.cwd(),
         env: expect.objectContaining({

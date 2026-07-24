@@ -32,6 +32,10 @@ const BRIDGE_EXIT_GRACE_MS = 300;
 const BRIDGE_SOCKET_ENV = 'OMP_HAPPY_BRIDGE_SOCKET';
 const BRIDGE_CONTROL_MODE_ENV = 'OMP_HAPPY_CONTROL_MODE';
 const BRIDGE_EXTENSION_FILE = 'omp-happy-bridge.mjs';
+// Overlay that pins autoResume off for Happy-managed spawns so every chat
+// mints a fresh OMP transcript (and thus a unique ompSessionId) regardless
+// of the host's global omp settings. Passed after user extra args so it wins.
+const CONFIG_OVERLAY_FILE = 'omp-happy-config.overlay.yml';
 
 type RunMode = 'local' | 'remote';
 
@@ -284,11 +288,11 @@ function extractTodoEntries(result: unknown): Array<{ content: string; status: '
   });
 }
 
-function buildOmpArgs(opts: RunOmpOptions, extensionPath: string): string[] {
+function buildOmpArgs(opts: RunOmpOptions, extensionPath: string, configOverlayPath: string): string[] {
   const extraArgs = (opts.extraArgs ?? []).filter(
     (value): value is string => typeof value === 'string' && value.length > 0 && value !== 'undefined',
   );
-  const args = ['--allow-home', '--extension', extensionPath, ...extraArgs];
+  const args = ['--allow-home', '--extension', extensionPath, ...extraArgs, '--config', configOverlayPath];
   if (opts.yolo && !args.includes('--auto-approve') && !args.includes('--approval-mode')) {
     args.unshift('--auto-approve');
   }
@@ -840,8 +844,8 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     log('Received SIGINT in wrapper; waiting for omp child to handle it');
   };
 
-  const startChild = (socketPath: string, extensionPath: string): void => {
-    const childArgs = buildOmpArgs(opts, extensionPath);
+  const startChild = (socketPath: string, extensionPath: string, configOverlayPath: string): void => {
+    const childArgs = buildOmpArgs(opts, extensionPath, configOverlayPath);
     log(`Spawning native omp ${childArgs.join(' ')}`);
     child = spawnPty(ompBinary, childArgs, {
       cwd: process.cwd(),
@@ -1056,10 +1060,11 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   const bridgeDir = await mkdtemp(join(tmpdir(), 'happy-omp-'));
   const socketPath = join(bridgeDir, 'bridge.sock');
   const extensionPath = join(projectPath(), 'scripts', BRIDGE_EXTENSION_FILE);
+  const configOverlayPath = join(projectPath(), 'scripts', CONFIG_OVERLAY_FILE);
 
   try {
     bridgeServer = await startBridgeServer(socketPath, handleBridgeFrame, log);
-    startChild(socketPath, extensionPath);
+    startChild(socketPath, extensionPath, configOverlayPath);
     await waitForBridgeReady();
 
     while (!shouldExit) {

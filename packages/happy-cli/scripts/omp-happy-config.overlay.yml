@@ -1,0 +1,11 @@
+# Happy-managed OMP sessions must always start a fresh transcript so each
+# Happy chat gets a unique OMP session ID (published to session metadata as
+# `ompSessionId`). Without this, a host with `autoResume: true` makes every
+# Happy chat in the same directory resume — and therefore report — the same
+# OMP session.
+#
+# This overlay is passed as `--config` AFTER any user-provided extra args so
+# it wins over host/project/user overlays. Explicit resume flows are
+# unaffected: OMP resolves `--resume` before consulting `autoResume`, and
+# Happy's own resume path uses ACP `session/load`, not this spawn path.
+autoResume: false
