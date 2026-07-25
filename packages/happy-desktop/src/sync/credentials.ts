@@ -1,7 +1,7 @@
 /**
  * Credential loading for the desktop sync core.
  * Reads the local Happy CLI credentials ($HAPPY_HOME_DIR/access.key,
- * default ~/.happy) — same files parsed by packages/happy-cli/src/persistence.ts
+ * default ~/.omp-happy) — same files parsed by packages/happy-cli/src/persistence.ts
  * readCredentials(). The `token` authenticates user-scoped REST + socket.
  */
 
@@ -19,7 +19,7 @@ export interface LoadedCredentials extends Credentials {
 }
 
 export function defaultHappyHomeDir(): string {
-  return process.env.HAPPY_HOME_DIR || join(homedir(), '.happy');
+  return process.env.HAPPY_HOME_DIR || join(homedir(), '.omp-happy');
 }
 
 function decode(value: unknown, name: string): Uint8Array {

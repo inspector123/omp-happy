@@ -1,6 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createMockBridge,
+  getBridge,
   filterSessions,
   formatRelativeTime,
   normalizeMessages,
@@ -178,6 +179,14 @@ describe('createMockBridge', () => {
   });
 });
 
+describe('bridge resolution', () => {
+  it('rejects a missing preload bridge when demo fallback is disabled', () => {
+    expect(() => (
+      getBridge as (allowBuiltInMock: boolean) => HDBridge
+    )(false)).toThrow(/preload bridge/i);
+  });
+});
+
 describe('store: hydration and selection', () => {
   it('first applyState hydrates and auto-selects the first session', () => {
     const state = makeState({
@@ -189,6 +198,23 @@ describe('store: hydration and selection', () => {
     expect(s.selectedSessionId).toBe('a');
     expect(s.unseen).toEqual({});
     expect(s.status).toBe('online');
+  });
+
+  it('opens message history for automatic initial and replacement selections', () => {
+    const opened: string[] = [];
+    setBridge({
+      getState: async () => makeState(),
+      onState: () => () => {},
+      sendMessage: async () => {},
+      openSession: async (id) => {
+        opened.push(id);
+      },
+    });
+
+    useDesktop.getState().applyState(makeState({ sessions: [makeSession({ id: 'a' })], messages: {} }));
+    useDesktop.getState().applyState(makeState({ sessions: [makeSession({ id: 'b' })], messages: {} }));
+
+    expect(opened).toEqual(['a', 'b']);
   });
 
   it('drops selection if the selected session disappears', () => {
@@ -267,7 +293,7 @@ describe('store: unseen tracking', () => {
     expect(useDesktop.getState().selectedSessionId).toBe('b');
   });
 
-  it('selectSession calls openSession on the bridge', async () => {
+  it('selectSession opens history after the automatic initial selection', async () => {
     const opened: string[] = [];
     const bridge: HDBridge = {
       getState: async () => makeState(),
@@ -281,7 +307,7 @@ describe('store: unseen tracking', () => {
     useDesktop.getState().applyState(twoSessions());
     useDesktop.getState().selectSession('b');
     // async function body runs synchronously up to the first await
-    expect(opened).toEqual(['b']);
+    expect(opened).toEqual(['a', 'b']);
   });
 
   it('cycleSelection moves up/down with wraparound and clears unseen', () => {

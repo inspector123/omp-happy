@@ -1,12 +1,12 @@
 import { BrowserWindow, app, ipcMain } from "electron";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EventEmitter } from "node:events";
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { createStore } from "zustand/vanilla";
 import sodium from "libsodium-wrappers";
+import { homedir } from "node:os";
 import { io } from "socket.io-client";
 //#region src/sync/store.ts
 /**
@@ -571,11 +571,11 @@ async function resolveSessionKeys(homeDir, port, now = Date.now()) {
 /**
 * Credential loading for the desktop sync core.
 * Reads the local Happy CLI credentials ($HAPPY_HOME_DIR/access.key,
-* default ~/.happy) — same files parsed by packages/happy-cli/src/persistence.ts
+* default ~/.omp-happy) — same files parsed by packages/happy-cli/src/persistence.ts
 * readCredentials(). The `token` authenticates user-scoped REST + socket.
 */
 function defaultHappyHomeDir() {
-	return process.env.HAPPY_HOME_DIR || join(homedir(), ".happy");
+	return process.env.HAPPY_HOME_DIR || join(homedir(), ".omp-happy");
 }
 function decode(value, name) {
 	if (typeof value !== "string" || value.length === 0) throw new Error(`access.key: ${name} is missing or not a string`);
@@ -1221,9 +1221,6 @@ var mainWindow = null;
 var engine = null;
 var engineError = null;
 var quitting = false;
-function resolveHomeDir() {
-	return process.env.HAPPY_HOME_DIR || join(homedir(), ".happy");
-}
 async function loadCredentials(homeDir) {
 	try {
 		const raw = await readFile(join(homeDir, "access.key"), "utf8");
@@ -1262,7 +1259,7 @@ function errorMessage(err) {
 	return err instanceof Error ? err.message : String(err);
 }
 async function bootEngine() {
-	const homeDir = resolveHomeDir();
+	const homeDir = defaultHappyHomeDir();
 	const credentials = await loadCredentials(homeDir);
 	if (!credentials) {
 		engineError = `No Happy credentials found at ${join(homeDir, "access.key")}`;

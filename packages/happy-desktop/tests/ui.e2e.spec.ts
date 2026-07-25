@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SyncEngine } from '../src/sync/syncEngine';
 import { loadCredentials, readMachineId } from '../src/sync/credentials';
-import { readDaemonPort } from '../src/sync/daemonClient';
+import { readDaemonPort, stopDaemonSession } from '../src/sync/daemonClient';
 
 // Live desktop e2e: requires a real server + daemon + credentials.
 // Run with: HD_LIVE=1 pnpm --filter happy-desktop build && pnpm --filter happy-desktop test:e2e
@@ -67,38 +67,45 @@ test('session list -> open session -> send message -> streamed reply', async () 
     await engine.stop();
   }
 
-  const mainEntry = join(packageRoot, 'out/main/index.js');
-  if (!existsSync(mainEntry)) {
-    throw new Error(`Build output missing at ${mainEntry} — run "pnpm --filter happy-desktop build" first`);
-  }
-
-  const app = await electron.launch({
-    args: ['.'],
-    cwd: packageRoot,
-    env: launchEnv,
-    timeout: 60_000,
-  });
-
   try {
-    const page = await app.firstWindow();
+    const mainEntry = join(packageRoot, 'out/main/index.js');
+    if (!existsSync(mainEntry)) {
+      throw new Error(`Build output missing at ${mainEntry} — run "pnpm --filter happy-desktop build" first`);
+    }
 
-    const sessionList = page.locator('[data-testid="session-list"]');
-    await sessionList.waitFor({ state: 'visible', timeout: 60_000 });
-
-    // The spawned session is identified by id — never an arbitrary user session.
-    const spawnedItem = page.locator(`[data-session-id="${spawnedId}"]`);
-    await spawnedItem.waitFor({ state: 'visible', timeout: 90_000 });
-    await spawnedItem.click();
-
-    const composer = page.locator('[data-testid="composer-input"]');
-    await composer.waitFor({ state: 'visible', timeout: 30_000 });
-    await composer.fill('Reply with exactly: DESKTOP-E2E-OK');
-    await composer.press('Enter');
-
-    await expect(page.locator('[data-testid="message-list"]')).toContainText('DESKTOP-E2E-OK', {
-      timeout: 120_000,
+    const app = await electron.launch({
+      args: ['.'],
+      cwd: packageRoot,
+      env: launchEnv,
+      timeout: 60_000,
     });
+
+    try {
+      const page = await app.firstWindow();
+
+      const sessionList = page.locator('[data-testid="session-list"]');
+      await sessionList.waitFor({ state: 'visible', timeout: 60_000 });
+
+      // The spawned session is identified by id — never an arbitrary user session.
+      const spawnedItem = page.locator(`[data-session-id="${spawnedId}"]`);
+      await spawnedItem.waitFor({ state: 'visible', timeout: 90_000 });
+      await spawnedItem.click();
+
+      const composer = page.locator('[data-testid="composer-input"]');
+      await composer.waitFor({ state: 'visible', timeout: 30_000 });
+      await composer.fill('Reply with exactly: DESKTOP-E2E-OK');
+      await composer.press('Enter');
+
+      await expect(page.locator('[data-testid="message-list"]')).toContainText('DESKTOP-E2E-OK', {
+        timeout: 120_000,
+      });
+    } finally {
+      await app.close();
+    }
   } finally {
-    await app.close();
+    const stopped = spawnedId ? await stopDaemonSession(daemonPort, spawnedId) : true;
+    if (!stopped) {
+      throw new Error(`Failed to stop e2e session ${spawnedId}`);
+    }
   }
 });

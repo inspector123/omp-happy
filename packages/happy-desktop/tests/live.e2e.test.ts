@@ -16,7 +16,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { SyncEngine } from '../src/sync/syncEngine';
 import { loadCredentials, readMachineId } from '../src/sync/credentials';
-import { readDaemonPort } from '../src/sync/daemonClient';
+import { readDaemonPort, stopDaemonSession } from '../src/sync/daemonClient';
 import type { DesktopState } from '../src/sync/types';
 
 const LIVE = process.env.HD_LIVE === '1';
@@ -72,6 +72,7 @@ describe.skipIf(!LIVE)('live e2e (HD_LIVE=1)', () => {
 
       const states: DesktopState[] = [];
       engine.on('state', (s: DesktopState) => states.push(s));
+      let spawnedId = '';
 
       try {
         await engine.start();
@@ -99,7 +100,7 @@ describe.skipIf(!LIVE)('live e2e (HD_LIVE=1)', () => {
         expect(machineId, 'machineId from session metadata or settings.json').toBeTruthy();
         const spawn = await engine.spawnSession(machineId!, SPAWN_DIRECTORY, 'omp');
         expect(spawn.type).toBe('success');
-        const spawnedId = spawn.type === 'success' ? spawn.sessionId : '';
+        spawnedId = spawn.type === 'success' ? spawn.sessionId : '';
         expect(spawnedId).not.toBe('');
 
         await waitFor(
@@ -121,7 +122,11 @@ describe.skipIf(!LIVE)('live e2e (HD_LIVE=1)', () => {
           120_000,
         );
       } finally {
+        const stopped = spawnedId ? await stopDaemonSession(daemonPort!, spawnedId) : true;
         await engine.stop();
+        if (!stopped) {
+          throw new Error(`Failed to stop e2e session ${spawnedId}`);
+        }
       }
     },
   );

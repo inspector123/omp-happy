@@ -99,6 +99,25 @@ export async function listDaemonSessions(port: number): Promise<DaemonChildInfo[
   return children;
 }
 
+/** Stop one daemon-tracked session by its exact Happy session id. */
+export async function stopDaemonSession(port: number, sessionId: string): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/stop-session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId }),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const body: unknown = await response.json();
+    return isRecord(body) && body.success === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Parse `$HAPPY_HOME_DIR/sessions.json`:
  * { sessions: { <id>: { encryptionKey, encryptionVariant, ..., savedAt } } }.

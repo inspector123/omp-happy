@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   readDaemonPort,
   listDaemonSessions,
+  stopDaemonSession,
   readPersistedSessionKeys,
   resolveSessionKeys,
 } from './daemonClient';
@@ -72,6 +73,32 @@ describe('listDaemonSessions', () => {
 
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ unexpected: true }), { status: 200 })));
     expect(await listDaemonSessions(1)).toEqual([]);
+  });
+});
+
+describe('stopDaemonSession', () => {
+  it('stops only the exact Happy session id requested', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ success: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(stopDaemonSession(45757, 'spawned-test-session')).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:45757/stop-session',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ sessionId: 'spawned-test-session' }),
+      }),
+    );
+  });
+
+  it('returns false without touching another session when cleanup fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: false }), { status: 200 })));
+    await expect(stopDaemonSession(45757, 'missing-test-session')).resolves.toBe(false);
+
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('ECONNREFUSED');
+    }));
+    await expect(stopDaemonSession(45757, 'missing-test-session')).resolves.toBe(false);
   });
 });
 

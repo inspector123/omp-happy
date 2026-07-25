@@ -9930,11 +9930,12 @@ var create = ((createState) => createState ? createImpl(createState) : createImp
 var import_client = require_client();
 var bridgeOverride = null;
 var lazyMock = null;
-function getBridge() {
+function getBridge(allowBuiltInMock = false) {
 	if (bridgeOverride) return bridgeOverride;
 	const g = globalThis;
 	if (g.hd) return g.hd;
 	if (g.__HD_MOCK__) return g.__HD_MOCK__;
+	if (!allowBuiltInMock) throw new Error("Happy Desktop preload bridge is unavailable");
 	if (!lazyMock) lazyMock = createMockBridge();
 	return lazyMock;
 }
@@ -10241,7 +10242,13 @@ var NO_MESSAGES = [];
 function selectSelectedMessages(s) {
 	return s.selectedSessionId ? s.messages[s.selectedSessionId] ?? NO_MESSAGES : NO_MESSAGES;
 }
+function reportOpenError(error) {
+	useDesktop.setState({ error: error instanceof Error ? error.message : String(error) });
+}
 var useDesktop = create()((set, get) => {
+	function openSessionHistory(id) {
+		getBridge().openSession(id).catch(reportOpenError);
+	}
 	function applySelection(id) {
 		if (!id) return;
 		set((prev) => {
@@ -10253,7 +10260,7 @@ var useDesktop = create()((set, get) => {
 				unseen
 			};
 		});
-		getBridge().openSession(id).catch((e) => set({ error: e instanceof Error ? e.message : String(e) }));
+		openSessionHistory(id);
 	}
 	return {
 		status: "connecting",
@@ -10265,6 +10272,7 @@ var useDesktop = create()((set, get) => {
 		unseen: {},
 		switcherOpen: false,
 		applyState(s) {
+			let automaticSelectionId = null;
 			set((prev) => {
 				const messages = {};
 				for (const [sid, list] of Object.entries(s.messages)) {
@@ -10290,6 +10298,7 @@ var useDesktop = create()((set, get) => {
 						if (selectedSessionId) delete unseen[selectedSessionId];
 					}
 				}
+				if (selectedSessionId && (!prev.hydrated || selectedSessionId !== prev.selectedSessionId)) automaticSelectionId = selectedSessionId;
 				return {
 					status: s.status,
 					sessions: s.sessions,
@@ -10300,6 +10309,7 @@ var useDesktop = create()((set, get) => {
 					unseen
 				};
 			});
+			if (automaticSelectionId) openSessionHistory(automaticSelectionId);
 		},
 		selectSession(id) {
 			applySelection(id);

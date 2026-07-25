@@ -1,9 +1,8 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SyncEngine } from '../sync';
+import { SyncEngine, defaultHappyHomeDir } from '../sync';
 import type { Credentials, DesktopState } from '../sync';
 
 const SERVER_URL = process.env.HAPPY_SERVER_URL || 'http://192.168.0.252:30003';
@@ -15,9 +14,6 @@ let engine: SyncEngine | null = null;
 let engineError: string | null = null;
 let quitting = false;
 
-function resolveHomeDir(): string {
-  return process.env.HAPPY_HOME_DIR || join(homedir(), '.happy');
-}
 
 async function loadCredentials(homeDir: string): Promise<Credentials | null> {
   try {
@@ -73,7 +69,7 @@ function errorMessage(err: unknown): string {
 }
 
 async function bootEngine(): Promise<void> {
-  const homeDir = resolveHomeDir();
+  const homeDir = defaultHappyHomeDir();
   const credentials = await loadCredentials(homeDir);
   if (!credentials) {
     engineError = `No Happy credentials found at ${join(homeDir, 'access.key')}`;

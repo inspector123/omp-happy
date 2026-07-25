@@ -28,6 +28,7 @@ export {
 export {
   readDaemonPort,
   listDaemonSessions,
+  stopDaemonSession,
   readPersistedSessionKeys,
   resolveSessionKeys,
   type DaemonChildInfo,

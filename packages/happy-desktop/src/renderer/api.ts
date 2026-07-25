@@ -66,11 +66,14 @@ declare global {
 let bridgeOverride: HDBridge | null = null;
 let lazyMock: HDBridge | null = null;
 
-export function getBridge(): HDBridge {
+export function getBridge(allowBuiltInMock = import.meta.env.DEV): HDBridge {
   if (bridgeOverride) return bridgeOverride;
   const g = globalThis as typeof globalThis & Window;
   if (g.hd) return g.hd;
   if (g.__HD_MOCK__) return g.__HD_MOCK__;
+  if (!allowBuiltInMock) {
+    throw new Error('Happy Desktop preload bridge is unavailable');
+  }
   if (!lazyMock) lazyMock = createMockBridge();
   return lazyMock;
 }
@@ -384,7 +387,15 @@ export function selectSelectedMessages(s: RendererStore): MessageView[] {
   return s.selectedSessionId ? (s.messages[s.selectedSessionId] ?? NO_MESSAGES) : NO_MESSAGES;
 }
 
+function reportOpenError(error: unknown): void {
+  useDesktop.setState({ error: error instanceof Error ? error.message : String(error) });
+}
+
 export const useDesktop = create<RendererStore>()((set, get) => {
+  function openSessionHistory(id: string): void {
+    void getBridge().openSession(id).catch(reportOpenError);
+  }
+
   function applySelection(id: string | null): void {
     if (!id) return;
     set((prev) => {
@@ -393,9 +404,7 @@ export const useDesktop = create<RendererStore>()((set, get) => {
       delete unseen[id];
       return { selectedSessionId: id, unseen };
     });
-    void getBridge()
-      .openSession(id)
-      .catch((e) => set({ error: e instanceof Error ? e.message : String(e) }));
+    openSessionHistory(id);
   }
 
   return {
@@ -408,7 +417,9 @@ export const useDesktop = create<RendererStore>()((set, get) => {
     unseen: {},
     switcherOpen: false,
 
+
     applyState(s) {
+      let automaticSelectionId: string | null = null;
       set((prev) => {
         const messages: Record<string, MessageView[]> = {};
         for (const [sid, list] of Object.entries(s.messages)) {
@@ -444,6 +455,10 @@ export const useDesktop = create<RendererStore>()((set, get) => {
           }
         }
 
+        if (selectedSessionId && (!prev.hydrated || selectedSessionId !== prev.selectedSessionId)) {
+          automaticSelectionId = selectedSessionId;
+        }
+
         return {
           status: s.status,
           sessions: s.sessions,
@@ -454,6 +469,9 @@ export const useDesktop = create<RendererStore>()((set, get) => {
           unseen,
         };
       });
+      if (automaticSelectionId) {
+        openSessionHistory(automaticSelectionId);
+      }
     },
 
     selectSession(id) {
