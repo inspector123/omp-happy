@@ -155,6 +155,8 @@ export const pl: TranslationStructure = {
         exchangingTokens: 'Wymiana tokenów...',
         usage: 'Użycie',
         usageSubtitle: 'Zobacz użycie API i koszty',
+        hiddenFolders: 'Ukryte foldery',
+        hiddenFoldersSubtitle: 'Zarządzaj folderami ukrytymi w tej aplikacji',
 
         // Dynamic settings messages
         accountConnected: ({ service }: { service: string }) => `Konto ${service} połączone`,
@@ -162,6 +164,21 @@ export const pl: TranslationStructure = {
             `${name} jest ${status === 'online' ? 'online' : 'offline'}`,
         featureToggled: ({ feature, enabled }: { feature: string; enabled: boolean }) =>
             `${feature} ${enabled ? 'włączona' : 'wyłączona'}`,
+    },
+
+    settingsHiddenFolders: {
+        title: 'Ukryte foldery',
+        addTitle: 'Dodaj ścieżkę folderu',
+        addSubtitle: 'Wprowadź dokładną ścieżkę do ukrycia',
+        promptTitle: 'Dodaj ukryty folder',
+        promptMessage: 'Wprowadź dokładną ścieżkę folderu, który chcesz ukryć w tej aplikacji.',
+        placeholder: '/path/to/folder',
+        sectionTitle: 'Ukryte foldery',
+        footer: 'Dokładne ścieżki folderów wymienione tutaj są ukryte tylko w tej aplikacji. Nie są zmieniane na serwerze ani na innych urządzeniach.',
+        empty: 'Brak ukrytych folderów',
+        remove: 'Usuń z ukrytych folderów',
+        invalidPath: 'Wprowadź prawidłową ścieżkę folderu.',
+        duplicatePath: 'Ta ścieżka folderu jest już ukryta.',
     },
 
     settingsAppearance: {
@@ -864,6 +881,11 @@ export const pl: TranslationStructure = {
         unknownEvent: 'Nieznane zdarzenie',
         usageLimitUntil: ({ time }: { time: string }) => `Osiągnięto limit użycia do ${time}`,
         sentAsGoal: 'Sent as goal',
+        queued: 'W kolejce',
+        queuedEditUnavailableTitle: 'Nie można edytować wiadomości w kolejce',
+        queuedEditUnavailableBody: 'Wysyłanie już się rozpoczęło, więc tej wiadomości nie można bezpiecznie przywrócić do edycji.',
+        queuedEditReplaceDraftTitle: 'Zastąpić bieżącą wersję roboczą?',
+        queuedEditReplaceDraftBody: 'Bieżąca wersja robocza zostanie odrzucona i zastąpiona wiadomością z kolejki.',
         unknownTime: 'nieznany czas',
     },
 

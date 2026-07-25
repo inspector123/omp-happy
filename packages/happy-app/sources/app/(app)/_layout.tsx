@@ -112,6 +112,12 @@ export default function RootLayout() {
                 }}
             />
             <Stack.Screen
+                name="settings/hidden-folders"
+                options={{
+                    headerTitle: t('settingsHiddenFolders.title'),
+                }}
+            />
+            <Stack.Screen
                 name="settings/agents"
                 options={{
                     headerTitle: 'Agent Defaults',

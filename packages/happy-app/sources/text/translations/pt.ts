@@ -138,12 +138,29 @@ export const pt: TranslationStructure = {
         exchangingTokens: 'Trocando tokens...',
         usage: 'Uso',
         usageSubtitle: 'Visualizar uso da API e custos',
+        hiddenFolders: 'Pastas ocultas',
+        hiddenFoldersSubtitle: 'Gerencie os caminhos exatos das pastas ocultas',
         // Dynamic settings messages
         accountConnected: ({ service }: { service: string }) => `Conta ${service} conectada`,
         machineStatus: ({ name, status }: { name: string; status: 'online' | 'offline' }) =>
             `${name} está ${status === 'online' ? 'online' : 'offline'}`,
         featureToggled: ({ feature, enabled }: { feature: string; enabled: boolean }) =>
             `${feature} ${enabled ? 'ativado' : 'desativado'}`,
+    },
+
+    settingsHiddenFolders: {
+        title: 'Pastas ocultas',
+        addTitle: 'Adicionar caminho da pasta',
+        addSubtitle: 'Insira um caminho exato para ocultar',
+        promptTitle: 'Adicionar pasta oculta',
+        promptMessage: 'Insira o caminho exato da pasta que deseja ocultar neste aplicativo.',
+        placeholder: '/path/to/folder',
+        sectionTitle: 'Pastas ocultas',
+        footer: 'Os caminhos exatos das pastas listados aqui ficam ocultos apenas neste aplicativo. Eles não são alterados no servidor nem em outros dispositivos.',
+        empty: 'Nenhuma pasta oculta',
+        remove: 'Remover das pastas ocultas',
+        invalidPath: 'Insira um caminho de pasta válido.',
+        duplicatePath: 'Este caminho de pasta já está oculto.',
     },
 
     settingsAppearance: {
@@ -847,6 +864,11 @@ export const pt: TranslationStructure = {
         unknownEvent: 'Evento desconhecido',
         usageLimitUntil: ({ time }: { time: string }) => `Limite de uso atingido até ${time}`,
         sentAsGoal: 'Sent as goal',
+        queued: 'Na fila',
+        queuedEditUnavailableTitle: 'Não é possível editar a mensagem na fila',
+        queuedEditUnavailableBody: 'O envio já começou, portanto esta mensagem não pode ser recuperada com segurança para edição.',
+        queuedEditReplaceDraftTitle: 'Substituir o rascunho atual?',
+        queuedEditReplaceDraftBody: 'O rascunho atual será descartado e substituído pela mensagem na fila.',
         unknownTime: 'horário desconhecido',
     },
 

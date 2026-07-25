@@ -125,12 +125,29 @@ export const ru: TranslationStructure = {
         exchangingTokens: 'Обмен токенов...',
         usage: 'Использование',
         usageSubtitle: 'Просмотр использования API и затрат',
+        hiddenFolders: 'Скрытые папки',
+        hiddenFoldersSubtitle: 'Управление папками, скрытыми в этом приложении',
         // Dynamic settings messages
         accountConnected: ({ service }: { service: string }) => `Аккаунт ${service} подключен`,
         machineStatus: ({ name, status }: { name: string; status: 'online' | 'offline' }) =>
             `${name} ${status === 'online' ? 'online' : 'offline'}`,
         featureToggled: ({ feature, enabled }: { feature: string; enabled: boolean }) =>
             `${feature} ${enabled ? 'включена' : 'отключена'}`,
+    },
+
+    settingsHiddenFolders: {
+        title: 'Скрытые папки',
+        addTitle: 'Добавить путь к папке',
+        addSubtitle: 'Введите точный путь, который нужно скрыть',
+        promptTitle: 'Добавить скрытую папку',
+        promptMessage: 'Введите точный путь к папке, которую нужно скрыть в этом приложении.',
+        placeholder: '/path/to/folder',
+        sectionTitle: 'Скрытые папки',
+        footer: 'Точные пути к папкам, указанные здесь, скрываются только в этом приложении. На сервере и других устройствах они не изменяются.',
+        empty: 'Нет скрытых папок',
+        remove: 'Удалить из скрытых папок',
+        invalidPath: 'Введите корректный путь к папке.',
+        duplicatePath: 'Этот путь к папке уже скрыт.',
     },
 
     settingsAppearance: {
@@ -852,6 +869,11 @@ export const ru: TranslationStructure = {
         unknownEvent: 'Неизвестное событие',
         usageLimitUntil: ({ time }: { time: string }) => `Лимит использования достигнут до ${time}`,
         sentAsGoal: 'Отправлено в качестве цели',
+        queued: 'В очереди',
+        queuedEditUnavailableTitle: 'Невозможно изменить сообщение в очереди',
+        queuedEditUnavailableBody: 'Отправка уже началась, поэтому это сообщение нельзя безопасно вернуть для редактирования.',
+        queuedEditReplaceDraftTitle: 'Заменить текущий черновик?',
+        queuedEditReplaceDraftBody: 'Текущий черновик будет удалён и заменён сообщением из очереди.',
         unknownTime: 'неизвестное время',
     },
 

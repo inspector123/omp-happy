@@ -129,6 +129,8 @@ export const en: TranslationStructure = {
         accountSubtitle: 'Manage your account details',
         appearance: 'Appearance',
         appearanceSubtitle: 'Customize how the app looks',
+        hiddenFolders: 'Hidden Folders',
+        hiddenFoldersSubtitle: 'Hide exact folder paths in this app',
         voiceAssistant: 'Voice Assistant',
         voiceAssistantSubtitle: 'Configure voice interaction preferences',
         featuresTitle: 'Features',
@@ -720,6 +722,21 @@ export const en: TranslationStructure = {
         restartNow: 'Restart Now',
     },
 
+    settingsHiddenFolders: {
+        title: 'Hidden Folders',
+        addTitle: 'Add Folder Path',
+        addSubtitle: 'Enter an exact path to hide',
+        promptTitle: 'Add Hidden Folder',
+        promptMessage: 'Enter the exact folder path to hide in this app.',
+        placeholder: '/path/to/folder',
+        sectionTitle: 'Hidden Folders',
+        footer: 'Exact folder paths listed here are hidden only in this app. They are not changed on the server or other devices.',
+        empty: 'No hidden folders',
+        remove: 'Remove from hidden folders',
+        invalidPath: 'Enter a valid folder path.',
+        duplicatePath: 'This folder path is already hidden.',
+    },
+
     connectButton: {
         authenticate: 'Authenticate Terminal',
         authenticateWithUrlPaste: 'Authenticate Terminal with URL paste',
@@ -862,6 +879,11 @@ export const en: TranslationStructure = {
         unknownEvent: 'Unknown event',
         usageLimitUntil: ({ time }: { time: string }) => `Usage limit reached until ${time}`,
         sentAsGoal: 'Sent as goal',
+        queued: 'Queued',
+        queuedEditUnavailableTitle: 'Can\'t edit queued message',
+        queuedEditUnavailableBody: 'Sending has already started, so this message can\'t be safely pulled back for editing.',
+        queuedEditReplaceDraftTitle: 'Replace your current draft?',
+        queuedEditReplaceDraftBody: 'Your current draft will be discarded and replaced with the queued message.',
         unknownTime: 'unknown time',
     },
 

@@ -3,7 +3,7 @@ import { openExternalUrl } from '@/utils/openExternalUrl';
 import { Image } from 'expo-image';
 import * as React from 'react';
 import { Text } from '@/components/StyledText';
-import { useRouter } from 'expo-router';
+import { type Href, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
 import { useAuth } from '@/auth/AuthContext';
@@ -29,6 +29,9 @@ import { useProfile } from '@/sync/storage';
 import { getDisplayName, getAvatarUrl, getBio } from '@/sync/profile';
 import { Avatar } from '@/components/Avatar';
 import { t } from '@/text';
+
+// The generated route union does not include newly added file routes until Expo regenerates it.
+const HIDDEN_FOLDERS_ROUTE = '/settings/hidden-folders' as unknown as Href;
 
 type BuildConfig = {
     buildCommitSha?: unknown;
@@ -369,6 +372,12 @@ export const SettingsView = React.memo(function SettingsView() {
                     subtitle={t('settings.appearanceSubtitle')}
                     icon={<Ionicons name="color-palette-outline" size={29} color="#5856D6" />}
                     onPress={() => router.push('/settings/appearance')}
+                />
+                <Item
+                    title={t('settings.hiddenFolders')}
+                    subtitle={t('settings.hiddenFoldersSubtitle')}
+                    icon={<Ionicons name="folder-outline" size={29} color="#FF9500" />}
+                    onPress={() => router.push(HIDDEN_FOLDERS_ROUTE)}
                 />
                 <Item
                     title={t('settings.voiceAssistant')}

@@ -32,13 +32,14 @@ import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import Constants from 'expo-constants';
 import { useHeaderHeight } from '@/utils/responsive';
 import { t } from '@/text';
-import { useAllMachines, useLocalSetting, useSessions, useSetting, storage } from '@/sync/storage';
+import { useAllMachines, useLocalSetting, useVisibleSessions, useSetting, storage } from '@/sync/storage';
 import type { NewSessionAgentType } from '@/sync/persistence';
 import { sync } from '@/sync/sync';
 import { isMachineOnline } from '@/utils/machineUtils';
 import { machineSpawnNewSession } from '@/sync/ops';
 import { createWorktree, listWorktrees } from '@/utils/worktree';
 import { resolveAbsolutePath } from '@/utils/pathUtils';
+import { isFolderPathHidden } from '@/utils/hiddenFolders';
 import { formatPathRelativeToHome, formatLastSeen } from '@/utils/sessionUtils';
 import { useNavigateToSession } from '@/hooks/useNavigateToSession';
 import { useNewSessionDraft } from '@/hooks/useNewSessionDraft';
@@ -549,7 +550,8 @@ function NewSessionScreen() {
 
     // Real data sources
     const allMachines = useAllMachines({ includeOffline: true });
-    const sessions = useSessions();
+    const sessions = useVisibleSessions();
+    const hiddenFolderPaths = useLocalSetting('hiddenFolderPaths');
     const agentInputEnterToSend = useSetting('agentInputEnterToSend');
     const agentDefaultOverrides = useSetting('agentDefaultOverrides');
     const fileDiffsSidebarEnabled = useSetting('fileDiffsSidebar');
@@ -637,7 +639,7 @@ function NewSessionScreen() {
 
     // Build path items from session history for selected machine
     const pathItems = React.useMemo<PickerItem[]>(() => {
-        if (!selectedMachineId || !sessions) return [];
+        if (!selectedMachineId) return [];
         const paths = new Set<string>();
         for (const s of sessions) {
             if (typeof s === 'string') continue;
@@ -695,14 +697,20 @@ function NewSessionScreen() {
         let cancelled = false;
         listWorktrees(selectedMachineId, debouncedResolvedSelectedPath).then(worktrees => {
             if (cancelled) return;
-            setWorktreeItems(worktrees.map(wt => ({
-                key: wt.path,
-                label: wt.branch,
-                subtitle: wt.path,
-            })));
+            setWorktreeItems(worktrees
+                .filter((worktree) => !isFolderPathHidden(
+                    worktree.path,
+                    selectedMachine.metadata?.homeDir,
+                    hiddenFolderPaths,
+                ))
+                .map(wt => ({
+                    key: wt.path,
+                    label: wt.branch,
+                    subtitle: wt.path,
+                })));
         });
         return () => { cancelled = true; };
-    }, [debouncedResolvedSelectedPath, selectedMachineId, selectedMachine]);
+    }, [debouncedResolvedSelectedPath, hiddenFolderPaths, selectedMachineId, selectedMachine]);
 
     React.useEffect(() => {
         if (worktreeKey === '__none__' || worktreeKey === '__new__') {

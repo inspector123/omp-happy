@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, FlatList } from 'react-native';
 import { Text } from '@/components/StyledText';
-import { useAllSessions } from '@/sync/storage';
+import { useVisibleSessions } from '@/sync/storage';
 import { Session } from '@/sync/storageTypes';
 import { Avatar } from '@/components/Avatar';
 import { getSessionName, getSessionSubtitle, getSessionAvatarId } from '@/utils/sessionUtils';
@@ -162,7 +162,7 @@ function groupSessionsByDate(sessions: Session[]): SessionHistoryItem[] {
 
 export default function SessionHistory() {
     const safeArea = useSafeAreaInsets();
-    const allSessions = useAllSessions();
+    const allSessions = useVisibleSessions();
     const navigateToSession = useNavigateToSession();
     
     const groupedItems = React.useMemo(() => {

@@ -9,7 +9,7 @@ import { Metadata } from "@/sync/storageTypes";
 import { ToolView } from "./tools/ToolView";
 import { AgentEvent } from "@/sync/typesRaw";
 import { sync } from '@/sync/sync';
-import { useSetting } from '@/sync/storage';
+import { useIsMessageQueued, useIsQueuedMessageEditable, useSetting } from '@/sync/storage';
 import { Option } from './markdown/MarkdownView';
 import { layout } from "./layout";
 import { parseLocalCommandMessage, isUserSlashCommandEcho } from './parseLocalCommandMessage';
@@ -25,6 +25,11 @@ export const MessageView = React.memo((props: {
    * the active session screen and used by the fork-from-message flow.
    */
   onForkFromUserMessage?: (messageId: string, rewindPointId: string | undefined, messageText: string) => void;
+  /**
+   * Long-press handler for a user-text bubble that is still queued in the
+   * send outbox. Pulls the message back for editing.
+   */
+  onEditQueuedMessage?: (message: UserTextMessage) => void;
 }) => {
   return (
     <View
@@ -38,6 +43,7 @@ export const MessageView = React.memo((props: {
           sessionId={props.sessionId}
           getMessageById={props.getMessageById}
           onForkFromUserMessage={props.onForkFromUserMessage}
+          onEditQueuedMessage={props.onEditQueuedMessage}
         />
       </View>
     </View>
@@ -51,6 +57,7 @@ function RenderBlock(props: {
   sessionId: string;
   getMessageById?: (id: string) => Message | null;
   onForkFromUserMessage?: (messageId: string, rewindPointId: string | undefined, messageText: string) => void;
+  onEditQueuedMessage?: (message: UserTextMessage) => void;
 }): React.ReactElement {
   switch (props.message.kind) {
     case 'user-text':
@@ -60,6 +67,7 @@ function RenderBlock(props: {
           metadata={props.metadata}
           sessionId={props.sessionId}
           onForkFromUserMessage={props.onForkFromUserMessage}
+          onEditQueuedMessage={props.onEditQueuedMessage}
         />
       );
 
@@ -92,10 +100,20 @@ function UserTextBlock(props: {
   metadata: Metadata | null;
   sessionId: string;
   onForkFromUserMessage?: (messageId: string, rewindPointId: string | undefined, messageText: string) => void;
+  onEditQueuedMessage?: (message: UserTextMessage) => void;
 }) {
   const handleOptionPress = React.useCallback((option: Option) => {
     sync.sendMessage(props.sessionId, option.title, { source: 'option' });
   }, [props.sessionId]);
+
+  // Queued display state is independent from the narrower safe-edit state.
+  // Attachment sends and anything that entered a POST remain visibly queued,
+  // but never get an edit or fork long-press action.
+  const isQueued = useIsMessageQueued(props.sessionId, props.message.localId);
+  const isQueuedEditable = useIsQueuedMessageEditable(props.sessionId, props.message.localId);
+  const handleEditPress = React.useCallback(() => {
+    props.onEditQueuedMessage?.(props.message);
+  }, [props.onEditQueuedMessage, props.message]);
 
   const rewindPointId = props.message.claudeUuid ?? props.message.codexItemId;
   const canFork = Boolean(props.onForkFromUserMessage)
@@ -105,6 +123,10 @@ function UserTextBlock(props: {
       props.onForkFromUserMessage(props.message.id, rewindPointId, props.message.text);
     }
   }, [props.message.id, props.message.text, props.onForkFromUserMessage, rewindPointId]);
+
+  const longPressHandler = isQueued
+    ? (isQueuedEditable && props.onEditQueuedMessage ? handleEditPress : undefined)
+    : (canFork ? handleLongPress : undefined);
 
   // Claude Agent SDK emits synthetic user messages wrapped in tags like
   // <local-command-caveat>…</local-command-caveat> and
@@ -119,7 +141,7 @@ function UserTextBlock(props: {
   // echo there would drop the command with nothing to replace it. (Absent
   // flavor == Claude, matching the convention used elsewhere.)
   const isClaudeFlavor = !props.metadata?.flavor || props.metadata.flavor === 'claude';
-  if (isClaudeFlavor && isUserSlashCommandEcho(props.message.text, props.message.localId != null)) {
+  if (isClaudeFlavor && !isQueued && isUserSlashCommandEcho(props.message.text, props.message.localId != null)) {
     return null;
   }
 
@@ -134,16 +156,20 @@ function UserTextBlock(props: {
     return (
       <View style={styles.userMessageContainer}>
         <Pressable
-          onLongPress={canFork ? handleLongPress : undefined}
+          onLongPress={longPressHandler}
           delayLongPress={400}
           style={[styles.userMessageBubble, styles.goalMessageBubble]}
         >
           <MarkdownView markdown={parsed.goal} onOptionPress={handleOptionPress} sessionId={props.sessionId} />
         </Pressable>
-        <View style={styles.goalSentRow}>
-          <Ionicons name="locate-outline" size={16} color={styles.goalSentText.color} />
-          <Text style={styles.goalSentText}>{t('message.sentAsGoal')}</Text>
-        </View>
+        {isQueued ? (
+          <QueuedMessageStatus />
+        ) : (
+          <View style={styles.goalSentRow}>
+            <Ionicons name="locate-outline" size={16} color={styles.goalSentText.color} />
+            <Text style={styles.goalSentText}>{t('message.sentAsGoal')}</Text>
+          </View>
+        )}
       </View>
     );
   }
@@ -152,16 +178,21 @@ function UserTextBlock(props: {
       <View style={styles.userMessageContainer}>
         {parsed.args ? (
           <Pressable
-            onLongPress={canFork ? handleLongPress : undefined}
+            onLongPress={longPressHandler}
             delayLongPress={400}
             style={[styles.userMessageBubble, styles.commandMessageBubble]}
           >
             <MarkdownView markdown={parsed.args} onOptionPress={handleOptionPress} sessionId={props.sessionId} />
           </Pressable>
         ) : null}
-        <View style={styles.commandChip}>
+        <Pressable
+          onLongPress={longPressHandler}
+          delayLongPress={400}
+          style={[styles.commandChip, isQueued && styles.commandMessageBubble]}
+        >
           <Text style={styles.commandChipText}>/{parsed.commandName}</Text>
-        </View>
+        </Pressable>
+        {isQueued && <QueuedMessageStatus />}
       </View>
     );
   }
@@ -169,12 +200,22 @@ function UserTextBlock(props: {
   return (
     <View style={styles.userMessageContainer}>
       <Pressable
-        onLongPress={canFork ? handleLongPress : undefined}
+        onLongPress={longPressHandler}
         delayLongPress={400}
-        style={styles.userMessageBubble}
+        style={[styles.userMessageBubble, isQueued && styles.goalMessageBubble]}
       >
         <MarkdownView markdown={parsed.text} onOptionPress={handleOptionPress} sessionId={props.sessionId} />
       </Pressable>
+      {isQueued && <QueuedMessageStatus />}
+    </View>
+  );
+}
+
+function QueuedMessageStatus() {
+  return (
+    <View style={styles.goalSentRow}>
+      <Ionicons name="time-outline" size={16} color={styles.goalSentText.color} />
+      <Text style={styles.goalSentText}>{t('message.queued')}</Text>
     </View>
   );
 }

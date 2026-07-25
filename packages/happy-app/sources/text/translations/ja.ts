@@ -140,12 +140,29 @@ export const ja: TranslationStructure = {
         exchangingTokens: 'トークンを交換中...',
         usage: '使用状況',
         usageSubtitle: 'API使用量とコストを確認',
+        hiddenFolders: '非表示フォルダ',
+        hiddenFoldersSubtitle: 'このアプリで非表示にするフォルダを管理',
         // Dynamic settings messages
         accountConnected: ({ service }: { service: string }) => `${service}アカウントが接続されました`,
         machineStatus: ({ name, status }: { name: string; status: 'online' | 'offline' }) =>
             `${name}は${status === 'online' ? 'オンライン' : 'オフライン'}です`,
         featureToggled: ({ feature, enabled }: { feature: string; enabled: boolean }) =>
             `${feature}を${enabled ? '有効' : '無効'}にしました`,
+    },
+
+    settingsHiddenFolders: {
+        title: '非表示フォルダ',
+        addTitle: 'フォルダパスを追加',
+        addSubtitle: '非表示にする正確なパスを入力',
+        promptTitle: '非表示フォルダを追加',
+        promptMessage: 'このアプリで非表示にするフォルダの正確なパスを入力してください。',
+        placeholder: '/path/to/folder',
+        sectionTitle: '非表示フォルダ',
+        footer: 'ここに記載された正確なフォルダパスは、このアプリでのみ非表示になります。サーバーや他のデバイス上では変更されません。',
+        empty: '非表示フォルダはありません',
+        remove: '非表示フォルダから削除',
+        invalidPath: '有効なフォルダパスを入力してください。',
+        duplicatePath: 'このフォルダパスはすでに非表示になっています。',
     },
 
     settingsAppearance: {
@@ -849,6 +866,11 @@ export const ja: TranslationStructure = {
         unknownEvent: '不明なイベント',
         usageLimitUntil: ({ time }: { time: string }) => `${time}まで使用制限中`,
         sentAsGoal: 'Sent as goal',
+        queued: 'キューに追加済み',
+        queuedEditUnavailableTitle: 'キュー内のメッセージを編集できません',
+        queuedEditUnavailableBody: '送信がすでに開始されているため、このメッセージを安全に編集へ戻すことはできません。',
+        queuedEditReplaceDraftTitle: '現在の下書きを置き換えますか？',
+        queuedEditReplaceDraftBody: '現在の下書きは破棄され、キュー内のメッセージに置き換えられます。',
         unknownTime: '不明な時間',
     },
 

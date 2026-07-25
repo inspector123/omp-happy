@@ -138,6 +138,8 @@ export const ca: TranslationStructure = {
         exchangingTokens: 'Intercanviant tokens...',
         usage: 'Ús',
         usageSubtitle: "Veure l'ús de l'API i costos",
+        hiddenFolders: 'Carpetes ocultes',
+        hiddenFoldersSubtitle: 'Gestiona les rutes exactes de les carpetes ocultes',
 
         // Dynamic settings messages
         accountConnected: ({ service }: { service: string }) => `Compte de ${service} connectat`,
@@ -145,6 +147,21 @@ export const ca: TranslationStructure = {
             `${name} està ${status === 'online' ? 'en línia' : 'fora de línia'}`,
         featureToggled: ({ feature, enabled }: { feature: string; enabled: boolean }) =>
             `${feature} ${enabled ? 'activada' : 'desactivada'}`,
+    },
+
+    settingsHiddenFolders: {
+        title: 'Carpetes ocultes',
+        addTitle: 'Afegeix una ruta de carpeta',
+        addSubtitle: 'Introdueix una ruta exacta per ocultar-la',
+        promptTitle: 'Afegeix una carpeta oculta',
+        promptMessage: 'Introdueix la ruta exacta de la carpeta que vols ocultar en aquesta aplicació.',
+        placeholder: '/path/to/folder',
+        sectionTitle: 'Carpetes ocultes',
+        footer: 'Les rutes exactes de carpeta que figuren aquí només s\'oculten en aquesta aplicació. No es modifiquen al servidor ni en altres dispositius.',
+        empty: 'No hi ha carpetes ocultes',
+        remove: 'Elimina de les carpetes ocultes',
+        invalidPath: 'Introdueix una ruta de carpeta vàlida.',
+        duplicatePath: 'Aquesta ruta de carpeta ja està oculta.',
     },
 
     settingsAppearance: {
@@ -848,6 +865,11 @@ export const ca: TranslationStructure = {
         unknownEvent: 'Esdeveniment desconegut',
         usageLimitUntil: ({ time }: { time: string }) => `Límit d'ús assolit fins a ${time}`,
         sentAsGoal: 'Sent as goal',
+        queued: 'En cua',
+        queuedEditUnavailableTitle: 'No es pot editar el missatge en cua',
+        queuedEditUnavailableBody: 'L\'enviament ja ha començat, de manera que aquest missatge no es pot recuperar amb seguretat per editar-lo.',
+        queuedEditReplaceDraftTitle: 'Vols substituir l\'esborrany actual?',
+        queuedEditReplaceDraftBody: 'L\'esborrany actual es descartarà i se substituirà pel missatge en cua.',
         unknownTime: 'temps desconegut',
     },
 

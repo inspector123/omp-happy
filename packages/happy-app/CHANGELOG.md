@@ -1,3 +1,13 @@
+# July 25 — Safer queued-message editing
+
+- Pull back offline text-only messages for editing before transmission starts.
+- Attachment sends and messages with an uncertain POST result remain queued but cannot be edited or accidentally resubmitted.
+- A newer composer draft is preserved unless replacement is explicitly confirmed, and queued slash commands remain visible.
+
+# July 23 — Hidden folders
+
+- Hide exact folder paths from session lists, history, launch suggestions, and the command palette using an app-local setting.
+
 # July 18 — Rename OMP sessions
 
 - Rename an active OMP session directly from its session-list quick actions.

@@ -138,6 +138,8 @@ export const es: TranslationStructure = {
         exchangingTokens: 'Intercambiando tokens...',
         usage: 'Uso',
         usageSubtitle: 'Ver tu uso de API y costos',
+        hiddenFolders: 'Carpetas ocultas',
+        hiddenFoldersSubtitle: 'Gestiona las rutas exactas de las carpetas ocultas',
 
         // Dynamic settings messages
         accountConnected: ({ service }: { service: string }) => `Cuenta de ${service} conectada`,
@@ -145,6 +147,21 @@ export const es: TranslationStructure = {
             `${name} está ${status === 'online' ? 'en línea' : 'desconectado'}`,
         featureToggled: ({ feature, enabled }: { feature: string; enabled: boolean }) =>
             `${feature} ${enabled ? 'habilitada' : 'deshabilitada'}`,
+    },
+
+    settingsHiddenFolders: {
+        title: 'Carpetas ocultas',
+        addTitle: 'Añadir ruta de carpeta',
+        addSubtitle: 'Introduce una ruta exacta para ocultarla',
+        promptTitle: 'Añadir carpeta oculta',
+        promptMessage: 'Introduce la ruta exacta de la carpeta que quieres ocultar en esta aplicación.',
+        placeholder: '/path/to/folder',
+        sectionTitle: 'Carpetas ocultas',
+        footer: 'Las rutas exactas de las carpetas que aparecen aquí se ocultan únicamente en esta aplicación. No se modifican en el servidor ni en otros dispositivos.',
+        empty: 'No hay carpetas ocultas',
+        remove: 'Eliminar de las carpetas ocultas',
+        invalidPath: 'Introduce una ruta de carpeta válida.',
+        duplicatePath: 'Esta ruta de carpeta ya está oculta.',
     },
 
     settingsAppearance: {
@@ -848,6 +865,11 @@ export const es: TranslationStructure = {
         unknownEvent: 'Evento desconocido',
         usageLimitUntil: ({ time }: { time: string }) => `Límite de uso alcanzado hasta ${time}`,
         sentAsGoal: 'Sent as goal',
+        queued: 'En cola',
+        queuedEditUnavailableTitle: 'No se puede editar el mensaje en cola',
+        queuedEditUnavailableBody: 'El envío ya ha comenzado, por lo que este mensaje no se puede recuperar de forma segura para editarlo.',
+        queuedEditReplaceDraftTitle: '¿Reemplazar el borrador actual?',
+        queuedEditReplaceDraftBody: 'El borrador actual se descartará y se reemplazará con el mensaje en cola.',
         unknownTime: 'tiempo desconocido',
     },
 

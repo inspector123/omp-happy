@@ -25,7 +25,7 @@ import { voiceHooks } from '@/realtime/hooks/voiceHooks';
 import { getCurrentVoiceConversationId, getCurrentVoiceSessionDurationSeconds, startRealtimeSession, stopRealtimeSession } from '@/realtime/RealtimeSession';
 import { gitStatusSync } from '@/sync/gitStatusSync';
 import { sessionAbort, sessionCompactSnapcompact, sessionGoalAction, sessionSetAdvisor, sessionSetModel } from '@/sync/ops';
-import { storage, useIsDataReady, useLocalSetting, useRealtimeStatus, useSessionMessages, useSessionUsage, useSetting } from '@/sync/storage';
+import { editQueuedMessageWithDraftProtection, storage, useIsDataReady, useLocalSetting, useRealtimeStatus, useSessionMessages, useSessionUsage, useSetting } from '@/sync/storage';
 import { useSession } from '@/sync/storage';
 import { Session } from '@/sync/storageTypes';
 import { sync } from '@/sync/sync';
@@ -367,6 +367,8 @@ const AGENT_INPUT_AUTOCOMPLETE_PREFIXES = ['@', '/'];
 type ChatComposerHandle = {
     getMessage: () => string;
     clearMessage: () => void;
+    /** Replace the composer text (e.g. pulling a queued message back for editing) and focus the input. */
+    setMessage: (text: string) => void;
 };
 
 type ChatComposerProps = Omit<
@@ -413,7 +415,11 @@ const ChatComposer = React.memo(function ChatComposer(props: ChatComposerProps) 
             setMessage('');
             clearDraft();
         },
-    }), [clearDraft]);
+        setMessage: (text: string) => {
+            applyDraft(text);
+            inputHandleRef.current?.focus();
+        },
+    }), [applyDraft, clearDraft]);
 
     return (
         <AgentInput
@@ -497,7 +503,9 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
 
     // Image attachments are a standard composer capability. Agent-specific
     // support is checked by Sync.sendMessage before upload.
-    const { selectedImages, pickImages, removeImage, addImages } = useImagePicker(sessionId);
+    const { selectedImages, pickImages, removeImage, clearImages, addImages } = useImagePicker(sessionId);
+    const selectedImagesRef = React.useRef(selectedImages);
+    selectedImagesRef.current = selectedImages;
     const sendInFlightRef = React.useRef(false);
 
     // ChatComposer owns the message state + useDraft subscription. We only
@@ -505,6 +513,45 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
     // clear it without subscribing to it (which would re-render the whole
     // SessionViewLoaded tree on every keystroke).
     const composerHandleRef = React.useRef<ChatComposerHandle | null>(null);
+
+    // Draft confirmation happens before the outbox mutation. The sync layer
+    // rechecks editability at removal time in case a POST won the race.
+    const handleEditQueuedMessage = React.useCallback(async (localId: string) => {
+        const composer = composerHandleRef.current;
+        if (!composer) {
+            return;
+        }
+        const outcome = await editQueuedMessageWithDraftProtection({
+            getCurrentDraft: composer.getMessage,
+            getCurrentAttachmentIds: () => selectedImagesRef.current.map((image) => image.id),
+            confirmReplaceDraft: () => Modal.confirm(
+                t('message.queuedEditReplaceDraftTitle'),
+                t('message.queuedEditReplaceDraftBody'),
+                {
+                    cancelText: t('common.cancel'),
+                    confirmText: t('common.discard'),
+                    destructive: true,
+                },
+            ),
+            removeQueuedMessage: () => (
+                composerHandleRef.current === composer
+                    ? sync.removeQueuedMessage(sessionId, localId)
+                    : null
+            ),
+            clearAttachments: clearImages,
+            replaceDraft: (text) => {
+                if (composerHandleRef.current === composer) {
+                    composer.setMessage(text);
+                }
+            },
+        });
+        if (outcome === 'unavailable' && composerHandleRef.current === composer) {
+            Modal.alert(
+                t('message.queuedEditUnavailableTitle'),
+                t('message.queuedEditUnavailableBody'),
+            );
+        }
+    }, [sessionId, clearImages]);
 
     // Handle dismissing CLI version warning
     const handleDismissCliWarning = React.useCallback(() => {
@@ -739,7 +786,7 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
         <>
             <Deferred>
                 {messages.length > 0 && (
-                    <ChatList session={session} />
+                    <ChatList session={session} onEditQueuedMessage={handleEditQueuedMessage} />
                 )}
             </Deferred>
         </>

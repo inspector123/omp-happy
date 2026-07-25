@@ -137,12 +137,29 @@ export const it: TranslationStructure = {
         exchangingTokens: 'Scambio dei token...',
         usage: 'Utilizzo',
         usageSubtitle: 'Vedi il tuo utilizzo API e i costi',
+        hiddenFolders: 'Cartelle nascoste',
+        hiddenFoldersSubtitle: 'Gestisci i percorsi esatti delle cartelle nascoste',
         // Dynamic settings messages
         accountConnected: ({ service }: { service: string }) => `Account ${service} collegato`,
         machineStatus: ({ name, status }: { name: string; status: 'online' | 'offline' }) =>
             `${name} è ${status === 'online' ? 'online' : 'offline'}`,
         featureToggled: ({ feature, enabled }: { feature: string; enabled: boolean }) =>
             `${feature} ${enabled ? 'abilitata' : 'disabilitata'}`,
+    },
+
+    settingsHiddenFolders: {
+        title: 'Cartelle nascoste',
+        addTitle: 'Aggiungi percorso cartella',
+        addSubtitle: 'Inserisci un percorso esatto da nascondere',
+        promptTitle: 'Aggiungi cartella nascosta',
+        promptMessage: 'Inserisci il percorso esatto della cartella da nascondere in questa app.',
+        placeholder: '/path/to/folder',
+        sectionTitle: 'Cartelle nascoste',
+        footer: 'I percorsi esatti delle cartelle elencati qui sono nascosti solo in questa app. Non vengono modificati sul server o su altri dispositivi.',
+        empty: 'Nessuna cartella nascosta',
+        remove: 'Rimuovi dalle cartelle nascoste',
+        invalidPath: 'Inserisci un percorso di cartella valido.',
+        duplicatePath: 'Questo percorso di cartella è già nascosto.',
     },
 
     settingsAppearance: {
@@ -846,6 +863,11 @@ export const it: TranslationStructure = {
         unknownEvent: 'Evento sconosciuto',
         usageLimitUntil: ({ time }: { time: string }) => `Limite di utilizzo raggiunto fino a ${time}`,
         sentAsGoal: 'Sent as goal',
+        queued: 'In coda',
+        queuedEditUnavailableTitle: 'Impossibile modificare il messaggio in coda',
+        queuedEditUnavailableBody: 'L\'invio è già iniziato, quindi non è possibile recuperare in sicurezza questo messaggio per modificarlo.',
+        queuedEditReplaceDraftTitle: 'Sostituire la bozza attuale?',
+        queuedEditReplaceDraftBody: 'La bozza attuale verrà eliminata e sostituita con il messaggio in coda.',
         unknownTime: 'ora sconosciuta',
     },
 

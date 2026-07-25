@@ -10,7 +10,7 @@ import { AgentWorkGroupView, ToolGroupView } from './ToolGroupView';
 import { DuplicateSheet } from './DuplicateSheet';
 import { Metadata, Session } from '@/sync/storageTypes';
 import { ChatFooter } from './ChatFooter';
-import { Message } from '@/sync/typesMessage';
+import { Message, UserTextMessage } from '@/sync/typesMessage';
 import { DisplayItem, ToolGroupItem, useGroupedMessages } from '@/hooks/useGroupedMessages';
 import { Octicons } from '@expo/vector-icons';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -19,7 +19,14 @@ import { useSessionQuickActions } from '@/hooks/useSessionQuickActions';
 
 const SCROLL_THRESHOLD = 300;
 
-export const ChatList = React.memo((props: { session: Session }) => {
+export const ChatList = React.memo((props: {
+    session: Session;
+    /**
+     * Called with the localId of a safely editable queued message. SessionView
+     * owns draft confirmation and only removes the message after acceptance.
+     */
+    onEditQueuedMessage?: (localId: string) => void;
+}) => {
     const { messages, hasMoreOlder, isLoadingOlder } = useSessionMessages(props.session.id);
     return (
         <ChatListInternal
@@ -28,6 +35,7 @@ export const ChatList = React.memo((props: { session: Session }) => {
             messages={messages}
             hasMoreOlder={hasMoreOlder}
             isLoadingOlder={isLoadingOlder}
+            onEditQueuedMessage={props.onEditQueuedMessage}
         />
     )
 });
@@ -64,6 +72,7 @@ const ChatListInternal = React.memo((props: {
     messages: Message[],
     hasMoreOlder: boolean,
     isLoadingOlder: boolean,
+    onEditQueuedMessage?: (localId: string) => void,
 }) => {
     const { theme } = useUnistyles();
     const flatListRef = React.useRef<FlatList>(null);
@@ -224,6 +233,14 @@ const ChatListInternal = React.memo((props: {
         } as any);
     }, [props.sessionId]);
 
+    // MessageView only wires this handler for the safe-edit subset. Keep the
+    // outbox untouched here: SessionView must first protect any newer draft.
+    const handleEditQueuedMessage = useCallback((message: UserTextMessage) => {
+        if (message.localId) {
+            props.onEditQueuedMessage?.(message.localId);
+        }
+    }, [props.onEditQueuedMessage]);
+
     const renderItem = useCallback(({ item }: { item: DisplayItem }) => {
         if (item.type === 'tool-group') {
             return (
@@ -253,9 +270,10 @@ const ChatListInternal = React.memo((props: {
                 metadata={props.metadata}
                 sessionId={props.sessionId}
                 onForkFromUserMessage={canFork ? handleForkFromMessage : undefined}
+                onEditQueuedMessage={handleEditQueuedMessage}
             />
         );
-    }, [props.metadata, props.sessionId, canFork, handleForkFromMessage, collapsedGroups, handleToggleGroup]);
+    }, [props.metadata, props.sessionId, canFork, handleForkFromMessage, handleEditQueuedMessage, collapsedGroups, handleToggleGroup]);
 
     // In inverted FlatList, offset 0 = latest messages (visual bottom).
     // Offset increases as user scrolls up to see older messages.

@@ -5,7 +5,7 @@ import { Item } from '@/components/Item';
 import { ItemGroup } from '@/components/ItemGroup';
 import { ItemList } from '@/components/ItemList';
 import { Typography } from '@/constants/Typography';
-import { useSessions, useAllMachines, useMachine } from '@/sync/storage';
+import { useVisibleSessions, useAllMachines, useMachine } from '@/sync/storage';
 import { Ionicons, Octicons } from '@expo/vector-icons';
 import type { Session } from '@/sync/storageTypes';
 import { machineStopDaemon, machineUpdateMetadata, machineDelete } from '@/sync/ops';
@@ -66,7 +66,7 @@ export default function MachineDetailScreen() {
     const { theme } = useUnistyles();
     const { id: machineId } = useLocalSearchParams<{ id: string }>();
     const router = useRouter();
-    const sessions = useSessions();
+    const sessions = useVisibleSessions();
     const machine = useMachine(machineId!);
     const navigateToSession = useNavigateToSession();
     const [isRefreshing, setIsRefreshing] = useState(false);
@@ -80,7 +80,7 @@ export default function MachineDetailScreen() {
     // Variant D only
 
     const machineSessions = useMemo(() => {
-        if (!sessions || !machineId) return [];
+        if (!machineId) return [];
 
         return sessions.filter(item => {
             if (typeof item === 'string') return false;

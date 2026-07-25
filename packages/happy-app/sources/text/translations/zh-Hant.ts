@@ -139,12 +139,29 @@ export const zhHant: TranslationStructure = {
         exchangingTokens: '正在交換權杖...',
         usage: '使用情況',
         usageSubtitle: '查看 API 使用情況和費用',
+        hiddenFolders: '隱藏的資料夾',
+        hiddenFoldersSubtitle: '管理要在此應用程式中隱藏的資料夾',
         // Dynamic settings messages
         accountConnected: ({ service }: { service: string }) => `已連結 ${service} 帳戶`,
         machineStatus: ({ name, status }: { name: string; status: 'online' | 'offline' }) =>
             `${name} ${status === 'online' ? '線上' : '離線'}`,
         featureToggled: ({ feature, enabled }: { feature: string; enabled: boolean }) =>
             `${feature} 已${enabled ? '啟用' : '停用'}`,
+    },
+
+    settingsHiddenFolders: {
+        title: '隱藏的資料夾',
+        addTitle: '新增資料夾路徑',
+        addSubtitle: '輸入要隱藏的確切路徑',
+        promptTitle: '新增隱藏的資料夾',
+        promptMessage: '輸入要在此應用程式中隱藏的確切資料夾路徑。',
+        placeholder: '/path/to/folder',
+        sectionTitle: '隱藏的資料夾',
+        footer: '此處列出的確切資料夾路徑只會在此應用程式中隱藏，不會在伺服器或其他裝置上變更。',
+        empty: '沒有隱藏的資料夾',
+        remove: '從隱藏的資料夾中移除',
+        invalidPath: '請輸入有效的資料夾路徑。',
+        duplicatePath: '此資料夾路徑已隱藏。',
     },
 
     settingsAppearance: {
@@ -848,6 +865,11 @@ export const zhHant: TranslationStructure = {
         unknownEvent: '未知事件',
         usageLimitUntil: ({ time }: { time: string }) => `使用限制到 ${time}`,
         sentAsGoal: 'Sent as goal',
+        queued: '已排隊',
+        queuedEditUnavailableTitle: '無法編輯佇列中的訊息',
+        queuedEditUnavailableBody: '傳送已經開始，因此無法安全地撤回此訊息進行編輯。',
+        queuedEditReplaceDraftTitle: '取代目前的草稿？',
+        queuedEditReplaceDraftBody: '目前的草稿將被捨棄，並由佇列中的訊息取代。',
         unknownTime: '未知時間',
     },
 

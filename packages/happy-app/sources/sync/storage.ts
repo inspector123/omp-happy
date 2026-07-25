@@ -30,6 +30,7 @@ import { getCurrentRealtimeSessionId, getVoiceSession } from '@/realtime/Realtim
 import { isMutableTool } from "@/components/tools/knownTools";
 import { DecryptedArtifact } from "./artifactTypes";
 import { FeedItem } from "./feedTypes";
+import { isFolderPathHidden, resolveSessionHomeDir } from '@/utils/hiddenFolders';
 
 // Debounce timer for realtimeMode changes
 let realtimeModeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -95,9 +96,15 @@ export interface SessionRowData {
     hasUnread: boolean;
 }
 
-function buildSessionRowData(session: Session, unreadSessionIds?: Set<string>): SessionRowData {
+function buildSessionRowData(
+    session: Session,
+    machines: Readonly<Record<string, Machine>>,
+    unreadSessionIds?: Set<string>,
+): SessionRowData {
     const isOnline = session.presence === "online";
     const hasPermissions = !!(session.agentState?.requests && Object.keys(session.agentState.requests).length > 0);
+    const machineId = session.metadata?.machineId ?? null;
+    const machineHomeDir = machineId ? machines[machineId]?.metadata?.homeDir : undefined;
 
     let state: SessionState;
     if (!isOnline) {
@@ -120,9 +127,9 @@ function buildSessionRowData(session: Session, unreadSessionIds?: Set<string>): 
         ...(!session.active && { activeAt: session.activeAt, createdAt: session.createdAt }),
         hasDraft: !!session.draft,
         active: session.active,
-        machineId: session.metadata?.machineId ?? null,
+        machineId,
         path: session.metadata?.path ?? null,
-        homeDir: session.metadata?.homeDir ?? null,
+        homeDir: resolveSessionHomeDir(session.metadata?.homeDir, machineHomeDir) ?? null,
         completedTodosCount: session.todos?.filter(todo => todo.status === 'completed').length ?? 0,
         totalTodosCount: session.todos?.length ?? 0,
         hasUnread: unreadSessionIds?.has(session.id) ?? false,
@@ -140,6 +147,69 @@ export type SessionListViewItem =
 // Legacy type for backward compatibility - to be removed
 export type SessionListItem = string | Session;
 
+export type QueuedMessageSnapshot = {
+    localId: string;
+    editable: boolean;
+};
+
+export type QueuedMessageEditOutcome = 'edited' | 'cancelled' | 'unavailable';
+
+/**
+ * A queued record can only be pulled back when it is a standalone text send
+ * that has never entered a POST request.
+ */
+export function isQueuedMessageSafeToEdit<T extends {
+    text?: string;
+    hasAttachments: boolean;
+    postAttempted: boolean;
+}>(message: T): message is T & { text: string } {
+    return message.text !== undefined && !message.hasAttachments && !message.postAttempted;
+}
+
+/**
+ * Coordinates the composer and outbox so accepting a queued-message edit is
+ * the only path that removes it. If the draft text or selected attachments
+ * change while the confirmation is open, confirm again before replacing the
+ * newer composer state.
+ */
+export async function editQueuedMessageWithDraftProtection(options: {
+    getCurrentDraft: () => string;
+    getCurrentAttachmentIds: () => readonly string[];
+    confirmReplaceDraft: () => Promise<boolean>;
+    removeQueuedMessage: () => string | null;
+    clearAttachments: () => void;
+    replaceDraft: (text: string) => void;
+}): Promise<QueuedMessageEditOutcome> {
+    while (true) {
+        const draftBeforeConfirmation = options.getCurrentDraft();
+        const attachmentIdsBeforeConfirmation = [...options.getCurrentAttachmentIds()];
+        if (draftBeforeConfirmation.length === 0 && attachmentIdsBeforeConfirmation.length === 0) {
+            break;
+        }
+        if (!await options.confirmReplaceDraft()) {
+            return 'cancelled';
+        }
+
+        const currentAttachmentIds = options.getCurrentAttachmentIds();
+        const attachmentsUnchanged = currentAttachmentIds.length === attachmentIdsBeforeConfirmation.length
+            && currentAttachmentIds.every((id, index) => id === attachmentIdsBeforeConfirmation[index]);
+        if (
+            options.getCurrentDraft() === draftBeforeConfirmation
+            && attachmentsUnchanged
+        ) {
+            break;
+        }
+    }
+
+    const queuedText = options.removeQueuedMessage();
+    if (queuedText === null) {
+        return 'unavailable';
+    }
+    options.clearAttachments();
+    options.replaceDraft(queuedText);
+    return 'edited';
+}
+
 interface StorageState {
     settings: Settings;
     settingsVersion: number | null;
@@ -150,6 +220,13 @@ interface StorageState {
     sessionsData: SessionListItem[] | null;  // Legacy - to be removed
     sessionListViewData: SessionListViewItem[] | null;
     sessionMessages: Record<string, SessionMessages>;
+    // localIds still sitting in the client-side outbox. This drives queued
+    // display state regardless of whether editing remains safe.
+    queuedMessages: Record<string, string[]>;
+    // Subset of queuedMessages that is still safe to pull back into the
+    // composer. Kept separate so every queued bubble retains its status even
+    // after a POST attempt permanently disables editing.
+    editableQueuedMessages: Record<string, string[]>;
     pathGitStatus: Record<string, GitStatus | null>;        // keyed by "machineId:path"
     pathGitStatusFiles: Record<string, GitStatusFiles | null>; // keyed by "machineId:path"
     pathProjectFiles: Record<string, ProjectFilesList | null>;  // keyed by "machineId:path"
@@ -181,6 +258,8 @@ interface StorageState {
     applyMessagesLoaded: (sessionId: string) => void;
     applyOlderMessagesPagination: (sessionId: string, info: { hasMore: boolean }) => void;
     applyOlderMessagesLoading: (sessionId: string, isLoading: boolean) => void;
+    applyQueuedMessages: (sessionId: string, messages: readonly QueuedMessageSnapshot[]) => void;
+    removeMessage: (sessionId: string, localId: string) => void;
     applySettings: (settings: Settings, version: number) => void;
     applySettingsLocal: (settings: Partial<Settings>) => void;
     applyLocalSettings: (settings: Partial<LocalSettings>) => void;
@@ -233,6 +312,7 @@ interface StorageState {
 // Helper function to build unified list view data from sessions and machines
 function buildSessionListViewData(
     sessions: Record<string, Session>,
+    machines: Readonly<Record<string, Machine>>,
     unreadSessionIds?: Set<string>,
 ): SessionListViewItem[] {
     // Separate active and inactive sessions
@@ -256,7 +336,7 @@ function buildSessionListViewData(
 
     // Add active sessions as a single item at the top (if any)
     if (activeSessions.length > 0) {
-        listData.push({ type: 'active-sessions', sessions: activeSessions.map(s => buildSessionRowData(s, unreadSessionIds)) });
+        listData.push({ type: 'active-sessions', sessions: activeSessions.map(s => buildSessionRowData(s, machines, unreadSessionIds)) });
     }
 
     // Group inactive sessions by date
@@ -290,7 +370,7 @@ function buildSessionListViewData(
 
                 listData.push({ type: 'header', title: headerTitle });
                 currentDateGroup.forEach(sess => {
-                    listData.push({ type: 'session', session: buildSessionRowData(sess, unreadSessionIds) });
+                    listData.push({ type: 'session', session: buildSessionRowData(sess, machines, unreadSessionIds) });
                 });
             }
 
@@ -320,7 +400,7 @@ function buildSessionListViewData(
 
         listData.push({ type: 'header', title: headerTitle });
         currentDateGroup.forEach(sess => {
-            listData.push({ type: 'session', session: buildSessionRowData(sess, unreadSessionIds) });
+            listData.push({ type: 'session', session: buildSessionRowData(sess, machines, unreadSessionIds) });
         });
     }
 
@@ -356,6 +436,8 @@ export const storage = create<StorageState>()((set, get) => {
         sessionsData: null,  // Legacy - to be removed
         sessionListViewData: null,
         sessionMessages: {},
+        queuedMessages: {},
+        editableQueuedMessages: {},
         pathGitStatus: {},
         pathGitStatusFiles: {},
         pathProjectFiles: {},
@@ -581,6 +663,7 @@ export const storage = create<StorageState>()((set, get) => {
             // Build new unified list view data
             const sessionListViewData = buildSessionListViewData(
                 mergedSessions,
+                state.machines,
                 unreadSessionIds,
             );
 
@@ -719,6 +802,62 @@ export const storage = create<StorageState>()((set, get) => {
 
             return { changed: Array.from(changed), hasReadyEvent };
         },
+        applyQueuedMessages: (sessionId: string, messages: readonly QueuedMessageSnapshot[]) => set((state) => {
+            const queuedMessages = { ...state.queuedMessages };
+            const editableQueuedMessages = { ...state.editableQueuedMessages };
+            if (messages.length === 0) {
+                delete queuedMessages[sessionId];
+            } else {
+                queuedMessages[sessionId] = messages.map((message) => message.localId);
+            }
+            const editableLocalIds = messages
+                .filter((message) => message.editable)
+                .map((message) => message.localId);
+            if (editableLocalIds.length === 0) {
+                delete editableQueuedMessages[sessionId];
+            } else {
+                editableQueuedMessages[sessionId] = editableLocalIds;
+            }
+            return { ...state, queuedMessages, editableQueuedMessages };
+        }),
+        removeMessage: (sessionId: string, localId: string) => set((state) => {
+            const existingSession = state.sessionMessages[sessionId];
+            if (!existingSession) {
+                return state;
+            }
+            const reducerState = existingSession.reducerState;
+            const mid = reducerState.localIds.get(localId);
+            if (!mid) {
+                return state;
+            }
+            // Drop every reference so the message cannot be re-emitted or
+            // deduped against later: the reducer's message map, the localId
+            // dedup key, and the original-id dedup key.
+            const reducerMsg = reducerState.messages.get(mid);
+            reducerState.messages.delete(mid);
+            reducerState.localIds.delete(localId);
+            if (reducerMsg?.realID) {
+                reducerState.messageIds.delete(reducerMsg.realID);
+                // The tracer dedups by original message id before the reducer
+                // runs; without this a re-sent message with the same id would
+                // be silently swallowed.
+                reducerState.tracerState.processedIds.delete(reducerMsg.realID);
+            }
+            const messagesMap = { ...existingSession.messagesMap };
+            delete messagesMap[mid];
+            const messages = existingSession.messages.filter(m => m.id !== mid);
+            return {
+                ...state,
+                sessionMessages: {
+                    ...state.sessionMessages,
+                    [sessionId]: {
+                        ...existingSession,
+                        messages,
+                        messagesMap
+                    }
+                }
+            };
+        }),
         applyMessagesLoaded: (sessionId: string) => set((state) => {
             const existingSession = state.sessionMessages[sessionId];
             let result: StorageState;
@@ -1007,7 +1146,7 @@ export const storage = create<StorageState>()((set, get) => {
             return {
                 ...state,
                 sessions: updatedSessions,
-                sessionListViewData: buildSessionListViewData(updatedSessions)
+                sessionListViewData: buildSessionListViewData(updatedSessions, state.machines)
             };
         }),
         updateSessionPermissionMode: (sessionId: string, mode: string | null) => set((state) => {
@@ -1150,7 +1289,8 @@ export const storage = create<StorageState>()((set, get) => {
 
             // Rebuild sessionListViewData to reflect machine changes
             const sessionListViewData = buildSessionListViewData(
-                state.sessions
+                state.sessions,
+                mergedMachines,
             );
 
             return {
@@ -1167,7 +1307,7 @@ export const storage = create<StorageState>()((set, get) => {
             return {
                 ...state,
                 machines: remaining,
-                sessionListViewData: buildSessionListViewData(state.sessions)
+                sessionListViewData: buildSessionListViewData(state.sessions, remaining)
             };
         }),
         // Artifact methods
@@ -1223,6 +1363,11 @@ export const storage = create<StorageState>()((set, get) => {
             
             const { [sessionId]: _fileCache, ...remainingFileCache } = state.sessionFileCache;
 
+            const { [sessionId]: _queued, ...remainingQueuedMessages } = state.queuedMessages;
+            void _queued;
+            const { [sessionId]: _editableQueued, ...remainingEditableQueuedMessages } = state.editableQueuedMessages;
+            void _editableQueued;
+
             // Clear drafts, permission modes, model modes, effort levels from persistent storage
             const drafts = loadSessionDrafts();
             delete drafts[sessionId];
@@ -1241,13 +1386,15 @@ export const storage = create<StorageState>()((set, get) => {
             saveSessionEffortLevels(effortLevels);
             
             // Rebuild sessionListViewData without the deleted session
-            const sessionListViewData = buildSessionListViewData(remainingSessions);
+            const sessionListViewData = buildSessionListViewData(remainingSessions, state.machines);
             
             return {
                 ...state,
                 sessions: remainingSessions,
                 sessionMessages: remainingSessionMessages,
                 sessionFileCache: remainingFileCache,
+                queuedMessages: remainingQueuedMessages,
+                editableQueuedMessages: remainingEditableQueuedMessages,
                 sessionListViewData
             };
         }),
@@ -1381,7 +1528,7 @@ export const storage = create<StorageState>()((set, get) => {
             return {
                 ...state,
                 unreadSessionIds: next,
-                sessionListViewData: buildSessionListViewData(state.sessions, next),
+                sessionListViewData: buildSessionListViewData(state.sessions, state.machines, next),
             };
         }),
         markSessionUnread: (sessionId: string) => set((state) => {
@@ -1391,7 +1538,7 @@ export const storage = create<StorageState>()((set, get) => {
             return {
                 ...state,
                 unreadSessionIds: next,
-                sessionListViewData: buildSessionListViewData(state.sessions, next),
+                sessionListViewData: buildSessionListViewData(state.sessions, state.machines, next),
             };
         }),
         setCurrentViewingSession: (sessionId: string | null) => set((state) => {
@@ -1405,7 +1552,7 @@ export const storage = create<StorageState>()((set, get) => {
                 currentViewingSessionId: sessionId,
                 unreadSessionIds: next,
                 ...(next !== state.unreadSessionIds ? {
-                    sessionListViewData: buildSessionListViewData(state.sessions, next),
+                    sessionListViewData: buildSessionListViewData(state.sessions, state.machines, next),
                 } : {}),
             };
         }),
@@ -1465,6 +1612,17 @@ export function useMessage(sessionId: string, messageId: string): Message | null
     }));
 }
 
+// True while the message still sits in the client-side send outbox. This is
+// display state only; queued messages remain visibly queued after editing is
+// disabled by an attachment or POST attempt.
+export function useIsMessageQueued(sessionId: string, localId: string | null): boolean {
+    return storage((state) => localId !== null && (state.queuedMessages[sessionId]?.includes(localId) ?? false));
+}
+
+export function useIsQueuedMessageEditable(sessionId: string, localId: string | null): boolean {
+    return storage((state) => localId !== null && (state.editableQueuedMessages[sessionId]?.includes(localId) ?? false));
+}
+
 export function useSessionUsage(sessionId: string) {
     return storage(useShallow((state) => {
         const session = state.sessionMessages[sessionId];
@@ -1513,6 +1671,28 @@ export function useAllSessions(): Session[] {
     return storage(useShallow((state) => {
         if (!state.isDataReady) return [];
         return Object.values(state.sessions).sort((a, b) => b.updatedAt - a.updatedAt);
+    }));
+}
+
+export function useVisibleSessions(): Session[] {
+    return storage(useDeepEqual((state) => {
+        if (!state.isDataReady) {
+            return [];
+        }
+
+        return Object.values(state.sessions)
+            .filter((session) => {
+                const machineId = session.metadata?.machineId;
+                const machineHomeDir = machineId
+                    ? state.machines[machineId]?.metadata?.homeDir
+                    : undefined;
+                return !isFolderPathHidden(
+                    session.metadata?.path,
+                    resolveSessionHomeDir(session.metadata?.homeDir, machineHomeDir),
+                    state.localSettings.hiddenFolderPaths,
+                );
+            })
+            .sort((a, b) => b.updatedAt - a.updatedAt);
     }));
 }
 

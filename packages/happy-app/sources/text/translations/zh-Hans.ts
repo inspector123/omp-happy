@@ -140,12 +140,29 @@ export const zhHans: TranslationStructure = {
         exchangingTokens: '正在交换令牌...',
         usage: '使用情况',
         usageSubtitle: '查看 API 使用情况和费用',
+        hiddenFolders: '隐藏文件夹',
+        hiddenFoldersSubtitle: '管理要在此应用中隐藏的文件夹',
         // Dynamic settings messages
         accountConnected: ({ service }: { service: string }) => `已连接 ${service} 账户`,
         machineStatus: ({ name, status }: { name: string; status: 'online' | 'offline' }) =>
             `${name} ${status === 'online' ? '在线' : '离线'}`,
         featureToggled: ({ feature, enabled }: { feature: string; enabled: boolean }) =>
             `${feature} 已${enabled ? '启用' : '禁用'}`,
+    },
+
+    settingsHiddenFolders: {
+        title: '隐藏文件夹',
+        addTitle: '添加文件夹路径',
+        addSubtitle: '输入要隐藏的确切路径',
+        promptTitle: '添加隐藏文件夹',
+        promptMessage: '输入要在此应用中隐藏的确切文件夹路径。',
+        placeholder: '/path/to/folder',
+        sectionTitle: '隐藏文件夹',
+        footer: '此处列出的确切文件夹路径仅在此应用中隐藏，不会在服务器或其他设备上更改。',
+        empty: '暂无隐藏文件夹',
+        remove: '从隐藏文件夹中移除',
+        invalidPath: '请输入有效的文件夹路径。',
+        duplicatePath: '此文件夹路径已隐藏。',
     },
 
     settingsAppearance: {
@@ -849,6 +866,11 @@ export const zhHans: TranslationStructure = {
         unknownEvent: '未知事件',
         usageLimitUntil: ({ time }: { time: string }) => `使用限制到 ${time}`,
         sentAsGoal: 'Sent as goal',
+        queued: '已排队',
+        queuedEditUnavailableTitle: '无法编辑队列中的消息',
+        queuedEditUnavailableBody: '发送已经开始，因此无法安全地撤回此消息进行编辑。',
+        queuedEditReplaceDraftTitle: '替换当前草稿？',
+        queuedEditReplaceDraftBody: '当前草稿将被丢弃，并替换为队列中的消息。',
         unknownTime: '未知时间',
     },
 

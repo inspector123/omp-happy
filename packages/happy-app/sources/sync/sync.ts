@@ -4,7 +4,7 @@ import { notifyUnreadMessage } from '@/sync/webTabTitle';
 import { AuthCredentials } from '@/auth/tokenStorage';
 import { Encryption } from '@/sync/encryption/encryption';
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
-import { storage } from './storage';
+import { isQueuedMessageSafeToEdit, storage } from './storage';
 import { getImageAttachmentSendPlan } from './attachmentSupport';
 import {
     errorMessageFromUnknown,
@@ -88,6 +88,18 @@ type V3PostSessionMessagesResponse = {
 type OutboxMessage = {
     localId: string;
     content: string;
+    /**
+     * Plaintext retained only for user text records. File records never have
+     * text and can therefore never be pulled into the composer.
+     */
+    text?: string;
+    /** True when this text record belongs to a send that included files. */
+    hasAttachments: boolean;
+    /**
+     * Set before the record enters its first POST body and never reset after
+     * an ambiguous failure. Only authoritative success/removal drops it.
+     */
+    postAttempted: boolean;
 };
 
 type SendMessageOptions = {
@@ -476,6 +488,7 @@ class Sync {
             }
             pending.length = 0;
             this.pendingOutbox.delete(sessionId);
+            this.publishQueuedMessages(sessionId);
             sessionIds.push(sessionId);
         }
 
@@ -712,8 +725,14 @@ class Sync {
                     if (fileNormalized) {
                         this.enqueueMessages(sessionId, [fileNormalized]);
                     }
-                    pending.push({ localId: fileLocalId, content: encryptedFileRecord });
+                    pending.push({
+                        localId: fileLocalId,
+                        content: encryptedFileRecord,
+                        hasAttachments: true,
+                        postAttempted: false,
+                    });
                 }
+                this.publishQueuedMessages(sessionId);
             }
         }
 
@@ -773,13 +792,65 @@ class Sync {
         }
         pending.push({
             localId,
-            content: encryptedRawRecord
+            content: encryptedRawRecord,
+            text,
+            hasAttachments: uploadedAttachmentCount > 0,
+            postAttempted: false,
         });
+        this.publishQueuedMessages(sessionId);
         trackMessageSent(source, session.metadata);
 
         this.getSendSync(sessionId).invalidate();
         this.maybeStartBackgroundSendWatchdog();
         return { queued: true, uploadedAttachmentIds };
+    }
+
+    /** Publish queued display state and its independently derived safe-edit subset. */
+    private publishQueuedMessages(sessionId: string) {
+        const pending = this.pendingOutbox.get(sessionId);
+        storage.getState().applyQueuedMessages(
+            sessionId,
+            pending?.map((message) => ({
+                localId: message.localId,
+                editable: isQueuedMessageSafeToEdit(message),
+            })) ?? [],
+        );
+    }
+
+    /**
+     * Pull a safely editable standalone text message back out of the outbox.
+     * Attachment sends and any record that has entered a POST request remain
+     * queued and non-editable, including across ambiguous failures/retries.
+     */
+    removeQueuedMessage(sessionId: string, localId: string): string | null {
+        const pending = this.pendingOutbox.get(sessionId);
+        if (!pending) {
+            return null;
+        }
+        const index = pending.findIndex(m => m.localId === localId);
+        if (index < 0) {
+            return null;
+        }
+        const entry = pending[index];
+        if (!isQueuedMessageSafeToEdit(entry)) {
+            return null;
+        }
+        pending.splice(index, 1);
+        if (pending.length === 0) {
+            this.pendingOutbox.delete(sessionId);
+        }
+        // The optimistic copy may still be sitting in the not-yet-processed
+        // incoming queue; drop it there too so it never appears.
+        const queue = this.sessionMessageQueue.get(sessionId);
+        if (queue) {
+            const queueIndex = queue.findIndex(m => m.localId === localId);
+            if (queueIndex >= 0) {
+                queue.splice(queueIndex, 1);
+            }
+        }
+        this.publishQueuedMessages(sessionId);
+        storage.getState().removeMessage(sessionId, localId);
+        return entry.text;
     }
 
     /** Server sent us settings — merge any pending local changes on top, then apply as one update. */
@@ -1855,6 +1926,12 @@ class Sync {
         }
 
         const batch = pending.slice();
+        // Crossing this boundary is irreversible for editing: a thrown
+        // request may still have been accepted by the server.
+        for (const message of batch) {
+            message.postAttempted = true;
+        }
+        this.publishQueuedMessages(sessionId);
         const controller = new AbortController();
         this.sendAbortControllers.set(sessionId, controller);
         try {
@@ -1876,7 +1953,16 @@ class Sync {
             }
 
             const data = await response.json() as V3PostSessionMessagesResponse;
-            pending.splice(0, batch.length);
+            // Remove by localId so messages appended while this POST was in
+            // flight remain queued for the next batch.
+            const sentIds = new Set(batch.map(m => m.localId));
+            const remaining = pending.filter(m => !sentIds.has(m.localId));
+            if (remaining.length === 0) {
+                this.pendingOutbox.delete(sessionId);
+            } else {
+                this.pendingOutbox.set(sessionId, remaining);
+            }
+            this.publishQueuedMessages(sessionId);
             if (Array.isArray(data.messages) && data.messages.length > 0) {
                 const currentLastSeq = this.sessionLastSeq.get(sessionId) ?? 0;
                 let maxSeq = currentLastSeq;
@@ -1894,9 +1980,6 @@ class Sync {
             this.sendAbortControllers.delete(sessionId);
         }
 
-        if (pending.length === 0) {
-            this.pendingOutbox.delete(sessionId);
-        }
         if (!this.hasPendingOutboxMessages()) {
             this.clearBackgroundSendWatchdog();
             await this.cancelBackgroundSendTimeoutNotification();
