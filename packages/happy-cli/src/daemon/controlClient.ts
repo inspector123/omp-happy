@@ -7,6 +7,7 @@ import { logger } from '@/ui/logger';
 import { clearDaemonState, readDaemonState } from '@/persistence';
 import { Metadata } from '@/api/types';
 import { configuration } from '@/configuration';
+import type { ListedDaemonSession } from './types';
 
 async function daemonPost(path: string, body?: any): Promise<{ error?: string } | any> {
   const state = await readDaemonState();
@@ -91,7 +92,7 @@ export async function notifyDaemonSessionStarted(
 }
 
 
-export async function listDaemonSessions(): Promise<any[]> {
+export async function listDaemonSessions(): Promise<ListedDaemonSession[]> {
   const result = await daemonPost('/list');
   return result.children || [];
 }

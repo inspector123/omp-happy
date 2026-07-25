@@ -14,6 +14,30 @@ export interface SessionEncryptionData {
 }
 
 /**
+ * Encryption material for a session, as exposed by the daemon control
+ * server POST /list endpoint. Consumed by desktop clients to decrypt
+ * session content fetched from the server.
+ */
+export interface ListedSessionEncryption {
+  /** base64-encoded session encryption key */
+  key: string;
+  variant: 'legacy' | 'dataKey';
+}
+
+/**
+ * Session entry returned by the daemon control server POST /list endpoint.
+ */
+export interface ListedDaemonSession {
+  startedBy: string;
+  happySessionId: string;
+  pid: number;
+  agent?: string;
+  tmuxSessionId?: string;
+  path?: string;
+  encryption?: ListedSessionEncryption;
+}
+
+/**
  * Session tracking for daemon
  */
 export interface TrackedSession {

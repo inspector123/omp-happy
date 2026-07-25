@@ -422,9 +422,11 @@ describe.skipIf(!gatewayAvailable)('OpenClaw integration - daemon lifecycle', { 
 
     const sessions = await listDaemonSessions();
     const openclawSession = sessions.find(
-      (s: { happySessionId: string }) => s.happySessionId === spawnResult.sessionId,
+      (s) => s.happySessionId === spawnResult.sessionId,
     );
-    expect(openclawSession).toBeDefined();
+    if (!openclawSession) {
+      throw new Error('openclaw session not tracked by daemon');
+    }
     expect(openclawSession.startedBy).toBe('daemon');
     const pid = openclawSession.pid;
 

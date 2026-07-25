@@ -123,14 +123,15 @@ describe('Daemon Integration Tests', { timeout: 180_000 }, () => {
     // Verify session is tracked
     const sessions = await listDaemonSessions();
     const spawnedSession = sessions.find(
-      (s: any) => s.happySessionId === response.sessionId
+      (s) => s.happySessionId === response.sessionId
     );
-    
-    expect(spawnedSession).toBeDefined();
+    if (!spawnedSession) {
+      throw new Error('Spawned session not tracked by daemon');
+    }
+
     expect(spawnedSession.startedBy).toBe('daemon');
     
     // Clean up - stop the spawned session
-    expect(spawnedSession.happySessionId).toBeDefined();
     await stopDaemonSession(spawnedSession.happySessionId);
   });
 
@@ -189,16 +190,16 @@ describe('Daemon Integration Tests', { timeout: 180_000 }, () => {
 
     // Verify we have one of each type
     const terminalSession = sessions.find(
-      (s: any) => s.pid === terminalHappyProcess.pid
+      (s) => s.pid === terminalHappyProcess.pid
     );
     const daemonSession = sessions.find(
-      (s: any) => s.happySessionId === spawnResponse.sessionId
+      (s) => s.happySessionId === spawnResponse.sessionId
     );
+    if (!terminalSession || !daemonSession) {
+      throw new Error('Expected both a terminal and a daemon session to be tracked');
+    }
 
-    expect(terminalSession).toBeDefined();
     expect(terminalSession.startedBy).toBe('happy directly - likely by user from terminal');
-    
-    expect(daemonSession).toBeDefined();
     expect(daemonSession.startedBy).toBe('daemon');
 
     // Clean up both sessions

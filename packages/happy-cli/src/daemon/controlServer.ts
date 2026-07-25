@@ -8,7 +8,8 @@ import { z } from 'zod';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
 import { logger } from '@/ui/logger';
 import { Metadata } from '@/api/types';
-import { decodeBase64 } from '@/api/encryption';
+import { decodeBase64, encodeBase64 } from '@/api/encryption';
+import { readPersistedSessions } from '@/persistence';
 import { TrackedSession, SessionEncryptionData } from './types';
 import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
 
@@ -88,6 +89,10 @@ export function startDaemonControlServer({
               agent: z.string().optional(),
               tmuxSessionId: z.string().optional(),
               path: z.string().optional(),
+              encryption: z.object({
+                key: z.string(),
+                variant: z.enum(['legacy', 'dataKey']),
+              }).optional(),
             }))
           })
         }
@@ -95,17 +100,31 @@ export function startDaemonControlServer({
     }, async () => {
       const children = getChildren();
       logger.debug(`[CONTROL SERVER] Listing ${children.length} sessions`);
-      return { 
+
+      // Only hit the disk when some session lacks in-memory encryption material.
+      const needsPersistedFallback = children.some(child => child.happySessionId !== undefined && !child.encryption);
+      const persistedSessions = needsPersistedFallback ? readPersistedSessions() : {};
+
+      return {
         children: children
           .filter(child => child.happySessionId !== undefined)
-          .map(child => ({
-            startedBy: child.startedBy,
-            happySessionId: child.happySessionId!,
-            pid: child.pid,
-            agent: child.agent,
-            tmuxSessionId: child.tmuxSessionId,
-            path: child.happySessionMetadataFromLocalWebhook?.path,
-          }))
+          .map(child => {
+            const persisted = persistedSessions[child.happySessionId!];
+            const encryption = child.encryption
+              ? { key: encodeBase64(child.encryption.encryptionKey), variant: child.encryption.encryptionVariant }
+              : persisted
+                ? { key: persisted.encryptionKey, variant: persisted.encryptionVariant }
+                : undefined;
+            return {
+              startedBy: child.startedBy,
+              happySessionId: child.happySessionId!,
+              pid: child.pid,
+              agent: child.agent,
+              tmuxSessionId: child.tmuxSessionId,
+              path: child.happySessionMetadataFromLocalWebhook?.path,
+              ...(encryption ? { encryption } : {}),
+            };
+          })
       }
     });
 
