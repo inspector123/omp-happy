@@ -257,6 +257,9 @@ function AgentEventBlock(props: {
   event: AgentEvent;
   metadata: Metadata | null;
 }) {
+  if (props.event.type === 'subagent-lifecycle') {
+    return null;
+  }
   if (props.event.type === 'switch') {
     return (
       <View style={styles.agentEventContainer}>

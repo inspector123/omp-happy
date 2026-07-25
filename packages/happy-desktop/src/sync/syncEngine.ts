@@ -7,7 +7,8 @@
  * - fetchSessions / fetchMessages v3 paging / outbox POST / socket update
  *   handling: packages/happy-app/sources/sync/sync.ts
  * - user-scoped socket + machineRPC encryption: happy-app apiSocket.ts
- * - key resolution: daemon /list encryption merged with sessions.json
+ * - key resolution: daemon /list + sessions.json first, then client-side
+ *   recovery from server-wrapped keys using the co-located agent credential
  */
 
 import { EventEmitter } from 'node:events';
@@ -22,9 +23,16 @@ import type {
 } from './types';
 import { createDesktopStore, type DesktopStore } from './store';
 import { normalizeDecryptedMessage, type NormalizedView } from './normalize';
-import { decodeBase64, decrypt, encodeBase64, encrypt } from './encryption';
-import { readDaemonPort, resolveSessionKeys, type ResolvedSessionKeys } from './daemonClient';
-import { loadCredentials, machineRpcKey } from './credentials';
+import {
+  decodeBase64,
+  decrypt,
+  deriveContentSecretKey,
+  encodeBase64,
+  encrypt,
+  unwrapDataEncryptionKey,
+} from './encryption';
+import { readDaemonPort, resolveSessionKeys } from './daemonClient';
+import { loadAccountSecret, loadCredentials, machineRpcKey } from './credentials';
 import { ServerClient, type RawSessionMessage, type RawSessionRecord } from './serverClient';
 
 /** Mirrors SEQ_BACKWARD_INITIAL_SENTINEL in happy-app sync.ts (int4 max). */
@@ -249,21 +257,101 @@ export class SyncEngine extends EventEmitter {
     return { type: 'error', errorMessage: 'Unexpected spawn result' };
   }
 
+  /**
+   * Stop an active session through its encrypted session RPC channel.
+   * This deliberately does not use the localhost daemon stop endpoint: remote
+   * sessions must travel through the server-backed killSession handler.
+   */
+  async killSession(sessionId: string): Promise<{ success: boolean; message: string }> {
+    const session = this.getState().sessions.find((candidate) => candidate.id === sessionId);
+    if (!session) {
+      throw new Error(`Unknown session ${sessionId}`);
+    }
+    if (!session.active) {
+      throw new Error('Session is already stopped');
+    }
+    const keyInfo = this.keys.get(sessionId);
+    if (!keyInfo) {
+      throw new Error(`No encryption key available for session ${sessionId}`);
+    }
+
+    const result: unknown = await this.server.sessionRPC(
+      sessionId,
+      'killSession',
+      {},
+      keyInfo.key,
+      keyInfo.variant,
+    );
+    if (!isRecord(result) || typeof result.success !== 'boolean') {
+      throw new Error('Unexpected stop-session response');
+    }
+    const message = typeof result.message === 'string'
+      ? result.message
+      : result.success
+        ? 'Session stopped'
+        : 'Session could not be stopped';
+    if (result.success) {
+      this.refreshSessions().catch(() => undefined);
+    }
+    return { success: result.success, message };
+  }
+
   //
   // Internals
   //
 
-  private async resolveKeys(): Promise<ResolvedSessionKeys> {
+  private async resolveKeys(): Promise<Map<string, SessionKey>> {
     const port = this.daemonPortOption ?? await readDaemonPort(this.credentials.homeDir);
     const resolved = await resolveSessionKeys(this.credentials.homeDir, port);
-    this.keys = new Map(
+    const localKeys = new Map<string, SessionKey>(
       [...resolved.keys.entries()].map(([id, info]) => [
         id,
         { key: decodeBase64(info.encryptionKey), variant: info.encryptionVariant },
       ]),
     );
+
+    // Retain recovered server keys when openSession is only retrying local key
+    // discovery. Local raw keys always overwrite a recovered key for the same
+    // session.
+    for (const [id, key] of localKeys) {
+      this.keys.set(id, key);
+    }
     this.localIds = resolved.local;
-    return resolved;
+    return localKeys;
+  }
+
+  private async recoverServerKeys(
+    records: readonly RawSessionRecord[],
+    target: Map<string, SessionKey>,
+  ): Promise<void> {
+    if (!records.some((record) => !target.has(record.id) && record.dataEncryptionKey)) {
+      return;
+    }
+
+    const accountSecret = await loadAccountSecret(this.credentials.homeDir);
+    if (!accountSecret) {
+      return;
+    }
+
+    let contentSecretKey: Uint8Array | null = null;
+    try {
+      contentSecretKey = await deriveContentSecretKey(accountSecret);
+      for (const record of records) {
+        if (target.has(record.id) || !record.dataEncryptionKey) {
+          continue;
+        }
+        const key = await unwrapDataEncryptionKey(record.dataEncryptionKey, contentSecretKey);
+        if (key) {
+          target.set(record.id, { key, variant: 'dataKey' });
+        }
+      }
+    } catch {
+      // Missing, malformed, or foreign recovery credentials leave only the
+      // affected sessions locked; local and legacy keys remain usable.
+    } finally {
+      accountSecret.fill(0);
+      contentSecretKey?.fill(0);
+    }
   }
 
   private refreshSessions(): Promise<void> {
@@ -278,8 +366,10 @@ export class SyncEngine extends EventEmitter {
       try {
         do {
           this.refreshQueued = false;
-          await this.resolveKeys();
+          const localKeys = await this.resolveKeys();
           const records = await this.server.listSessions();
+          await this.recoverServerKeys(records, localKeys);
+          this.keys = localKeys;
           const views: SessionView[] = [];
           for (const record of records) {
             views.push(await this.buildSessionView(record));

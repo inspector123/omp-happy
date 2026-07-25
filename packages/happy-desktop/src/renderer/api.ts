@@ -36,6 +36,10 @@ export interface MessageView {
   kind: 'text' | 'thinking' | 'tool' | 'event';
   text: string;
   raw?: unknown;
+  /** Structured data for tool-kind messages. */
+  toolData?: { callId?: string; name: string; input?: unknown; result?: unknown; error?: boolean; childMessageIds?: string[] };
+  /** Opaque subagent ID for future child timeline correlation. */
+  subagentId?: string;
 }
 
 export interface DesktopState {
@@ -45,11 +49,32 @@ export interface DesktopState {
   error?: string;
 }
 
+export const SPAWN_SESSION_AGENTS = ['omp', 'claude', 'codex', 'gemini', 'openclaw'] as const;
+export type SpawnSessionAgent = (typeof SPAWN_SESSION_AGENTS)[number];
+
+export interface SpawnSessionInput {
+  machineId: string;
+  directory: string;
+  agent: SpawnSessionAgent;
+}
+
+export type SpawnSessionResult =
+  | { type: 'success'; sessionId: string }
+  | { type: 'requestToApproveDirectoryCreation'; directory: string }
+  | { type: 'error'; errorMessage: string };
+
+export interface StopSessionResult {
+  success: boolean;
+  message: string;
+}
+
 export interface HDBridge {
   getState(): Promise<DesktopState>;
   onState(cb: (s: DesktopState) => void): () => void;
   sendMessage(sessionId: string, text: string): Promise<void>;
   openSession(sessionId: string): Promise<void>;
+  spawnSession?(input: SpawnSessionInput): Promise<SpawnSessionResult>;
+  stopSession?(sessionId: string): Promise<StopSessionResult>;
 }
 
 declare global {
@@ -280,6 +305,42 @@ export function createMockBridge(opts?: { background?: boolean }): HDBridge {
     async openSession() {
       // mock always has every message loaded
     },
+    async spawnSession(input) {
+      const source = state.sessions.find((session) => session.machineId === input.machineId);
+      if (!source) {
+        return { type: 'error', errorMessage: `Unknown machine ${input.machineId}` };
+      }
+      const directory = input.directory.trim();
+      if (!directory) {
+        return { type: 'error', errorMessage: 'A directory is required' };
+      }
+      seqCounter += 1;
+      const sessionId = `mock-session-${Date.now()}-${seqCounter}`;
+      state.sessions.push({
+        id: sessionId,
+        active: true,
+        thinking: false,
+        updatedAt: Date.now(),
+        title: `New ${input.agent} session`,
+        path: directory,
+        agent: input.agent,
+        machineId: input.machineId,
+        local: source.local,
+        keyAvailable: true,
+      });
+      state.messages[sessionId] = [];
+      emit();
+      return { type: 'success', sessionId };
+    },
+    async stopSession(sessionId) {
+      const target = state.sessions.find((session) => session.id === sessionId);
+      if (!target) return { success: false, message: 'Session not found' };
+      if (!target.active) return { success: false, message: 'Session is already stopped' };
+      if (!target.keyAvailable) return { success: false, message: 'Session encryption key is unavailable' };
+      touch(sessionId, { active: false, thinking: false });
+      emit();
+      return { success: true, message: 'Session stopped' };
+    },
   };
 }
 
@@ -361,10 +422,14 @@ export interface RendererStore {
   sessions: SessionView[];
   messages: Record<string, MessageView[]>;
   error?: string;
+  controlError?: string;
   hydrated: boolean;
   selectedSessionId: string | null;
   unseen: Record<string, true>;
   switcherOpen: boolean;
+  spawning: boolean;
+  stoppingSessionId: string | null;
+  pendingSessionId: string | null;
 
   applyState(s: DesktopState): void;
   selectSession(id: string): void;
@@ -372,6 +437,9 @@ export interface RendererStore {
   selectByIndex(i: number): void;
   toggleSwitcher(open?: boolean): void;
   send(text: string): Promise<void>;
+  spawnSession(input: SpawnSessionInput): Promise<SpawnSessionResult>;
+  stopSession(id: string): Promise<boolean>;
+  clearError(): void;
 }
 
 let optimisticCounter = 0;
@@ -396,6 +464,10 @@ export const useDesktop = create<RendererStore>()((set, get) => {
     void getBridge().openSession(id).catch(reportOpenError);
   }
 
+  function setControlError(error: string | undefined): void {
+    set({ error, controlError: error });
+  }
+
   function applySelection(id: string | null): void {
     if (!id) return;
     set((prev) => {
@@ -412,10 +484,14 @@ export const useDesktop = create<RendererStore>()((set, get) => {
     sessions: [],
     messages: {},
     error: undefined,
+    controlError: undefined,
     hydrated: false,
     selectedSessionId: null,
     unseen: {},
     switcherOpen: false,
+    spawning: false,
+    stoppingSessionId: null,
+    pendingSessionId: null,
 
 
     applyState(s) {
@@ -434,6 +510,7 @@ export const useDesktop = create<RendererStore>()((set, get) => {
         }
 
         let selectedSessionId = prev.selectedSessionId;
+        let pendingSessionId = prev.pendingSessionId;
         const unseen = { ...prev.unseen };
 
         if (!prev.hydrated) {
@@ -455,6 +532,12 @@ export const useDesktop = create<RendererStore>()((set, get) => {
           }
         }
 
+        if (pendingSessionId && s.sessions.some((session) => session.id === pendingSessionId)) {
+          selectedSessionId = pendingSessionId;
+          delete unseen[pendingSessionId];
+          pendingSessionId = null;
+        }
+
         if (selectedSessionId && (!prev.hydrated || selectedSessionId !== prev.selectedSessionId)) {
           automaticSelectionId = selectedSessionId;
         }
@@ -463,10 +546,11 @@ export const useDesktop = create<RendererStore>()((set, get) => {
           status: s.status,
           sessions: s.sessions,
           messages,
-          error: s.error,
+          error: s.error ?? prev.controlError,
           hydrated: true,
           selectedSessionId,
           unseen,
+          pendingSessionId,
         };
       });
       if (automaticSelectionId) {
@@ -494,6 +578,92 @@ export const useDesktop = create<RendererStore>()((set, get) => {
 
     toggleSwitcher(open) {
       set((prev) => ({ switcherOpen: open ?? !prev.switcherOpen }));
+    },
+
+    async spawnSession(input) {
+      if (get().status !== 'online') {
+        const result: SpawnSessionResult = {
+          type: 'error',
+          errorMessage: 'Connect to Happy before starting a session',
+        };
+        setControlError(result.errorMessage);
+        return result;
+      }
+
+      set({ spawning: true, pendingSessionId: null, error: undefined, controlError: undefined });
+      try {
+        const bridge = getBridge();
+        if (!bridge.spawnSession) {
+          throw new Error('This desktop build cannot start remote sessions');
+        }
+        const result = await bridge.spawnSession(input);
+        if (result.type === 'success') {
+          setControlError(undefined);
+          if (get().sessions.some((session) => session.id === result.sessionId)) {
+            applySelection(result.sessionId);
+          } else {
+            set({ pendingSessionId: result.sessionId });
+          }
+        } else if (result.type === 'requestToApproveDirectoryCreation') {
+          const message = `Directory "${result.directory}" is not available on ${input.machineId}. Create it there, then retry.`;
+          setControlError(message);
+        } else {
+          setControlError(`Could not start session: ${result.errorMessage}`);
+        }
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setControlError(`Could not start session: ${message}`);
+        return { type: 'error', errorMessage: message };
+      } finally {
+        set({ spawning: false });
+      }
+    },
+
+    async stopSession(id) {
+      const { sessions, status } = get();
+      const session = sessions.find((candidate) => candidate.id === id);
+      if (!session) {
+        setControlError('Choose a session before stopping it');
+        return false;
+      }
+      if (status !== 'online') {
+        setControlError('Connect to Happy before stopping a session');
+        return false;
+      }
+      if (!session.active) {
+        setControlError('This session is already stopped');
+        return false;
+      }
+      if (!session.keyAvailable) {
+        setControlError('The session encryption key is unavailable, so it cannot be stopped remotely');
+        return false;
+      }
+
+      set({ stoppingSessionId: id, error: undefined, controlError: undefined });
+      try {
+        const bridge = getBridge();
+        if (!bridge.stopSession) {
+          throw new Error('This desktop build cannot stop remote sessions');
+        }
+        const result = await bridge.stopSession(id);
+        if (!result.success) {
+          setControlError(`Could not stop session: ${result.message}`);
+          return false;
+        }
+        setControlError(undefined);
+        return true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setControlError(`Could not stop session: ${message}`);
+        return false;
+      } finally {
+        set({ stoppingSessionId: null });
+      }
+    },
+
+    clearError() {
+      setControlError(undefined);
     },
 
     async send(text) {

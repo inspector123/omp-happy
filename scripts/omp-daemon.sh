@@ -8,13 +8,14 @@
 #   scripts/omp-daemon.sh stop
 #   scripts/omp-daemon.sh restart   # after rebuilding the CLI
 #
-# Override the server with HAPPY_SERVER_URL=... (defaults to a LAN address).
+# HAPPY_SERVER_URL is required so the daemon never contacts an unrelated server.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 export HAPPY_HOME_DIR="${HAPPY_HOME_DIR:-$HOME/.omp-happy}"
-export HAPPY_SERVER_URL="${HAPPY_SERVER_URL:-http://192.168.0.252:30003}"
+: "${HAPPY_SERVER_URL:?Set HAPPY_SERVER_URL to your Happy server origin (for example http://127.0.0.1:3005)}"
+export HAPPY_SERVER_URL
 export PATH="$PATH:$HOME/.local/bin"   # so `omp` resolves
 
 CLI="$REPO_ROOT/packages/happy-cli/bin/happy.mjs"

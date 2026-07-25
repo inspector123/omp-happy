@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { getRandomBytes } from '../../../happy-cli/src/api/encryption';
+import {
+  deriveContentKeyPair as deriveAgentContentKeyPair,
+  libsodiumEncryptForPublicKey,
+} from '../../../happy-agent/src/encryption';
 import { encodeBase64, encrypt, decrypt, decodeBase64 } from './encryption';
 import type { RawSessionRecord } from './serverClient';
 import type { DesktopState } from './types';
@@ -52,9 +56,14 @@ vi.mock('./daemonClient', () => ({
   readPersistedSessionKeys: vi.fn(async () => new Map()),
 }));
 
-const hoistedCrypto = vi.hoisted(() => ({ machineKey: new Uint8Array(32).fill(7) }));
+const hoistedCrypto = vi.hoisted(() => ({
+  machineKey: new Uint8Array(32).fill(7),
+  accountSecret: null as Uint8Array | null,
+}));
 
 vi.mock('./credentials', () => ({
+  loadAccountSecret: vi.fn(async () =>
+    hoistedCrypto.accountSecret ? new Uint8Array(hoistedCrypto.accountSecret) : null),
   loadCredentials: vi.fn(async () => ({
     token: 'tok',
     homeDir: '/tmp/hd',
@@ -71,6 +80,15 @@ vi.mock('./credentials', () => ({
 import { SyncEngine } from './syncEngine';
 
 const SESSION_KEY = getRandomBytes(32);
+
+function wrapDataKey(dataKey: Uint8Array, accountSecret: Uint8Array): string {
+  const contentKeyPair = deriveAgentContentKeyPair(accountSecret);
+  const encrypted = libsodiumEncryptForPublicKey(dataKey, contentKeyPair.publicKey);
+  const wrapped = new Uint8Array(encrypted.length + 1);
+  wrapped[0] = 0;
+  wrapped.set(encrypted, 1);
+  return encodeBase64(wrapped);
+}
 
 function mockServer(): {
   emit: (u: unknown) => void;
@@ -131,6 +149,7 @@ function nextState(eng: SyncEngine): Promise<DesktopState> {
 
 beforeEach(() => {
   server.instances.length = 0;
+  hoistedCrypto.accountSecret = null;
   daemon.keys.clear();
   daemon.local.clear();
   daemon.keys.set('s1', {
@@ -170,6 +189,101 @@ describe('SyncEngine', () => {
     expect(view.keyAvailable).toBe(false);
     expect(view.local).toBe(false);
     expect(view.title).toBe('session s2');
+    await eng.stop();
+  });
+
+  it('recovers a server-only session key and decrypts its metadata and messages', async () => {
+    hoistedCrypto.accountSecret = getRandomBytes(32);
+    const record = await makeSessionRecord('server-only', {
+      dataEncryptionKey: wrapDataKey(SESSION_KEY, hoistedCrypto.accountSecret),
+    });
+    const { eng, srv } = await bootEngine([record]);
+
+    expect(eng.getState().sessions[0]).toMatchObject({
+      id: 'server-only',
+      title: 'My chat',
+      local: false,
+      keyAvailable: true,
+    });
+
+    const message = { role: 'user', content: { type: 'text', text: 'from server-only session' } };
+    srv.instance.getMessages.mockResolvedValue({
+      hasMore: false,
+      messages: [{
+        id: 'server-message',
+        seq: 1,
+        content: { t: 'encrypted', c: encodeBase64(await encrypt(SESSION_KEY, 'dataKey', message)) },
+        localId: null,
+        createdAt: 20,
+        updatedAt: 20,
+      }],
+    });
+    await eng.openSession('server-only');
+    expect(eng.getState().messages['server-only']?.[0]?.text).toBe('from server-only session');
+    await eng.stop();
+  });
+
+  it('keeps a local raw key ahead of a valid but different server-wrapped key', async () => {
+    hoistedCrypto.accountSecret = getRandomBytes(32);
+    const differentKey = getRandomBytes(32);
+    const record = await makeSessionRecord('s1', {
+      dataEncryptionKey: wrapDataKey(differentKey, hoistedCrypto.accountSecret),
+    });
+    const { eng } = await bootEngine([record]);
+
+    expect(eng.getState().sessions[0]).toMatchObject({
+      id: 's1',
+      title: 'My chat',
+      local: true,
+      keyAvailable: true,
+    });
+    await eng.stop();
+  });
+
+  it('leaves malformed wrapped keys locked without failing other sessions', async () => {
+    hoistedCrypto.accountSecret = getRandomBytes(32);
+    const local = await makeSessionRecord('s1');
+    const inaccessible = await makeSessionRecord('inaccessible', {
+      dataEncryptionKey: 'not-a-wrapped-key',
+    });
+    const { eng } = await bootEngine([local, inaccessible]);
+
+    expect(eng.getState().sessions.find((session) => session.id === 's1')).toMatchObject({
+      title: 'My chat',
+      keyAvailable: true,
+    });
+    expect(eng.getState().sessions.find((session) => session.id === 'inaccessible')).toMatchObject({
+      title: 'session inacce',
+      keyAvailable: false,
+    });
+    await eng.stop();
+  });
+
+  it('continues to use local legacy session keys unchanged', async () => {
+    const legacyKey = getRandomBytes(32);
+    daemon.keys.clear();
+    daemon.local.clear();
+    daemon.keys.set('legacy', {
+      sessionId: 'legacy',
+      encryptionKey: encodeBase64(legacyKey),
+      encryptionVariant: 'legacy',
+    });
+    daemon.local.add('legacy');
+    const record = await makeSessionRecord('legacy', {
+      metadata: encodeBase64(await encrypt(legacyKey, 'legacy', {
+        path: '/legacy',
+        summary: { text: 'Legacy chat' },
+      })),
+    });
+    const { eng } = await bootEngine([record]);
+
+    expect(eng.getState().sessions[0]).toMatchObject({
+      id: 'legacy',
+      title: 'Legacy chat',
+      path: '/legacy',
+      local: true,
+      keyAvailable: true,
+    });
     await eng.stop();
   });
 

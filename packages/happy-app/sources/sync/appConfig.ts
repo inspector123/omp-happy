@@ -86,10 +86,6 @@ export function loadAppConfig(): AppConfig {
         console.log('[loadAppConfig] Override postHogKey from EXPO_PUBLIC_POSTHOG_KEY');
         config.postHogKey = process.env.EXPO_PUBLIC_POSTHOG_KEY;
     }
-    if (process.env.EXPO_PUBLIC_SERVER_URL && config.serverUrl !== process.env.EXPO_PUBLIC_SERVER_URL) {
-        console.log('[loadAppConfig] Override serverUrl from EXPO_PUBLIC_SERVER_URL');
-        config.serverUrl = process.env.EXPO_PUBLIC_SERVER_URL;
-    }
 
     return config as AppConfig;
 }

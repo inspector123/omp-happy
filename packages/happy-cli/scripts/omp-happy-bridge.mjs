@@ -410,6 +410,10 @@ export default function happyBridgeExtension(pi) {
 
   connect();
 
+  pi.events.on('task:subagent:lifecycle', (payload) => {
+    send({ type: 'subagent_lifecycle', payload });
+  });
+
   pi.on('session_start', async (_event, ctx) => {
     setControlMode(controlMode);
     publishReady(ctx);

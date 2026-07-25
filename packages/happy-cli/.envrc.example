@@ -12,6 +12,8 @@
 
 export HAPPY_HOME_DIR="$HOME/.happy-dev"
 export HAPPY_VARIANT="dev"
-export HAPPY_SERVER_URL="${HAPPY_SERVER_URL:-https://api.cluster-fluster.com}"
+# Local development must opt in to the hosted service; default to the local server.
+export HAPPY_SERVER_URL="${HAPPY_SERVER_URL:-http://127.0.0.1:3005}"
+export HAPPY_WEBAPP_URL="${HAPPY_WEBAPP_URL:-$HAPPY_SERVER_URL}"
 
 echo "🔧 DEV environment activated (data: $HAPPY_HOME_DIR)"

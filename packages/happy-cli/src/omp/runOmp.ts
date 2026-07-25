@@ -3,10 +3,11 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, extname, join } from 'node:path';
 
 import { spawn as spawnPty, type IPty } from 'node-pty';
-import { createEnvelope } from '@slopus/happy-wire';
+import { createId } from '@paralleldrive/cuid2';
+import { createEnvelope, type SessionEvent } from '@slopus/happy-wire';
 
 import { ApiClient } from '@/api/api';
 import type { ApiSessionClient } from '@/api/apiSession';
@@ -36,10 +37,14 @@ const BRIDGE_EXTENSION_FILE = 'omp-happy-bridge.mjs';
 // mints a fresh OMP transcript (and thus a unique ompSessionId) regardless
 // of the host's global omp settings. Passed after user extra args so it wins.
 const CONFIG_OVERLAY_FILE = 'omp-happy-config.overlay.yml';
+const MAX_BUFFERED_CHILD_EVENTS = 256;
+const MAX_CHILD_TEXT_CHARS = 256 * 1024;
+const MAX_SEEN_CHILD_MESSAGES = 128;
+const ROOT_BRIDGE_KEY = '$root';
 
 type RunMode = 'local' | 'remote';
 
-type BridgeFrame = BridgeReadyFrame | BridgeAgentEventFrame | BridgeInputFrame | BridgeErrorFrame | BridgeAbortedFrame | BridgeAskRequestFrame | BridgeChangeTitleFrame | BridgeTuiCommandReadyFrame;
+type BridgeFrame = BridgeReadyFrame | BridgeAgentEventFrame | BridgeSubagentLifecycleFrame | BridgeInputFrame | BridgeErrorFrame | BridgeAbortedFrame | BridgeAskRequestFrame | BridgeChangeTitleFrame | BridgeTuiCommandReadyFrame;
 
 type BridgeReadyFrame = {
   type: 'ready';
@@ -57,6 +62,18 @@ type BridgeReadyFrame = {
 type BridgeAgentEventFrame = {
   type: 'agent_event';
   event: MirrorEvent;
+};
+
+type BridgeSubagentLifecycleFrame = {
+  type: 'subagent_lifecycle';
+  payload: {
+    id: unknown;
+    parentToolCallId: unknown;
+    index: unknown;
+    status: unknown;
+    sessionFile?: unknown;
+    detached?: unknown;
+  };
 };
 
 type BridgeInputFrame = {
@@ -111,8 +128,46 @@ type MirrorEvent = {
   toolName?: unknown;
   args?: unknown;
   result?: unknown;
+  partialResult?: unknown;
   isError?: unknown;
   level?: unknown;
+};
+
+type BridgeFrameSource = {
+  readonly connectionId: number;
+  primary: boolean;
+  sessionId?: string;
+  childRegistryName?: string;
+};
+
+type DelegateTaskBinding = {
+  callId: string;
+  parentBridgeKey: string;
+  taskIndex: number;
+  taskName: string;
+  sessionSubagent: string;
+  registryName?: string;
+  source?: BridgeFrameSource;
+  started: boolean;
+  completed: boolean;
+};
+
+type ChildMirrorState = {
+  source: BridgeFrameSource;
+  binding?: DelegateTaskBinding;
+  bufferedFrames: Array<BridgeAgentEventFrame | BridgeSubagentLifecycleFrame>;
+  eligibleBindings: Set<DelegateTaskBinding>;
+  parentRegistryName?: string;
+  discarded: boolean;
+  pendingText: string;
+  pendingThinking: string;
+  messageOpen: boolean;
+  lastText: string;
+  lastThinking: string;
+  seenMessageIds: Set<string>;
+  toolCallIds: Map<string, string>;
+  completedToolCalls: Set<string>;
+  stopped: boolean;
 };
 
 export interface RunOmpOptions {
@@ -253,12 +308,45 @@ function extractMessageText(message: unknown): string {
     .join('');
 }
 
+function appendBoundedChildText(current: string, addition: string): string {
+  const remaining = MAX_CHILD_TEXT_CHARS - current.length;
+  return remaining > 0 ? current + addition.slice(0, remaining) : current;
+}
+
+function extractChildMessageParts(message: unknown): { text: string; thinking: string } {
+  if (!isRecord(message)) {
+    return { text: '', thinking: '' };
+  }
+  const content = message.content;
+  if (typeof content === 'string') {
+    return { text: content.slice(0, MAX_CHILD_TEXT_CHARS), thinking: '' };
+  }
+  if (!Array.isArray(content)) {
+    return { text: '', thinking: '' };
+  }
+  let text = '';
+  let thinking = '';
+  for (const block of content) {
+    if (!isRecord(block)) continue;
+    if (block.type === 'text' && typeof block.text === 'string') {
+      text = appendBoundedChildText(text, block.text);
+      continue;
+    }
+    if (block.type === 'thinking') {
+      const value = asString(block.thinking) ?? asString(block.text);
+      if (value) thinking = appendBoundedChildText(thinking, value);
+    }
+  }
+  return { text, thinking };
+}
+
 function extractToolError(result: unknown, isErrorFlag?: unknown): boolean {
   if (isErrorFlag === true) {
     return true;
   }
   return isRecord(result) && (result.isError === true || typeof result.error === 'string');
 }
+
 
 function extractTodoEntries(result: unknown): Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }> {
   const directPhases = isRecord(result) ? result.phases : undefined;
@@ -299,17 +387,26 @@ function buildOmpArgs(opts: RunOmpOptions, extensionPath: string, configOverlayP
   return args;
 }
 
+function getSessionRegistryName(sessionFile: unknown): string | undefined {
+  if (typeof sessionFile !== 'string' || sessionFile.length === 0) {
+    return undefined;
+  }
+  const registryName = basename(sessionFile, extname(sessionFile));
+  return registryName && registryName !== '.' && registryName !== '..' ? registryName : undefined;
+}
+
 async function startBridgeServer(
   socketPath: string,
-  onFrame: (frame: BridgeFrame) => void,
+  onFrame: (frame: BridgeFrame, source: BridgeFrameSource) => void,
+  onDisconnect: (source: BridgeFrameSource) => void,
   log: (message: string, data?: unknown) => void,
 ): Promise<BridgeServer> {
-  type BridgeConnection = {
+  type BridgeConnection = BridgeFrameSource & {
     pending: string;
-    sessionId?: string;
   };
 
   const connections = new Map<Socket, BridgeConnection>();
+  let nextConnectionId = 1;
   let primarySessionId: string | null = null;
   let primarySocket: Socket | null = null;
   const outgoing: string[] = [];
@@ -329,19 +426,33 @@ async function startBridgeServer(
 
       if (frame.type === 'ready') {
         connection.sessionId = frame.sessionId;
-        if (primarySessionId === null || primarySocket === socket || frame.sessionId === primarySessionId) {
+        const reconnectsPrimary = primarySessionId !== null && frame.sessionId === primarySessionId;
+        const establishesPrimary = primarySessionId === null;
+        if (primarySocket === socket || reconnectsPrimary || establishesPrimary) {
           primarySessionId = frame.sessionId;
           primarySocket = socket;
+          connection.primary = true;
+          connection.childRegistryName = undefined;
           flushOutgoing(socket);
-          onFrame(frame);
         } else {
-          log(`Ignoring child OMP bridge session ${frame.sessionId}; primary is ${primarySessionId}`);
+          connection.primary = false;
+          connection.childRegistryName = getSessionRegistryName(frame.sessionFile);
+          if (!connection.childRegistryName) {
+            log(`Ignoring OMP child bridge session ${frame.sessionId} without a session file name`);
+          }
         }
+        onFrame(frame, connection);
         return;
       }
 
-      if (primarySocket === socket) {
-        onFrame(frame);
+      if (
+        connection.primary
+        || (
+          connection.childRegistryName
+          && (frame.type === 'agent_event' || frame.type === 'subagent_lifecycle')
+        )
+      ) {
+        onFrame(frame, connection);
       }
     } catch (error) {
       log(`Failed to parse OMP bridge frame: ${error instanceof Error ? error.message : String(error)}`);
@@ -349,7 +460,12 @@ async function startBridgeServer(
   };
 
   const server: Server = createServer((socket) => {
-    const connection: BridgeConnection = { pending: '' };
+    const connection: BridgeConnection = {
+      connectionId: nextConnectionId,
+      primary: false,
+      pending: '',
+    };
+    nextConnectionId += 1;
     connections.set(socket, connection);
     socket.setEncoding('utf8');
     socket.on('data', (chunk) => {
@@ -361,6 +477,7 @@ async function startBridgeServer(
     socket.on('close', () => {
       connections.delete(socket);
       if (primarySocket === socket) primarySocket = null;
+      onDisconnect(connection);
     });
     socket.on('error', (error) => {
       log(`OMP bridge socket error: ${error.message}`);
@@ -462,7 +579,10 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   let outputStreamId = randomUUID();
   let thinkingStreamId = randomUUID();
   let lastPlanJson = '';
+  const liveDelegateBindings = new Set<DelegateTaskBinding>();
   const compactTodoCallIds = new Set<string>();
+  const activeDelegateTasksByBridge = new Map<string, Map<string, DelegateTaskBinding[]>>();
+  const childMirrorsBySource = new Map<BridgeFrameSource, ChildMirrorState>();
   let bridgeServer: BridgeServer | null = null;
   let bridgeReadyResolved = false;
   let resolveBridgeReady: (() => void) | null = null;
@@ -607,6 +727,367 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     bridgeServer?.send({ type: 'set_control_mode', mode: runMode });
   };
 
+  const prepareDelegateTaskInput = (parentBridgeKey: string, callId: string, input: unknown): unknown => {
+    const normalized = normalizeBridgeToolInput('delegate_task', input);
+    let bridgeCalls = activeDelegateTasksByBridge.get(parentBridgeKey);
+    if (!bridgeCalls) {
+      bridgeCalls = new Map();
+      activeDelegateTasksByBridge.set(parentBridgeKey, bridgeCalls);
+    }
+    if (!isRecord(normalized) || !Array.isArray(normalized.tasks)) {
+      bridgeCalls.delete(callId);
+      if (bridgeCalls.size === 0) activeDelegateTasksByBridge.delete(parentBridgeKey);
+      return normalized;
+    }
+    const previous = bridgeCalls.get(callId) ?? [];
+    const bindings = normalized.tasks.flatMap((task, taskIndex) => {
+      if (!isRecord(task)) return [];
+      const taskName = asString(task.id) ?? `task-${taskIndex + 1}`;
+      const indexedPrevious = previous[taskIndex];
+      const sameNamePrevious = previous.filter((candidate) => candidate.taskName === taskName);
+      const binding = indexedPrevious?.taskName === taskName
+        ? indexedPrevious
+        : sameNamePrevious.length === 1 ? sameNamePrevious[0] : undefined;
+      if (binding) {
+        binding.taskIndex = taskIndex;
+        binding.completed = false;
+        return [binding];
+      }
+      return [{
+        parentBridgeKey,
+        callId,
+        taskIndex,
+        taskName,
+        sessionSubagent: createId(),
+        started: false,
+        completed: false,
+      }];
+    });
+    bridgeCalls.set(callId, bindings);
+    for (const binding of bindings) liveDelegateBindings.add(binding);
+    return {
+      ...normalized,
+      tasks: normalized.tasks.map((task, taskIndex) => {
+        if (!isRecord(task)) return task;
+        const binding = bindings.find((candidate) => candidate.taskIndex === taskIndex);
+        return binding ? { ...task, sessionSubagent: binding.sessionSubagent } : task;
+      }),
+    };
+  };
+
+  const sendBindingEnvelope = (binding: DelegateTaskBinding, event: SessionEvent): void => {
+    session.sendSessionProtocolMessage(createEnvelope('agent', event, {
+      turn: binding.sessionSubagent,
+      subagent: binding.sessionSubagent,
+    }));
+  };
+
+  const sendChildEnvelope = (state: ChildMirrorState, event: SessionEvent): void => {
+    if (!state.binding || state.discarded) return;
+    sendBindingEnvelope(state.binding, event);
+  };
+
+  const flushChildMessage = (state: ChildMirrorState, message?: unknown): void => {
+    const complete = extractChildMessageParts(message);
+    const text = complete.text || state.pendingText;
+    const childThinking = complete.thinking || state.pendingThinking;
+    const messageId = isRecord(message) ? asString(message.id) : undefined;
+    if (messageId && state.seenMessageIds.has(messageId)) {
+      state.pendingText = '';
+      state.pendingThinking = '';
+      state.messageOpen = false;
+      return;
+    }
+    const duplicate = !state.messageOpen && text === state.lastText && childThinking === state.lastThinking;
+    if (!duplicate) {
+      if (childThinking) {
+        sendChildEnvelope(state, { t: 'text', text: childThinking, thinking: true });
+      }
+      if (text) {
+        sendChildEnvelope(state, { t: 'text', text });
+      }
+      state.lastText = text;
+      state.lastThinking = childThinking;
+    }
+    if (messageId) {
+      if (state.seenMessageIds.size >= MAX_SEEN_CHILD_MESSAGES) {
+        const oldest = state.seenMessageIds.values().next().value;
+        if (typeof oldest === 'string') state.seenMessageIds.delete(oldest);
+      }
+      state.seenMessageIds.add(messageId);
+    }
+    state.pendingText = '';
+    state.pendingThinking = '';
+    state.messageOpen = false;
+  };
+
+  const stopChildMirror = (state: ChildMirrorState, completed: boolean): void => {
+    if (state.stopped) return;
+    if (state.pendingText || state.pendingThinking) {
+      flushChildMessage(state);
+    }
+    sendChildEnvelope(state, { t: 'stop' });
+    state.stopped = true;
+    if (state.binding?.source === state.source) {
+      state.binding.source = undefined;
+      if (completed) state.binding.completed = true;
+      if (completed) liveDelegateBindings.delete(state.binding);
+    }
+  };
+
+  const translateChildEvent = (state: ChildMirrorState, event: MirrorEvent): void => {
+    if (state.stopped || state.discarded || !state.binding) return;
+    const bridgeKey = state.binding.sessionSubagent;
+    switch (event.type) {
+      case 'message_start': {
+        if (isAssistantMessage(event.message)) {
+          state.pendingText = '';
+          state.pendingThinking = '';
+          state.messageOpen = true;
+        }
+        return;
+      }
+      case 'message_update': {
+        if (!isAssistantMessage(event.message) || !isRecord(event.assistantMessageEvent)) return;
+        state.messageOpen = true;
+        const delta = asString(event.assistantMessageEvent.delta) ?? '';
+        if (event.assistantMessageEvent.type === 'text_delta') {
+          state.pendingText = appendBoundedChildText(state.pendingText, delta);
+        } else if (event.assistantMessageEvent.type === 'thinking_delta') {
+          state.pendingThinking = appendBoundedChildText(state.pendingThinking, delta);
+        } else if (event.assistantMessageEvent.type === 'error') {
+          const errorMessage = isRecord(event.assistantMessageEvent.error)
+            ? asString(event.assistantMessageEvent.error.errorMessage)
+            : undefined;
+          if (errorMessage) state.pendingText = appendBoundedChildText(state.pendingText, errorMessage);
+        }
+        return;
+      }
+      case 'message_end': {
+        if (isAssistantMessage(event.message)) flushChildMessage(state, event.message);
+        return;
+      }
+      case 'tool_execution_update': {
+        applyDelegateTaskProgress(bridgeKey, event);
+        return;
+      }
+      case 'tool_execution_start': {
+        const rawToolCallId = asString(event.toolCallId) ?? createId();
+        if (state.toolCallIds.has(rawToolCallId)) return;
+        const childToolCallId = `omp-child:${bridgeKey}:${rawToolCallId}`;
+        state.toolCallIds.set(rawToolCallId, childToolCallId);
+        const rawToolName = asString(event.toolName) ?? 'tool';
+        const toolName = normalizeBridgeToolName(rawToolName);
+        const normalizedInput = toolName === 'delegate_task'
+          ? prepareDelegateTaskInput(bridgeKey, rawToolCallId, event.args)
+          : normalizeBridgeToolInput(toolName, event.args);
+        const args = isRecord(normalizedInput) ? normalizedInput : { input: normalizedInput };
+        const intent = asString(args.i);
+        sendChildEnvelope(state, {
+          t: 'tool-call-start',
+          call: childToolCallId,
+          name: toolName,
+          title: toolName,
+          description: intent?.slice(0, 512) ?? toolName,
+          args,
+        });
+        return;
+      }
+      case 'tool_execution_end': {
+        const rawToolCallId = asString(event.toolCallId);
+        if (!rawToolCallId || state.completedToolCalls.has(rawToolCallId)) return;
+        const childToolCallId = state.toolCallIds.get(rawToolCallId)
+          ?? `omp-child:${bridgeKey}:${rawToolCallId}`;
+        sendChildEnvelope(state, { t: 'tool-call-end', call: childToolCallId });
+        state.completedToolCalls.add(rawToolCallId);
+        return;
+      }
+      case 'agent_end': {
+        if (state.pendingText || state.pendingThinking) flushChildMessage(state);
+        return;
+      }
+      case 'session_shutdown': {
+        releaseBinding(state.binding);
+        return;
+      }
+      default:
+        return;
+    }
+  };
+  const applyDelegateTaskProgress = (parentBridgeKey: string, event: MirrorEvent): void => {
+    const callId = asString(event.toolCallId);
+    const bindings = callId ? activeDelegateTasksByBridge.get(parentBridgeKey)?.get(callId) : undefined;
+    const details = isRecord(event.partialResult) && isRecord(event.partialResult.details)
+      ? event.partialResult.details
+      : undefined;
+    const progress = details && Array.isArray(details.progress) ? details.progress : undefined;
+    if (!callId || !bindings || !progress) return;
+    const changedRegistryNames = new Set<string>();
+    for (const item of progress) {
+      if (!isRecord(item) || !Number.isInteger(item.index) || typeof item.id !== 'string' || item.id.length === 0) {
+        continue;
+      }
+      const binding = bindings.find((candidate) => candidate.taskIndex === item.index);
+      if (!binding) continue;
+      if (binding.registryName && binding.registryName !== item.id) {
+        log(`Ignoring changed OMP child registry id for delegate task ${parentBridgeKey}:${callId}:${item.index}`);
+        continue;
+      }
+      binding.registryName = item.id;
+      changedRegistryNames.add(item.id);
+    }
+    for (const changedRegistryName of changedRegistryNames) tryBindChildRegistryName(changedRegistryName);
+  };
+
+  const removeBindingFromParentCall = (binding: DelegateTaskBinding): void => {
+    const bridgeCalls = activeDelegateTasksByBridge.get(binding.parentBridgeKey);
+    const bindings = bridgeCalls?.get(binding.callId);
+    if (!bridgeCalls || !bindings) return;
+    const remaining = bindings.filter((candidate) => candidate !== binding);
+    if (remaining.length > 0) {
+      bridgeCalls.set(binding.callId, remaining);
+    } else {
+      bridgeCalls.delete(binding.callId);
+      if (bridgeCalls.size === 0) activeDelegateTasksByBridge.delete(binding.parentBridgeKey);
+    }
+  };
+
+  const releaseBinding = (
+    binding: DelegateTaskBinding,
+    terminalStatus?: 'completed' | 'failed' | 'cancelled',
+  ): void => {
+    if (binding.completed) return;
+    const state = binding.source ? childMirrorsBySource.get(binding.source) : undefined;
+    if (terminalStatus) {
+      if (!binding.started) {
+        sendBindingEnvelope(binding, { t: 'start', title: binding.taskName });
+        binding.started = true;
+      }
+      if (state && (state.pendingText || state.pendingThinking)) flushChildMessage(state);
+      sendBindingEnvelope(binding, { t: 'turn-end', status: terminalStatus });
+    }
+
+    const descendants = [...liveDelegateBindings]
+      .filter((candidate) => candidate.parentBridgeKey === binding.sessionSubagent);
+    activeDelegateTasksByBridge.delete(binding.sessionSubagent);
+    for (const descendant of descendants) releaseBinding(descendant);
+
+    if (state) {
+      stopChildMirror(state, true);
+    } else {
+      if (binding.started) sendBindingEnvelope(binding, { t: 'stop' });
+      binding.completed = true;
+      binding.source = undefined;
+      liveDelegateBindings.delete(binding);
+    }
+    removeBindingFromParentCall(binding);
+  };
+
+  const releaseBridgeBindings = (bridgeKey: string): void => {
+    activeDelegateTasksByBridge.delete(bridgeKey);
+    const bindings = [...liveDelegateBindings]
+      .filter((binding) => binding.parentBridgeKey === bridgeKey);
+    for (const binding of bindings) releaseBinding(binding);
+  };
+
+  const handleSubagentLifecycle = (
+    parentBridgeKey: string,
+    frame: BridgeSubagentLifecycleFrame,
+  ): void => {
+    const id = asString(frame.payload.id);
+    const callId = asString(frame.payload.parentToolCallId);
+    const taskIndex = frame.payload.index;
+    const status = frame.payload.status;
+    if (
+      !id
+      || !callId
+      || !Number.isInteger(taskIndex)
+      || (taskIndex as number) < 0
+      || (status !== 'started' && status !== 'completed' && status !== 'failed' && status !== 'aborted')
+    ) {
+      return;
+    }
+    if (
+      frame.payload.sessionFile !== undefined
+      && getSessionRegistryName(frame.payload.sessionFile) !== id
+    ) {
+      log(`Ignoring OMP child lifecycle with mismatched session file for ${parentBridgeKey}:${callId}:${taskIndex}`);
+      return;
+    }
+    const bindings = activeDelegateTasksByBridge.get(parentBridgeKey)?.get(callId);
+    const binding = bindings?.find((candidate) => candidate.taskIndex === taskIndex);
+    if (!binding || binding.completed) return;
+    if (binding.registryName && binding.registryName !== id) {
+      log(`Ignoring changed OMP child lifecycle id for delegate task ${parentBridgeKey}:${callId}:${taskIndex}`);
+      return;
+    }
+    binding.registryName = id;
+    tryBindChildRegistryName(id);
+    if (status === 'started') {
+      if (!binding.started) {
+        sendBindingEnvelope(binding, { t: 'start', title: binding.taskName });
+        binding.started = true;
+      }
+      return;
+    }
+    releaseBinding(
+      binding,
+      status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'cancelled',
+    );
+  };
+
+  const translateBoundChildFrame = (
+    state: ChildMirrorState,
+    frame: BridgeAgentEventFrame | BridgeSubagentLifecycleFrame,
+  ): void => {
+    if (!state.binding) return;
+    if (frame.type === 'subagent_lifecycle') {
+      handleSubagentLifecycle(state.binding.sessionSubagent, frame);
+    } else {
+      translateChildEvent(state, frame.event);
+    }
+  };
+
+  const tryBindChildRegistryName = (registryName: string): void => {
+    const matchingBindings = [...liveDelegateBindings]
+      .filter((binding) => !binding.completed && binding.registryName === registryName);
+    const pendingChildren = [...childMirrorsBySource.values()]
+      .filter((state) => !state.binding && !state.discarded && !state.stopped && state.source.childRegistryName === registryName);
+    if (matchingBindings.length !== 1 || pendingChildren.length !== 1) {
+      if (matchingBindings.length > 1 || pendingChildren.length > 1) {
+        log(`Ignoring ambiguous OMP child registry name ${registryName}`);
+      }
+      return;
+    }
+    const binding = matchingBindings[0];
+    const state = pendingChildren[0];
+    const eligibleThroughParent = state.parentRegistryName
+      ? [...childMirrorsBySource.values()].some((parentState) => (
+        parentState !== state
+        && parentState.source.childRegistryName === state.parentRegistryName
+        && parentState.binding?.sessionSubagent === binding.parentBridgeKey
+      ))
+      : false;
+    if (!state.eligibleBindings.has(binding) && !eligibleThroughParent) {
+      log(`Ignoring OMP child registry name ${registryName} without an eligible parent binding`);
+      return;
+    }
+    if (binding.source) {
+      state.discarded = true;
+      state.bufferedFrames = [];
+      log(`Ignoring duplicate OMP child socket for ${registryName}`);
+      return;
+    }
+    binding.source = state.source;
+    state.binding = binding;
+    if (!binding.started) {
+      sendChildEnvelope(state, { t: 'start', title: binding.taskName });
+      binding.started = true;
+    }
+    const buffered = state.bufferedFrames.splice(0);
+    for (const frame of buffered) translateBoundChildFrame(state, frame);
+  };
+
 
   const handleAssistantMessageUpdate = (event: MirrorEvent): void => {
     if (!isAssistantMessage(event.message) || !isRecord(event.assistantMessageEvent)) {
@@ -673,6 +1154,10 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         session.sendAgentMessage('omp', { type: 'task_started', id: randomUUID() });
         return;
       }
+      case 'tool_execution_update': {
+        applyDelegateTaskProgress(ROOT_BRIDGE_KEY, event);
+        return;
+      }
       case 'message_update': {
         handleAssistantMessageUpdate(event);
         return;
@@ -710,11 +1195,14 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
           compactTodoCallIds.add(toolCallId);
           return;
         }
+        const input = toolName === 'delegate_task'
+          ? prepareDelegateTaskInput(ROOT_BRIDGE_KEY, toolCallId, event.args)
+          : normalizeBridgeToolInput(toolName, event.args);
         session.sendAgentMessage('omp', {
           type: 'tool-call',
           name: toolName,
           callId: toolCallId,
-          input: normalizeBridgeToolInput(toolName, event.args),
+          input,
           id: randomUUID(),
         });
         return;
@@ -735,6 +1223,10 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
           id: randomUUID(),
           isError: extractToolError(event.result, event.isError),
         });
+        return;
+      }
+      case 'session_shutdown': {
+        releaseBridgeBindings(ROOT_BRIDGE_KEY);
         return;
       }
       case 'agent_end': {
@@ -768,7 +1260,85 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     return title;
   };
 
-  const handleBridgeFrame = (frame: BridgeFrame): void => {
+  const handleChildBridgeFrame = (frame: BridgeFrame, source: BridgeFrameSource): void => {
+    if (frame.type === 'ready') {
+      const registryName = source.childRegistryName;
+      if (!registryName) return;
+      if (!childMirrorsBySource.has(source)) {
+        childMirrorsBySource.set(source, {
+          source,
+          eligibleBindings: new Set(liveDelegateBindings),
+          ...(registryName.includes('.')
+            ? { parentRegistryName: registryName.slice(0, registryName.lastIndexOf('.')) }
+            : {}),
+          bufferedFrames: [],
+          discarded: false,
+          pendingText: '',
+          pendingThinking: '',
+          messageOpen: false,
+          lastText: '',
+          lastThinking: '',
+          seenMessageIds: new Set(),
+          toolCallIds: new Map(),
+          completedToolCalls: new Set(),
+          stopped: false,
+        });
+      }
+      tryBindChildRegistryName(registryName);
+      return;
+    }
+    if (frame.type !== 'agent_event' && frame.type !== 'subagent_lifecycle') return;
+    const state = childMirrorsBySource.get(source);
+    if (!state || state.discarded || state.stopped) return;
+    if (state.binding) {
+      translateBoundChildFrame(state, frame);
+      return;
+    }
+    if (frame.type === 'agent_event') {
+      switch (frame.event.type) {
+        case 'message_start':
+        case 'message_update':
+        case 'message_end':
+        case 'tool_execution_update':
+        case 'tool_execution_start':
+        case 'tool_execution_end':
+        case 'agent_end':
+        case 'session_shutdown':
+          break;
+        default:
+          return;
+      }
+    }
+    if (state.bufferedFrames.length >= MAX_BUFFERED_CHILD_EVENTS) {
+      state.discarded = true;
+      state.bufferedFrames = [];
+      log(`Dropping oversized unbound OMP child stream ${source.childRegistryName}`);
+      return;
+    }
+    state.bufferedFrames.push(frame);
+  };
+
+  const handleBridgeDisconnect = (source: BridgeFrameSource): void => {
+    const state = childMirrorsBySource.get(source);
+    if (!state) return;
+    if (state.binding?.source === source) {
+      state.binding.source = undefined;
+    }
+    if (state.bufferedFrames.length > 0) {
+      log(`Retaining OMP child binding across bridge reconnect for ${source.childRegistryName ?? source.sessionId ?? source.connectionId}`);
+    }
+    childMirrorsBySource.delete(source);
+  };
+
+  const handleBridgeFrame = (frame: BridgeFrame, source: BridgeFrameSource): void => {
+    if (!source.primary) {
+      handleChildBridgeFrame(frame, source);
+      return;
+    }
+    if (frame.type === 'subagent_lifecycle') {
+      handleSubagentLifecycle(ROOT_BRIDGE_KEY, frame);
+      return;
+    }
     if (frame.type === 'ready') {
       log(`OMP Happy extension ready for session ${frame.sessionId}`);
       session.updateMetadata((currentMetadata) => ({
@@ -1065,7 +1635,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   const configOverlayPath = join(projectPath(), 'scripts', CONFIG_OVERLAY_FILE);
 
   try {
-    bridgeServer = await startBridgeServer(socketPath, handleBridgeFrame, log);
+    bridgeServer = await startBridgeServer(socketPath, handleBridgeFrame, handleBridgeDisconnect, log);
     startChild(socketPath, extensionPath, configOverlayPath);
     await waitForBridgeReady();
 

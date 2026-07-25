@@ -7,7 +7,7 @@
  * MessageView.raw for future rich renderers.
  */
 
-import type { MessageView } from './types';
+import type { MessageView, ToolData } from './types';
 
 export interface SourceMessageInfo {
   id: string;
@@ -22,6 +22,8 @@ export interface NormalizedView {
   stream?: { streamId: string; append: boolean };
   /** Server localId echo — used to replace optimistic outbox copies. */
   localId?: string | null;
+  /** When present, this NormalizedView carries a tool-result to correlate with an existing tool-call by callId. */
+  toolResult?: { callId: string; result: unknown; error: boolean };
 }
 
 type Rec = Record<string, unknown>;
@@ -73,8 +75,10 @@ function view(
   text: string,
   raw: unknown,
   createdAt?: number,
+  toolData?: ToolData,
+  subagentId?: string,
 ): MessageView {
-  return {
+  const out: MessageView = {
     id,
     seq: base.seq,
     createdAt: createdAt ?? base.createdAt,
@@ -83,10 +87,21 @@ function view(
     text,
     raw,
   };
+  if (toolData) out.toolData = toolData;
+  if (subagentId) out.subagentId = subagentId;
+  return out;
 }
 
-function push(out: NormalizedView[], v: MessageView, stream?: { streamId: string; append: boolean }): void {
-  out.push(stream ? { view: v, stream } : { view: v });
+function push(
+  out: NormalizedView[],
+  v: MessageView,
+  stream?: { streamId: string; append: boolean },
+  toolResult?: NormalizedView['toolResult'],
+): void {
+  const entry: NormalizedView = { view: v };
+  if (stream) entry.stream = stream;
+  if (toolResult) entry.toolResult = toolResult;
+  out.push(entry);
 }
 
 /**
@@ -170,7 +185,10 @@ function normalizeAgentOutput(base: SourceMessageInfo, data: Rec, raw: unknown, 
         push(out, view(base, id, 'agent', 'thinking', block.thinking, raw));
       } else if (block.type === 'tool_use' || block.type === 'tool-call') {
         const name = asString(block.name) ?? 'unknown';
-        push(out, view(base, id, 'agent', 'tool', summarizeToolCall(name, block.input), raw));
+        const callId = asString(block.callId);
+        const toolData: ToolData = { name, input: block.input };
+        if (callId) toolData.callId = callId;
+        push(out, view(base, id, 'agent', 'tool', summarizeToolCall(name, block.input), raw, undefined, toolData));
       }
       // tool_result / tool-call-result blocks: covered by the tool-call summary line.
     }
@@ -245,7 +263,20 @@ function normalizeAcpLike(base: SourceMessageInfo, data: Rec, raw: unknown, out:
 
   if (dataType === 'tool-call') {
     const name = asString(data.name) ?? 'unknown';
-    push(out, view(base, base.id, 'agent', 'tool', summarizeToolCall(name, data.input), raw));
+    const callId = asString(data.callId);
+    const toolData: ToolData = { name, input: data.input };
+    if (callId) toolData.callId = callId;
+    push(out, view(base, base.id, 'agent', 'tool', summarizeToolCall(name, data.input), raw, undefined, toolData));
+    return;
+  }
+
+  if (dataType === 'tool-result' || dataType === 'tool-call-result') {
+    const callId = asString(data.callId);
+    if (!callId) return; // can't correlate without callId
+    const isError = data.is_error === true || data.error === true;
+    push(out, view(base, base.id, 'agent', 'tool', '', raw), undefined, {
+      callId, result: data.output ?? data, error: isError,
+    });
     return;
   }
 
@@ -255,9 +286,8 @@ function normalizeAcpLike(base: SourceMessageInfo, data: Rec, raw: unknown, out:
     return;
   }
 
-  // tool-result / tool-call-result / terminal-output / task_started /
-  // task_complete / turn_aborted / permission-request / advisor / token_count:
-  // not rendered in the minimal desktop view.
+  // terminal-output / task_started / task_complete / turn_aborted /
+  // permission-request / advisor / token_count: not rendered.
 }
 
 function normalizeSessionEnvelope(base: SourceMessageInfo, content: Rec, raw: unknown, out: NormalizedView[]): void {
@@ -267,30 +297,70 @@ function normalizeSessionEnvelope(base: SourceMessageInfo, content: Rec, raw: un
   const ev = isRecord(envelope.ev) ? envelope.ev : null;
   const id = asString(envelope.id) ?? base.id;
   const time = typeof envelope.time === 'number' ? envelope.time : base.createdAt;
+  const subagentId = asString(envelope.subagent) ?? undefined;
   if (!ev) {
     return;
   }
 
   if (ev.t === 'text' && typeof ev.text === 'string') {
     if (envelope.role === 'user') {
-      push(out, view(base, id, 'user', 'text', ev.text, raw, time));
+      push(out, view(base, id, 'user', 'text', ev.text, raw, time, undefined, subagentId));
     } else if (envelope.role === 'agent') {
-      push(out, view(base, id, 'agent', ev.thinking === true ? 'thinking' : 'text', ev.text, raw, time));
+      push(out, view(base, id, 'agent', ev.thinking === true ? 'thinking' : 'text', ev.text, raw, time, undefined, subagentId));
     }
     return;
   }
 
   if (ev.t === 'service' && typeof ev.text === 'string' && envelope.role === 'agent') {
-    push(out, view(base, id, 'agent', 'text', ev.text, raw, time));
+    push(out, view(base, id, 'agent', 'text', ev.text, raw, time, undefined, subagentId));
     return;
   }
 
   if (ev.t === 'tool-call-start') {
     const name = asString(ev.name) ?? 'unknown';
-    push(out, view(base, id, 'agent', 'tool', summarizeToolCall(name, ev.args), raw, time));
+    const callId = asString(ev.call);
+    const toolData: ToolData = { name, input: ev.args };
+    if (callId) toolData.callId = callId;
+    push(out, view(base, id, 'agent', 'tool', summarizeToolCall(name, ev.args), raw, time, toolData, subagentId));
     return;
   }
 
-  // turn-start / turn-end / start / stop / tool-call-end / file: lifecycle or
-  // rich content not rendered by the minimal desktop view.
+  if (ev.t === 'tool-call-end' || ev.t === 'tool-call-result') {
+    const callId = asString(ev.call);
+    if (!callId) return;
+    const isError = ev.is_error === true || ev.error === true;
+    push(out, view(base, id, 'agent', 'tool', '', raw, time, undefined, subagentId), undefined, {
+      callId, result: ev.output ?? ev, error: isError,
+    });
+    return;
+  }
+
+  if (ev.t === 'turn-end' && subagentId) {
+    const status = ev.status === 'failed'
+      ? 'failed'
+      : ev.status === 'cancelled'
+        ? 'aborted'
+        : 'completed';
+    push(out, view(base, id, 'system', 'event', '', raw, time, {
+      name: '__lifecycle__', input: { status },
+    }, subagentId));
+    return;
+  }
+
+  if (ev.t === 'start' && subagentId) {
+    push(out, view(base, `${subagentId}:start`, 'system', 'event', '', raw, time, {
+      name: '__lifecycle__', input: { status: 'running' },
+    }, subagentId));
+    return;
+  }
+
+  if (ev.t === 'stop' && subagentId) {
+    const isError = ev.exit_code !== undefined && ev.exit_code !== 0 || ev.error === true;
+    push(out, view(base, `${subagentId}:stop`, 'system', 'event', '', raw, time, {
+      name: '__lifecycle__', input: { status: isError ? 'failed' : 'completed' },
+    }, subagentId));
+    return;
+  }
+
+  // turn-start / turn-end / file: lifecycle or rich content not rendered.
 }

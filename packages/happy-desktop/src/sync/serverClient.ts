@@ -258,6 +258,33 @@ export class ServerClient {
   }
 
   /**
+   * sessionRPC: params and results are encrypted with the session-specific key.
+   * This is the same rpc-call transport used by happy-app's apiSocket.sessionRPC.
+   */
+  async sessionRPC<R = unknown>(
+    sessionId: string,
+    method: string,
+    params: unknown,
+    key: Uint8Array,
+    variant: EncryptionVariant,
+  ): Promise<R> {
+    if (!this.socket) {
+      throw new Error('Socket not connected');
+    }
+    const encryptedParams = encodeBase64(await encrypt(key, variant, params));
+    const result: unknown = await this.socket.timeout(30_000).emitWithAck('rpc-call', {
+      method: `${sessionId}:${method}`,
+      params: encryptedParams,
+    });
+    if (isRecord(result) && result.ok === true && typeof result.result === 'string') {
+      const decrypted = await decrypt(key, variant, decodeBase64(result.result));
+      return decrypted as R;
+    }
+    const message = isRecord(result) && typeof result.error === 'string' ? result.error : 'RPC call failed';
+    throw new Error(message);
+  }
+
+  /**
    * machineRPC: params encrypted with the machine's encryption key exactly as
    * happy-app's apiSocket.machineRPC does — the daemon's RpcHandlerManager
    * decrypts with the same key (access.key machineKey for dataKey creds).

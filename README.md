@@ -33,6 +33,11 @@ Step 1: Download App
 <a href="https://apps.apple.com/us/app/happy-claude-code-client/id6748571505"><img width="135" height="39" alt="appstore" src="https://github.com/user-attachments/assets/45e31a11-cf6b-40a2-a083-6dc8d1f01291" /></a>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<a href="https://play.google.com/store/apps/details?id=com.ex3ndr.happy"><img width="135" height="39" alt="googleplay" src="https://github.com/user-attachments/assets/acbba639-858f-4c74-85c7-92a4096efbf5" /></a>
 </div>
 
+> **Hosted-service quickstart:** the download/install quickstart on this page
+> intentionally uses Happy's upstream hosted service. To run this fork against
+> your own server, follow the self-hosted path below and set every client URL
+> explicitly.
+
 <h3 align="center">
 Step 2: Install CLI on your computer
 </h3>
@@ -53,6 +58,113 @@ happy claude
 # or
 happy codex
 ```
+
+## Self-hosting this fork
+
+Happy has three trust boundaries: the **server** stores accounts and encrypted
+sync records; the **CLI/daemon** runs agents on a computer; and the
+**mobile/web/Electron clients** display and control those sessions. The clients
+must all use the same server origin. Accounts, bearer tokens, and encrypted
+records are server-specific; pointing one device at another server does not
+migrate them.
+
+The upstream CLI and mobile app retain their official hosted defaults for
+existing hosted users. A self-hosted setup must not rely on those fallbacks.
+Use an isolated home and an explicit private URL:
+
+```bash
+git clone <your-fork-url> omp-happy
+cd omp-happy
+pnpm install
+
+export HAPPY_HOME_DIR="$HOME/.happy-self-host"
+pnpm run self-host:dev
+```
+
+`self-host:dev` builds the local CLI and runs `happy server`. It binds to
+`127.0.0.1:3005`, creates isolated PGlite/file state under
+`$HAPPY_HOME_DIR/server-data`, generates a 32-byte master secret on first run,
+and asks before persisting the local API/web URL. In another terminal:
+
+```bash
+curl --fail http://127.0.0.1:3005/health
+# {"status":"ok",...,"service":"happy-server"}
+```
+
+A phone cannot reach a computer's `127.0.0.1`. For a trusted LAN, bind on all
+interfaces but advertise the computer's reachable address:
+
+```bash
+pnpm run self-host:dev -- \
+  --host 0.0.0.0 \
+  --public-url http://192.168.1.20:3005
+```
+
+For Internet access, put the server behind a reverse proxy and advertise an
+origin such as `https://happy.example`. Production must use trusted HTTPS; the
+proxy must pass Socket.IO WebSocket upgrades so HTTPS clients connect over WSS.
+Do not expose account traffic over public HTTP.
+
+### Link the app, CLI, daemon, and Electron
+
+1. **Configure the app before login.** Use the pre-login custom-server selector,
+   or build mobile with the source-backed variable
+   `EXPO_PUBLIC_HAPPY_SERVER_URL=https://happy.example`. The similarly named
+   `EXPO_PUBLIC_SERVER_URL` is not used for sync. For a local Android release:
+
+   ```bash
+   cd packages/happy-app/android
+   EXPO_PUBLIC_HAPPY_SERVER_URL=http://192.168.1.20:3005 \
+     ./gradlew assembleRelease
+   adb install -r app/build/outputs/apk/release/app-release.apk
+   ```
+
+   Local/LAN HTTP is for trusted development networks only. Use HTTPS for a
+   public build.
+
+2. **Establish the app account, then link the CLI.** Happy login is key-based;
+   there is no Happy email/password. Open the configured app (or configured
+   self-hosted web app), then run:
+
+   ```bash
+   cd /path/to/omp-happy
+   export HAPPY_HOME_DIR="$HOME/.happy-self-host"
+   export HAPPY_SERVER_URL=http://192.168.1.20:3005
+   export HAPPY_WEBAPP_URL="$HAPPY_SERVER_URL"
+
+   pnpm cli auth login
+   # Choose Mobile Authentication and approve the displayed QR in the app.
+   pnpm cli auth status
+   pnpm cli daemon start
+   pnpm cli acp omp --local
+   ```
+
+   The QR contains an ephemeral public key. The app encrypts the CLI credential
+   response to that key; the CLI decrypts it locally and stores its bearer token
+   and client key material in `$HAPPY_HOME_DIR/access.key`. The server receives
+   public-key proofs, bearer identity, and ciphertext—not the app's private
+   account key or plaintext session keys.
+
+3. **Start Electron with the same CLI home and server.** Electron deliberately
+   has no endpoint fallback and no separate login; it reads the local CLI
+   credentials and keys:
+
+   ```bash
+   HAPPY_HOME_DIR="$HOME/.happy-self-host" \
+   HAPPY_SERVER_URL=http://192.168.1.20:3005 \
+     pnpm --filter happy-desktop dev
+   ```
+
+For friends, share only the HTTPS server URL. Each person configures that URL
+before app login, establishes their own key-based account, and approves their
+own CLI QR from their own app. Never share `HANDY_MASTER_SECRET`, `access.key`,
+`agent.key`, or another person's `$HAPPY_HOME_DIR`.
+
+See **[SETUP.md](SETUP.md)** for the complete clean-clone and friend-onboarding
+flow, **[docs/deployment.md](docs/deployment.md)** for production dependencies,
+TLS, secrets, backups, and Docker, and
+**[packages/happy-server/README.md](packages/happy-server/README.md)** for the
+standalone server.
 
 ## How does it work?
 

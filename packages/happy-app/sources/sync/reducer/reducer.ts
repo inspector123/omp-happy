@@ -110,6 +110,7 @@
  * - Updated internal state for future processing
  */
 
+import { isCuid } from '@paralleldrive/cuid2';
 import { Message, ToolCall } from "../typesMessage";
 import { AgentEvent, NormalizedMessage, UsageData } from "../typesRaw";
 import { createTracer, traceMessages, TracerState } from "./reducerTracer";
@@ -125,6 +126,7 @@ type ReducerMessage = {
     role: 'user' | 'agent';
     text: string | null;
     isThinking?: boolean;
+    subagentId?: string;
     event: AgentEvent | null;
     tool: ToolCall | null;
     meta?: MessageMeta;
@@ -146,7 +148,7 @@ type StoredPermission = {
 
 export type ReducerState = {
     toolIdToMessageId: Map<string, string>; // toolId/permissionId -> messageId (since they're the same now)
-    sidechainToolIdToMessageId: Map<string, string>; // toolId -> sidechain messageId (for dual tracking)
+    sidechainToolIdToMessageId: Map<string, string>; // (subagentId, toolId) -> sidechain messageId
     permissions: Map<string, StoredPermission>; // Store permission details by ID for quick lookup
     localIds: Map<string, string>;
     messageIds: Map<string, string>; // originalId -> internalId
@@ -190,6 +192,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function getSessionSubagentId(content: unknown): string | undefined {
+    if (typeof content !== 'object' || content === null || !('parentUUID' in content)) {
+        return undefined;
+    }
+    const parentUUID = content.parentUUID;
+    return typeof parentUUID === 'string' && isCuid(parentUUID) ? parentUUID : undefined;
+}
+
+function getSidechainToolLookupKey(callId: string, subagentId: string | undefined): string {
+    return subagentId ? `${subagentId.length}:${subagentId}:${callId}` : callId;
+}
+
 function mergeToolInputs(existingInput: unknown, nextInput: unknown): unknown {
     if (isRecord(existingInput) && isRecord(nextInput)) {
         return { ...nextInput, ...existingInput };
@@ -213,6 +227,26 @@ function getSidechainOwner(state: ReducerState, sidechainId: string): ReducerMes
     }
 
     return null;
+}
+
+function getRootSidechainOwner(state: ReducerState, owner: ReducerMessage | null): ReducerMessage | null {
+    let current = owner;
+    const visited = new Set<string>();
+    while (current && !visited.has(current.id)) {
+        visited.add(current.id);
+        let parentSidechainId: string | undefined;
+        for (const [sidechainId, messages] of state.sidechains) {
+            if (messages.includes(current)) {
+                parentSidechainId = sidechainId;
+                break;
+            }
+        }
+        if (!parentSidechainId) break;
+        const parent = getSidechainOwner(state, parentSidechainId);
+        if (!parent || parent === current) break;
+        current = parent;
+    }
+    return current;
 }
 
 function getVisibleSidechainPrompt(owner: ReducerMessage | null): string | null {
@@ -959,7 +993,46 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
         } else if (msg.role === 'agent') {
             // Process agent content in sidechain
             for (let c of msg.content) {
-                if (c.type === 'text' || c.type === 'thinking') {
+                const subagentId = getSessionSubagentId(c);
+                if (c.type === 'subagent-lifecycle') {
+                    let previousStatus: unknown;
+                    for (let index = existingSidechain.length - 1; index >= 0; index -= 1) {
+                        const candidate = existingSidechain[index];
+                        if (
+                            candidate.subagentId === c.subagentId
+                            && isRecord(candidate.event)
+                            && candidate.event.type === 'subagent-lifecycle'
+                        ) {
+                            previousStatus = candidate.event.status;
+                            break;
+                        }
+                    }
+                    if (
+                        c.status === 'completed'
+                        && (previousStatus === 'completed' || previousStatus === 'error' || previousStatus === 'aborted')
+                    ) {
+                        continue;
+                    }
+                    const mid = allocateId();
+                    const lifecycleMsg: ReducerMessage = {
+                        id: mid,
+                        realID: msg.id,
+                        role: 'agent',
+                        createdAt: msg.createdAt,
+                        text: null,
+                        subagentId: c.subagentId,
+                        tool: null,
+                        event: {
+                            type: 'subagent-lifecycle',
+                            subagentId: c.subagentId,
+                            status: c.status,
+                            ...(c.title ? { title: c.title } : {}),
+                        },
+                        meta: msg.meta,
+                    };
+                    state.messages.set(mid, lifecycleMsg);
+                    existingSidechain.push(lifecycleMsg);
+                } else if (c.type === 'text' || c.type === 'thinking') {
                     const text = c.type === 'thinking' ? c.thinking : c.text;
                     if (c.type === 'text' && isDuplicateSidechainPrompt(existingSidechain, ownerPrompt, text)) {
                         continue;
@@ -973,6 +1046,7 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                         createdAt: msg.createdAt,
                         text: isThinking ? `*${c.thinking}*` : c.text,
                         isThinking,
+                        subagentId,
                         tool: null,
                         event: null,
                         meta: msg.meta,
@@ -1016,6 +1090,7 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                         role: 'agent',
                         createdAt: msg.createdAt,
                         text: null,
+                        subagentId,
                         tool: toolCall,
                         event: null,
                         meta: msg.meta,
@@ -1024,12 +1099,14 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                     existingSidechain.push(toolMsg);
 
                     // Map sidechain tool separately to avoid overwriting permission mapping
-                    state.sidechainToolIdToMessageId.set(c.id, mid);
+                    state.sidechainToolIdToMessageId.set(getSidechainToolLookupKey(c.id, subagentId), mid);
                 } else if (c.type === 'tool-result') {
                     // Process tool result in sidechain - update BOTH messages
 
                     // Update the sidechain tool message
-                    let sidechainMessageId = state.sidechainToolIdToMessageId.get(c.tool_use_id);
+                    let sidechainMessageId = state.sidechainToolIdToMessageId.get(
+                        getSidechainToolLookupKey(c.tool_use_id, subagentId)
+                    );
                     if (sidechainMessageId) {
                         let sidechainMessage = state.messages.get(sidechainMessageId);
                         if (sidechainMessage && sidechainMessage.tool && sidechainMessage.tool.state === 'running') {
@@ -1110,13 +1187,9 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
         // Update the sidechain in state
         state.sidechains.set(msg.sidechainId, existingSidechain);
 
-        // Find the Task tool message that owns this sidechain and mark it as changed
-        // msg.sidechainId is the realID of the Task message
-        for (const [internalId, message] of state.messages) {
-            if (message.realID === msg.sidechainId && message.tool) {
-                changed.add(internalId);
-                break;
-            }
+        const rootOwner = getRootSidechainOwner(state, getSidechainOwner(state, msg.sidechainId));
+        if (rootOwner?.tool) {
+            changed.add(rootOwner.id);
         }
     }
 
@@ -1222,6 +1295,7 @@ function convertReducerMessageToMessage(reducerMsg: ReducerMessage, state: Reduc
             kind: 'agent-text',
             text: reducerMsg.text,
             ...(reducerMsg.isThinking && { isThinking: true }),
+            ...(reducerMsg.subagentId && { subagentId: reducerMsg.subagentId }),
             meta: reducerMsg.meta
         };
     } else if (reducerMsg.role === 'agent' && reducerMsg.tool !== null) {
@@ -1242,6 +1316,7 @@ function convertReducerMessageToMessage(reducerMsg: ReducerMessage, state: Reduc
             kind: 'tool-call',
             tool: { ...reducerMsg.tool },
             children: childMessages,
+            ...(reducerMsg.subagentId && { subagentId: reducerMsg.subagentId }),
             meta: reducerMsg.meta
         };
     } else if (reducerMsg.role === 'agent' && reducerMsg.event !== null) {
@@ -1250,6 +1325,7 @@ function convertReducerMessageToMessage(reducerMsg: ReducerMessage, state: Reduc
             createdAt: reducerMsg.createdAt,
             kind: 'agent-event',
             event: reducerMsg.event,
+            ...(reducerMsg.subagentId && { subagentId: reducerMsg.subagentId }),
             meta: reducerMsg.meta
         };
     }

@@ -1,19 +1,17 @@
 /**
  * Message encryption for the happy-desktop sync core.
  *
- * Ported VERBATIM (algorithm and wire format) from
- * packages/happy-cli/src/api/encryption.ts — the only change is that the
- * legacy NaCl secretbox path uses libsodium-wrappers (already a declared
- * dependency of this package) instead of tweetnacl. Both implement
- * XSalsa20-Poly1305 with an identical wire format
- * ([nonce (24)] [MAC (16) || ciphertext]), so ciphertext is interchangeable;
- * encryption.test.ts proves both directions against the happy-cli code path.
+ * Message algorithms and wire formats are ported from
+ * packages/happy-cli/src/api/encryption.ts. The legacy NaCl secretbox path
+ * uses libsodium-wrappers instead of tweetnacl; both implement compatible
+ * XSalsa20-Poly1305 ciphertext. Account content-key derivation and wrapped-key
+ * opening match packages/happy-app and packages/happy-agent.
  *
  * dataKey variant: AES-256-GCM via node:crypto, bundle layout
  * [version=0 (1)] [nonce (12)] [ciphertext] [auth tag (16)].
  */
 
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
 import sodium from 'libsodium-wrappers';
 import type { EncryptionVariant } from './types';
 
@@ -50,6 +48,76 @@ export function decodeBase64(base64: string, variant: 'base64' | 'base64url' = '
 
 export function getRandomBytes(size: number): Uint8Array {
   return new Uint8Array(randomBytes(size));
+}
+
+/**
+ * Derive the account content-box private key used by Happy app/agent.
+ *
+ * This is the private counterpart to access.key's content publicKey:
+ * deriveKey(accountSecret, 'Happy EnCoder', ['content']) followed by
+ * libsodium's deterministic crypto_box seed keypair.
+ */
+export async function deriveContentSecretKey(accountSecret: Uint8Array): Promise<Uint8Array> {
+  const encoder = new TextEncoder();
+  let derived = new Uint8Array(
+    createHmac('sha512', encoder.encode('Happy EnCoder Master Seed'))
+      .update(accountSecret)
+      .digest(),
+  );
+
+  const childName = encoder.encode('content');
+  const childData = new Uint8Array(childName.length + 1);
+  childData.set(childName, 1);
+  derived = new Uint8Array(
+    createHmac('sha512', derived.subarray(32)).update(childData).digest(),
+  );
+
+  await ensureSodium();
+  return new Uint8Array(sodium.crypto_box_seed_keypair(derived.subarray(0, 32)).privateKey);
+}
+
+/**
+ * Open a server record's wrapped dataEncryptionKey.
+ *
+ * Wire format: version(0) + ephemeral public key(32) + nonce(24) +
+ * NaCl box ciphertext(32-byte data key + 16-byte MAC). Invalid, foreign, or
+ * unsupported bundles return null so one inaccessible record cannot fail sync.
+ */
+export async function unwrapDataEncryptionKey(
+  encoded: string,
+  contentSecretKey: Uint8Array,
+): Promise<Uint8Array | null> {
+  try {
+    await ensureSodium();
+    const wrapped = decodeBase64(encoded);
+    const publicKeyBytes = sodium.crypto_box_PUBLICKEYBYTES;
+    const nonceBytes = sodium.crypto_box_NONCEBYTES;
+    const macBytes = sodium.crypto_box_MACBYTES;
+    const dataKeyBytes = 32;
+    const expectedBytes = 1 + publicKeyBytes + nonceBytes + dataKeyBytes + macBytes;
+
+    if (
+      wrapped.length !== expectedBytes
+      || wrapped[0] !== 0
+      || contentSecretKey.length !== sodium.crypto_box_SECRETKEYBYTES
+    ) {
+      return null;
+    }
+
+    const bundleOffset = 1;
+    const nonceOffset = bundleOffset + publicKeyBytes;
+    const ciphertextOffset = nonceOffset + nonceBytes;
+    const decrypted = sodium.crypto_box_open_easy(
+      wrapped.subarray(ciphertextOffset),
+      wrapped.subarray(nonceOffset, ciphertextOffset),
+      wrapped.subarray(bundleOffset, nonceOffset),
+      contentSecretKey,
+    );
+
+    return decrypted.length === dataKeyBytes ? new Uint8Array(decrypted) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

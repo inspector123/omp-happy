@@ -9,10 +9,16 @@ import {
   decodeBase64 as cliDecodeBase64,
 } from '../../../happy-cli/src/api/encryption';
 import {
+  deriveContentKeyPair as deriveAgentContentKeyPair,
+  libsodiumEncryptForPublicKey,
+} from '../../../happy-agent/src/encryption';
+import {
   encrypt,
   decrypt,
+  deriveContentSecretKey,
   encodeBase64,
   decodeBase64,
+  unwrapDataEncryptionKey,
 } from './encryption';
 
 const DATA_KEY = getRandomBytes(32);
@@ -83,6 +89,38 @@ describe('encryption (desktop port)', () => {
       const tampered = new Uint8Array(encrypted);
       tampered[20] = tampered[20] ^ 0xff;
       expect(await decrypt(DATA_KEY, 'dataKey', tampered)).toBeNull();
+    });
+  });
+
+  describe('server-wrapped data encryption keys', () => {
+    it('matches Happy Agent content-key derivation and opens its box bundle', async () => {
+      const accountSecret = getRandomBytes(32);
+      const referenceKeyPair = deriveAgentContentKeyPair(accountSecret);
+      const contentSecretKey = await deriveContentSecretKey(accountSecret);
+      expect(contentSecretKey).toEqual(referenceKeyPair.secretKey);
+
+      const encrypted = libsodiumEncryptForPublicKey(DATA_KEY, referenceKeyPair.publicKey);
+      const wrapped = new Uint8Array(encrypted.length + 1);
+      wrapped[0] = 0;
+      wrapped.set(encrypted, 1);
+
+      expect(await unwrapDataEncryptionKey(encodeBase64(wrapped), contentSecretKey)).toEqual(DATA_KEY);
+    });
+
+    it('returns null for malformed, unsupported, and foreign wrapped keys', async () => {
+      const accountSecret = getRandomBytes(32);
+      const referenceKeyPair = deriveAgentContentKeyPair(accountSecret);
+      const encrypted = libsodiumEncryptForPublicKey(DATA_KEY, referenceKeyPair.publicKey);
+      const wrapped = new Uint8Array(encrypted.length + 1);
+      wrapped.set(encrypted, 1);
+      const contentSecretKey = await deriveContentSecretKey(accountSecret);
+
+      wrapped[0] = 1;
+      expect(await unwrapDataEncryptionKey(encodeBase64(wrapped), contentSecretKey)).toBeNull();
+      wrapped[0] = 0;
+      expect(await unwrapDataEncryptionKey(encodeBase64(wrapped), await deriveContentSecretKey(getRandomBytes(32)))).toBeNull();
+      expect(await unwrapDataEncryptionKey(encodeBase64(wrapped.slice(0, -1)), contentSecretKey)).toBeNull();
+      expect(await unwrapDataEncryptionKey('not-base64', contentSecretKey)).toBeNull();
     });
   });
 

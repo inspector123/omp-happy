@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { createId } from '@paralleldrive/cuid2';
 import { NormalizedMessage } from '../typesRaw';
 import { createReducer } from './reducer';
 import { reducer } from './reducer';
@@ -3151,6 +3152,294 @@ describe('reducer', () => {
                     expect(result.messages[0].children[0].tool.name).toBe('Read');
                 }
             }
+        });
+
+        it('keeps subagent lifecycle markers nested and non-chat', () => {
+            const subagent = createId();
+            const state = createReducer();
+            const started = reducer(state, [
+                {
+                    id: 'lifecycle-owner',
+                    localId: null,
+                    createdAt: 1000,
+                    role: 'agent',
+                    isSidechain: false,
+                    content: [{
+                        type: 'tool-call',
+                        id: 'lifecycle-delegate-call',
+                        name: 'delegate_task',
+                        input: {
+                            tasks: [{ id: 'LifecycleWorker', sessionSubagent: subagent }],
+                        },
+                        description: null,
+                        uuid: 'lifecycle-owner-uuid',
+                        parentUUID: null
+                    }]
+                },
+                {
+                    id: 'lifecycle-start',
+                    localId: null,
+                    createdAt: 1100,
+                    role: 'agent',
+                    isSidechain: true,
+                    content: [{
+                        type: 'subagent-lifecycle',
+                        subagentId: subagent,
+                        status: 'running',
+                        title: 'LifecycleWorker',
+                        uuid: 'lifecycle-start-uuid',
+                        parentUUID: subagent
+                    }]
+                }
+            ]);
+
+            expect(started.messages).toHaveLength(1);
+            const startedOwner = started.messages[0];
+            if (startedOwner.kind !== 'tool-call') throw new Error('Expected lifecycle delegate owner');
+            expect(startedOwner.children).toEqual([
+                expect.objectContaining({
+                    kind: 'agent-event',
+                    subagentId: subagent,
+                    event: {
+                        type: 'subagent-lifecycle',
+                        subagentId: subagent,
+                        status: 'running',
+                        title: 'LifecycleWorker'
+                    }
+                })
+            ]);
+
+            const failed = reducer(state, [{
+                id: 'lifecycle-failed',
+                localId: null,
+                createdAt: 1200,
+                role: 'agent',
+                isSidechain: true,
+                content: [{
+                    type: 'subagent-lifecycle',
+                    subagentId: subagent,
+                    status: 'error',
+                    uuid: 'lifecycle-failed-uuid',
+                    parentUUID: subagent
+                }]
+            }]);
+            expect(failed.messages).toHaveLength(1);
+            const failedOwner = failed.messages[0];
+            if (failedOwner.kind !== 'tool-call') throw new Error('Expected updated lifecycle delegate owner');
+            expect(failedOwner.children.at(-1)).toMatchObject({
+                kind: 'agent-event',
+                subagentId: subagent,
+                event: {
+                    type: 'subagent-lifecycle',
+                    subagentId: subagent,
+                    status: 'error'
+                }
+            });
+
+            const trailingStop = reducer(state, [{
+                id: 'lifecycle-stop',
+                localId: null,
+                createdAt: 1300,
+                role: 'agent',
+                isSidechain: true,
+                content: [{
+                    type: 'subagent-lifecycle',
+                    subagentId: subagent,
+                    status: 'completed',
+                    uuid: 'lifecycle-stop-uuid',
+                    parentUUID: subagent
+                }]
+            }]);
+            const trailingStopOwner = trailingStop.messages[0];
+            if (trailingStopOwner.kind !== 'tool-call') throw new Error('Expected lifecycle delegate owner');
+            expect(trailingStopOwner.children).toHaveLength(2);
+            expect(trailingStopOwner.children.at(-1)).toMatchObject({
+                event: { type: 'subagent-lifecycle', status: 'error' }
+            });
+        });
+
+        it('propagates grandchild lifecycle updates through nested delegate owners', () => {
+            const parentSubagent = createId();
+            const grandchildSubagent = createId();
+            const state = createReducer();
+            const result = reducer(state, [
+                {
+                    id: 'recursive-owner',
+                    localId: null,
+                    createdAt: 1000,
+                    role: 'agent',
+                    isSidechain: false,
+                    content: [{
+                        type: 'tool-call',
+                        id: 'recursive-root-call',
+                        name: 'delegate_task',
+                        input: {
+                            tasks: [{ id: 'ParentWorker', sessionSubagent: parentSubagent }],
+                        },
+                        description: null,
+                        uuid: 'recursive-owner-uuid',
+                        parentUUID: null
+                    }]
+                },
+                {
+                    id: 'recursive-nested-owner',
+                    localId: null,
+                    createdAt: 1100,
+                    role: 'agent',
+                    isSidechain: true,
+                    content: [{
+                        type: 'tool-call',
+                        id: 'recursive-nested-call',
+                        name: 'delegate_task',
+                        input: {
+                            tasks: [{ id: 'GrandWorker', sessionSubagent: grandchildSubagent }],
+                        },
+                        description: null,
+                        uuid: 'recursive-nested-owner-uuid',
+                        parentUUID: parentSubagent
+                    }]
+                },
+                {
+                    id: 'recursive-grandchild-start',
+                    localId: null,
+                    createdAt: 1200,
+                    role: 'agent',
+                    isSidechain: true,
+                    content: [{
+                        type: 'subagent-lifecycle',
+                        subagentId: grandchildSubagent,
+                        status: 'running',
+                        title: 'GrandWorker',
+                        uuid: 'recursive-grandchild-start-uuid',
+                        parentUUID: grandchildSubagent
+                    }]
+                }
+            ]);
+
+            expect(result.messages).toHaveLength(1);
+            const rootOwner = result.messages[0];
+            if (rootOwner.kind !== 'tool-call') throw new Error('Expected recursive root owner');
+            const nestedOwner = rootOwner.children.find((message) => (
+                message.kind === 'tool-call' && message.subagentId === parentSubagent
+            ));
+            if (nestedOwner?.kind !== 'tool-call') throw new Error('Expected nested delegate owner');
+            expect(nestedOwner.children).toEqual([
+                expect.objectContaining({
+                    kind: 'agent-event',
+                    subagentId: grandchildSubagent,
+                    event: {
+                        type: 'subagent-lifecycle',
+                        subagentId: grandchildSubagent,
+                        status: 'running',
+                        title: 'GrandWorker'
+                    }
+                })
+            ]);
+        });
+
+        it('keeps reused child tool call ids isolated by session subagent', () => {
+            const alphaSubagent = createId();
+            const betaSubagent = createId();
+            const state = createReducer();
+            const result = reducer(state, [
+                {
+                    id: 'delegate-owner',
+                    localId: null,
+                    createdAt: 1000,
+                    role: 'agent',
+                    isSidechain: false,
+                    content: [{
+                        type: 'tool-call',
+                        id: 'delegate-call',
+                        name: 'delegate_task',
+                        input: {
+                            tasks: [
+                                { id: 'AlphaWorker', sessionSubagent: alphaSubagent },
+                                { id: 'BetaWorker', sessionSubagent: betaSubagent },
+                            ],
+                        },
+                        description: null,
+                        uuid: 'delegate-owner-uuid',
+                        parentUUID: null
+                    }]
+                },
+                {
+                    id: 'alpha-tool-start',
+                    localId: null,
+                    createdAt: 1100,
+                    role: 'agent',
+                    isSidechain: true,
+                    content: [{
+                        type: 'tool-call',
+                        id: 'shared-child-call',
+                        name: 'Read',
+                        input: { file_path: '/tmp/alpha.ts' },
+                        description: null,
+                        uuid: 'alpha-tool-uuid',
+                        parentUUID: alphaSubagent
+                    }]
+                },
+                {
+                    id: 'beta-tool-start',
+                    localId: null,
+                    createdAt: 1101,
+                    role: 'agent',
+                    isSidechain: true,
+                    content: [{
+                        type: 'tool-call',
+                        id: 'shared-child-call',
+                        name: 'Read',
+                        input: { file_path: '/tmp/beta.ts' },
+                        description: null,
+                        uuid: 'beta-tool-uuid',
+                        parentUUID: betaSubagent
+                    }]
+                },
+                {
+                    id: 'beta-tool-end',
+                    localId: null,
+                    createdAt: 1200,
+                    role: 'agent',
+                    isSidechain: true,
+                    content: [{
+                        type: 'tool-result',
+                        tool_use_id: 'shared-child-call',
+                        content: 'beta result',
+                        is_error: false,
+                        uuid: 'beta-result-uuid',
+                        parentUUID: betaSubagent
+                    }]
+                },
+                {
+                    id: 'alpha-tool-end',
+                    localId: null,
+                    createdAt: 1201,
+                    role: 'agent',
+                    isSidechain: true,
+                    content: [{
+                        type: 'tool-result',
+                        tool_use_id: 'shared-child-call',
+                        content: 'alpha result',
+                        is_error: false,
+                        uuid: 'alpha-result-uuid',
+                        parentUUID: alphaSubagent
+                    }]
+                }
+            ]);
+
+            expect(result.messages).toHaveLength(1);
+            const owner = result.messages[0];
+            expect(owner.kind).toBe('tool-call');
+            if (owner.kind !== 'tool-call') throw new Error('Expected delegate tool owner');
+            const alphaTool = owner.children.find((message) => message.subagentId === alphaSubagent);
+            const betaTool = owner.children.find((message) => message.subagentId === betaSubagent);
+            expect(alphaTool?.kind).toBe('tool-call');
+            expect(betaTool?.kind).toBe('tool-call');
+            if (alphaTool?.kind !== 'tool-call' || betaTool?.kind !== 'tool-call') {
+                throw new Error('Expected one child tool per session subagent');
+            }
+            expect(alphaTool.tool.result).toBe('alpha result');
+            expect(betaTool.tool.result).toBe('beta result');
         });
     });
 

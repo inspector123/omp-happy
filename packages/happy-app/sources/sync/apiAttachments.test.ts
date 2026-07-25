@@ -57,7 +57,7 @@ describe('requestAttachmentUpload', () => {
             ok: true,
             json: {
                 ref: 'sessions/session-1/attachments/photo.enc',
-                uploadUrl: 'http://50.47.25.31:30003/v1/sessions/session-1/attachments/photo.enc',
+                uploadUrl: 'http://203.0.113.10:30003/v1/sessions/session-1/attachments/photo.enc',
                 method: 'PUT',
             },
         }));

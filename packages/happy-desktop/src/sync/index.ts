@@ -9,6 +9,7 @@ export type {
   SessionKeyInfo,
   SessionView,
   MessageView,
+  ToolData,
   DesktopState,
   EncryptionVariant,
   SpawnSessionResult,

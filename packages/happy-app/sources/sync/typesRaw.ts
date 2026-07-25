@@ -40,6 +40,11 @@ const agentEventSchema = z.discriminatedUnion('type', [z.object({
     endsAt: z.number(),
 }), z.object({
     type: z.literal('ready'),
+}), z.object({
+    type: z.literal('subagent-lifecycle'),
+    subagentId: z.string().refine((value) => isCuid(value)),
+    status: z.enum(['running', 'completed', 'error', 'aborted']),
+    title: z.string().optional(),
 }), advisorEventSchema]);
 export type AgentEvent = z.infer<typeof agentEventSchema>;
 
@@ -528,6 +533,13 @@ type NormalizedAgentContent =
             decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort';
         };
     } | {
+        type: 'subagent-lifecycle';
+        subagentId: string;
+        status: 'running' | 'completed' | 'error' | 'aborted';
+        title?: string;
+        uuid: string;
+        parentUUID: string;
+    } | {
         type: 'summary',
         summary: string;
     } | {
@@ -590,11 +602,46 @@ function normalizeSessionEnvelope(
     }
 
     if (envelope.ev.t === 'start' || envelope.ev.t === 'stop') {
-        // Lifecycle marker for subagent boundaries; currently not rendered as chat content.
-        return null;
+        if (!parentUUID) return null;
+        return {
+            id: messageId,
+            localId,
+            createdAt: messageCreatedAt,
+            role: 'agent',
+            isSidechain: true,
+            content: [{
+                type: 'subagent-lifecycle',
+                subagentId: parentUUID,
+                status: envelope.ev.t === 'start' ? 'running' : 'completed',
+                ...(envelope.ev.t === 'start' && envelope.ev.title ? { title: envelope.ev.title } : {}),
+                uuid: contentUUID,
+                parentUUID
+            }],
+            meta
+        } satisfies NormalizedMessage;
     }
 
     if (envelope.ev.t === 'turn-end') {
+        if (parentUUID) {
+            const status = envelope.ev.status === 'completed'
+                ? 'completed'
+                : envelope.ev.status === 'failed' ? 'error' : 'aborted';
+            return {
+                id: messageId,
+                localId,
+                createdAt: messageCreatedAt,
+                role: 'agent',
+                isSidechain: true,
+                content: [{
+                    type: 'subagent-lifecycle',
+                    subagentId: parentUUID,
+                    status,
+                    uuid: contentUUID,
+                    parentUUID
+                }],
+                meta
+            } satisfies NormalizedMessage;
+        }
         return {
             id: messageId,
             localId,

@@ -26,6 +26,7 @@ const SETTINGS_WRITE_CONFIRM_FLAG = '--i-understand-this-will-modify-default-hap
 interface ServerOptions {
     port: number;
     host: string;
+    publicUrl?: string;
     reset: boolean;
     persistServerUrl: boolean;
     allowSettingsWrite: boolean;
@@ -63,7 +64,8 @@ export async function handleServerCommand(args: string[]): Promise<void> {
     const opts = parseArgs(args);
     if (opts === null) return;
 
-    const serverUrl = `http://${opts.host === '0.0.0.0' ? '127.0.0.1' : opts.host}:${opts.port}`;
+    const serverUrl = opts.publicUrl ?? formatHttpUrl(opts.host, opts.port);
+    const bindUrl = formatHttpUrl(opts.host, opts.port);
     await ensureSettingsWriteAllowed(opts, serverUrl);
 
     const dataDir = path.join(configuration.happyHomeDir, 'server-data');
@@ -94,7 +96,9 @@ export async function handleServerCommand(args: string[]): Promise<void> {
 
     console.log(chalk.cyan(`\n  happy server`));
     console.log(chalk.gray(`  data dir:   ${dataDir}`));
-    console.log(chalk.gray(`  server url: ${serverUrl}`));
+    console.log(chalk.gray(`  bind:       ${bindUrl}`));
+    console.log(chalk.gray(`  client URL: ${serverUrl}`));
+    console.log(chalk.gray(`  health:     ${serverUrl}/health`));
     console.log(chalk.gray(`  mode:       ${serverArtifactMode(artifacts)}`));
     if (staticDir) {
         console.log(chalk.gray(`  webapp:     ${staticDir}`));
@@ -111,6 +115,7 @@ export async function handleServerCommand(args: string[]): Promise<void> {
         HANDY_MASTER_SECRET: masterSecret,
         PORT: String(opts.port),
         HOST: opts.host,
+        PUBLIC_URL: serverUrl,
     };
     if (staticDir) env.HAPPY_STATIC_DIR = staticDir;
     env.HAPPY_INJECT_HTML_CONFIG = JSON.stringify({
@@ -151,7 +156,7 @@ export async function handleServerCommand(args: string[]): Promise<void> {
     const child = spawnBackground(artifacts, env, ['serve']);
 
     console.log();
-    console.log(chalk.green.bold(`✓ happy-server starting at ${serverUrl}`));
+    console.log(chalk.green.bold(`✓ happy-server starting on ${bindUrl}`));
     if (staticDir) {
         console.log(chalk.green(`  Open ${serverUrl} in your browser.`));
     }
@@ -179,6 +184,7 @@ export async function handleServerCommand(args: string[]): Promise<void> {
 function parseArgs(args: string[]): ServerOptions | null {
     let port = 3005;
     let host = '127.0.0.1';
+    let publicUrl: string | undefined;
     let reset = false;
     let persistServerUrl = true;
     let allowSettingsWrite = false;
@@ -190,13 +196,16 @@ function parseArgs(args: string[]): ServerOptions | null {
             showHelp();
             return null;
         } else if (arg === '--port' || arg === '-p') {
-            port = parseInt(args[++i], 10);
-            if (Number.isNaN(port)) {
-                console.error(chalk.red('Invalid --port'));
+            const value = readOptionValue(args, ++i, arg);
+            port = Number(value);
+            if (!Number.isInteger(port) || port < 1 || port > 65535) {
+                console.error(chalk.red('Invalid --port: expected an integer from 1 to 65535'));
                 process.exit(1);
             }
         } else if (arg === '--host') {
-            host = args[++i];
+            host = readOptionValue(args, ++i, arg);
+        } else if (arg === '--public-url') {
+            publicUrl = normalizePublicUrl(readOptionValue(args, ++i, arg));
         } else if (arg === '--reset') {
             reset = true;
         } else if (arg === '--no-persist') {
@@ -204,7 +213,7 @@ function parseArgs(args: string[]): ServerOptions | null {
         } else if (arg === SETTINGS_WRITE_CONFIRM_FLAG) {
             allowSettingsWrite = true;
         } else if (arg === '--master-secret') {
-            masterSecret = args[++i];
+            masterSecret = readOptionValue(args, ++i, arg);
         } else {
             console.error(chalk.red(`Unknown arg: ${arg}`));
             showHelp();
@@ -212,7 +221,47 @@ function parseArgs(args: string[]): ServerOptions | null {
         }
     }
 
-    return { port, host, reset, persistServerUrl, allowSettingsWrite, masterSecret };
+    if ((host === '0.0.0.0' || host === '::' || host === '[::]') && !publicUrl) {
+        console.error(chalk.red(`--public-url is required when --host is ${host}.`));
+        console.error(chalk.gray(`Use the URL clients can reach, for example --public-url http://192.168.1.20:${port}`));
+        process.exit(1);
+    }
+
+    return { port, host, publicUrl, reset, persistServerUrl, allowSettingsWrite, masterSecret };
+}
+
+function readOptionValue(args: string[], index: number, option: string): string {
+    const value = args[index];
+    if (!value) {
+        console.error(chalk.red(`Missing value for ${option}`));
+        process.exit(1);
+    }
+    return value;
+}
+
+function normalizePublicUrl(value: string): string {
+    let parsed: URL;
+    try {
+        parsed = new URL(value);
+    } catch {
+        console.error(chalk.red('Invalid --public-url: expected an absolute HTTP(S) URL'));
+        process.exit(1);
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        console.error(chalk.red('Invalid --public-url: protocol must be http or https'));
+        process.exit(1);
+    }
+    if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+        console.error(chalk.red('Invalid --public-url: use an origin only (no credentials, path, query, or fragment)'));
+        process.exit(1);
+    }
+    return parsed.origin;
+}
+
+
+function formatHttpUrl(host: string, port: number): string {
+    const urlHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+    return `http://${urlHost}:${port}`;
 }
 
 function showHelp() {
@@ -220,11 +269,12 @@ function showHelp() {
 ${chalk.bold('happy server')} - Run Happy sync server + web app locally (self-host)
 
 ${chalk.bold('Usage:')}
-  happy server [--port 3005] [--host 127.0.0.1] [--reset] [--no-persist]
+  happy server [--port 3005] [--host 127.0.0.1] [--public-url <url>] [--reset] [--no-persist]
 
 ${chalk.bold('Options:')}
   --port, -p <n>        Port to listen on (default: 3005)
   --host <ip>           Host to bind (default: 127.0.0.1)
+  --public-url <url>    HTTP(S) origin clients use; required for wildcard hosts
   --reset               Wipe local server data before starting
   --no-persist          Don't write serverUrl into settings.json
   ${SETTINGS_WRITE_CONFIRM_FLAG}
@@ -236,7 +286,8 @@ ${chalk.bold('Notes:')}
   - Packaged installs require ${chalk.cyan(SERVER_PACKAGE_NAME)} for the local server binary
   - By default, asks before writing ${chalk.cyan('settings.serverUrl')} and ${chalk.cyan('settings.webappUrl')}
   - Use ${chalk.cyan('--no-persist')} to run without modifying default Happy settings
-  - Open ${chalk.cyan('http://127.0.0.1:<port>')} for the web app (if bundled)
+  - ${chalk.cyan('--public-url')} may differ from the bind address (LAN IP or HTTPS reverse proxy)
+  - Open the printed client URL for the web app (if bundled)
 `);
 }
 

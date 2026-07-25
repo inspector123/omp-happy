@@ -29,7 +29,11 @@ fi
 
 export OMP_HAPPY_REAL_BIN="$REAL_OMP"
 export HAPPY_HOME_DIR="${HAPPY_HOME_DIR:-$HOME/.omp-happy}"
-export HAPPY_SERVER_URL="${HAPPY_SERVER_URL:-http://192.168.0.252:30003}"
+if [ -z "${HAPPY_SERVER_URL:-}" ]; then
+  printf '%s\n' 'HAPPY_SERVER_URL is required; set it to your Happy server origin.' >&2
+  exit 64
+fi
+export HAPPY_SERVER_URL
 if [ "${1:-}" = "attach" ]; then
   exec node "$HAPPY_OMP_CLI" omp "$@"
 fi

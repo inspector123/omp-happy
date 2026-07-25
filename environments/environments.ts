@@ -748,7 +748,6 @@ function buildEnvVars(envDir: string, serverPort: number, expoPort: number): Rec
         METRICS_ENABLED: "false",
 
         // App (Expo)
-        EXPO_PUBLIC_SERVER_URL: `http://localhost:${serverPort}`,
         EXPO_PUBLIC_HAPPY_SERVER_URL: `http://localhost:${serverPort}`,
         EXPO_PUBLIC_LOG_SERVER_URL: "http://localhost:8787",
         EXPO_PORT: String(expoPort),
@@ -788,7 +787,6 @@ function buildEnvSh(name: string, envDir: string, serverPort: number, expoPort: 
     lines.push("");
 
     lines.push("# App (Expo)");
-    lines.push(`export EXPO_PUBLIC_SERVER_URL="${vars.EXPO_PUBLIC_SERVER_URL}"`);
     lines.push(`export EXPO_PUBLIC_HAPPY_SERVER_URL="${vars.EXPO_PUBLIC_HAPPY_SERVER_URL}"`);
     lines.push(`export EXPO_PUBLIC_LOG_SERVER_URL="${vars.EXPO_PUBLIC_LOG_SERVER_URL}"`);
     if (vars.EXPO_PUBLIC_DEV_TOKEN && vars.EXPO_PUBLIC_DEV_SECRET) {

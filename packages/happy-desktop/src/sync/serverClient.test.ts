@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { ServerClient } from './serverClient';
 
-const SERVER = 'http://192.168.0.252:30003';
+const SERVER = 'https://happy.example';
 const TOKEN = 'test-token';
 
 function client() {

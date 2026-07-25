@@ -154,7 +154,7 @@ describe("attachmentRoutes — request-upload", () => {
     it("uses the incoming host instead of a stale PUBLIC_URL for local uploads", async () => {
         seedSession("s1", "u1");
         state.useLocalStorage = true;
-        vi.stubEnv("PUBLIC_URL", "http://50.47.25.31:30003");
+        vi.stubEnv("PUBLIC_URL", "http://203.0.113.10:30003");
         app = await createApp();
 
         const res = await app.inject({
@@ -162,14 +162,14 @@ describe("attachmentRoutes — request-upload", () => {
             url: "/v1/sessions/s1/attachments/request-upload",
             headers: {
                 "x-user-id": "u1",
-                host: "50.47.26.175:30003",
+                host: "203.0.113.11:30003",
             },
             payload: { filename: "photo.jpg", size: 1024 },
         });
 
         expect(res.statusCode).toBe(200);
         expect(res.json().uploadUrl).toMatch(
-            /^http:\/\/50\.47\.26\.175:30003\/v1\/sessions\/s1\/attachments\/.+\.enc$/,
+            /^http:\/\/203\.0\.113\.11:30003\/v1\/sessions\/s1\/attachments\/.+\.enc$/,
         );
     });
 

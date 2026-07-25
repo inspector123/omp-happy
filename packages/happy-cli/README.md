@@ -79,10 +79,15 @@ The first interactive shell after a reboot triggers the start; subsequent shells
 
 ```bash
 happy auth login
-happy auth logout
+happy auth status
 ```
 
-Happy uses cryptographic key pairs for authentication — your private key stays on your machine. All session data is end-to-end encrypted before leaving your device.
+Happy uses cryptographic keys rather than an email/password account. For
+self-hosting, configure the app first, then run login with
+`HAPPY_SERVER_URL` pointing at the exact same server and approve the CLI's QR in
+that app. Credentials are server-specific. The CLI stores its bearer token and
+client key material under `HAPPY_HOME_DIR`; changing endpoints does not migrate
+or clear it. See the repository's `SETUP.md` for the complete linking flow.
 
 To connect third-party agent APIs:
 
@@ -114,11 +119,11 @@ happy connect status
 
 | Variable | Description |
 |----------|-------------|
-| `HAPPY_SERVER_URL` | Custom server URL (default: `https://api.cluster-fluster.com`) |
-| `HAPPY_WEBAPP_URL` | Custom web app URL (default: `https://app.happy.engineering`) |
-| `HAPPY_HOME_DIR` | Custom home directory for Happy data (default: `~/.happy`) |
-| `HAPPY_DISABLE_CAFFEINATE` | Disable macOS sleep prevention |
-| `HAPPY_EXPERIMENTAL` | Enable experimental features |
+| `HAPPY_SERVER_URL` | API origin. Precedence: environment, `settings.json`, then the official hosted default. Always set it for self-hosting. |
+| `HAPPY_WEBAPP_URL` | Web-auth origin. Precedence: environment, `settings.json`, then the official hosted default. Use the self-host origin when it serves the web app. |
+| `HAPPY_HOME_DIR` | Happy data and credentials directory (default: `~/.happy`). Use a separate directory for each self-hosted account. |
+| `HAPPY_DISABLE_CAFFEINATE` | Disable macOS sleep prevention. |
+| `HAPPY_EXPERIMENTAL` | Enable experimental features. |
 
 ### Sandbox (experimental)
 
@@ -134,9 +139,10 @@ happy sandbox disable
 
 ```bash
 git clone https://github.com/slopus/happy
-cd happy-cli
-yarn install
-yarn workspace happy cli --help
+cd happy
+pnpm install
+pnpm --filter happy build
+node packages/happy-cli/bin/happy.mjs --help
 ```
 
 ## Requirements

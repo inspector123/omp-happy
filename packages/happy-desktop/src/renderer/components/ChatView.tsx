@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useMemo } from 'react';
 import { selectSelectedMessages, useDesktop } from '../api';
 import { MessageView } from './MessageView';
 
@@ -22,17 +22,38 @@ export function ChatView() {
   const session = useDesktop((s) => s.sessions.find((x) => x.id === s.selectedSessionId));
   const messages = useDesktop(selectSelectedMessages);
 
+  // Collect all child message IDs nested under any delegate_task (recursive).
+  const nestedChildIds = useMemo(() => {
+    const nested = new Set<string>();
+    const collect = (msgIds: string[]) => {
+      for (const id of msgIds) {
+        nested.add(id);
+        const msg = messages.find((m) => m.id === id);
+        if (msg?.toolData?.childMessageIds?.length) {
+          collect(msg.toolData.childMessageIds);
+        }
+      }
+    };
+    for (const msg of messages) {
+      if (msg.kind === 'tool' && msg.toolData?.childMessageIds?.length) {
+        collect(msg.toolData.childMessageIds);
+      }
+    }
+    return nested;
+  }, [messages]);
+
+  // Top-level messages: exclude those nested under a delegate_task.
+  const topLevelMessages = useMemo(() => messages.filter((m) => !nestedChildIds.has(m.id)), [messages, nestedChildIds]);
+
   const listRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
 
-  // New session: re-pin to the bottom.
   useEffect(() => {
     pinnedRef.current = true;
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [selectedSessionId]);
 
-  // Auto-scroll on new content unless the user scrolled up.
   useEffect(() => {
     const el = listRef.current;
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
@@ -65,10 +86,10 @@ export function ChatView() {
       }}
     >
       <div className="mx-auto flex max-w-[760px] flex-col gap-1.5">
-        {messages.map((m) => (
-          <MessageView key={m.id} message={m} />
+        {topLevelMessages.map((m) => (
+          <MessageView key={m.id} message={m} allMessages={messages} />
         ))}
-        {messages.length === 0 && <div className="py-8 text-center text-[12px] text-zinc-600">No messages yet</div>}
+        {topLevelMessages.length === 0 && <div className="py-8 text-center text-[12px] text-zinc-600">No messages yet</div>}
       </div>
     </div>
   );

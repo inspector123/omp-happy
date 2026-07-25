@@ -66,6 +66,27 @@ describe('normalizeDecryptedMessage', () => {
     expect(new Set(out.map(v => v.view.id)).size).toBe(3);
   });
 
+  it('includes callId in toolData for agent output tool_use blocks', () => {
+    const raw = {
+      role: 'agent',
+      content: {
+        type: 'output',
+        data: {
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [
+              { type: 'tool_use', id: 'toolu_1', callId: 'c1', name: 'Read', input: { file_path: 'a.ts' } },
+            ],
+          },
+        },
+      },
+    };
+    const out = normalizeDecryptedMessage(BASE, raw);
+    expect(out).toHaveLength(1);
+    expect(out[0].view.toolData).toMatchObject({ callId: 'c1', name: 'Read', input: { file_path: 'a.ts' } });
+  });
+
   it('maps hyphenated codex/gemini content inside agent output', () => {
     const raw = {
       role: 'agent',
@@ -110,18 +131,38 @@ describe('normalizeDecryptedMessage', () => {
     expect(re[0].view).toMatchObject({ role: 'agent', kind: 'thinking', text: 'chain of thought' });
   });
 
-  it('maps ACP tool-call to a tool summary and skips tool-result', () => {
+  it('maps ACP tool-call to a tool summary with structured toolData', () => {
     const call = normalizeDecryptedMessage(BASE, {
       role: 'agent',
       content: { type: 'acp', provider: 'omp', data: { type: 'tool-call', callId: 'c1', name: 'Bash', input: { command: 'make' }, id: 'i1' } },
     });
     expect(call[0].view).toMatchObject({ role: 'agent', kind: 'tool', text: 'Bash: make' });
+    expect(call[0].view.toolData).toMatchObject({ callId: 'c1', name: 'Bash', input: { command: 'make' } });
+  });
 
+  it('maps ACP tool-result to a NormalizedView with toolResult for correlation', () => {
     const result = normalizeDecryptedMessage(BASE, {
       role: 'agent',
       content: { type: 'acp', provider: 'omp', data: { type: 'tool-result', callId: 'c1', output: 'ok', id: 'i2' } },
     });
+    expect(result).toHaveLength(1);
+    expect(result[0].toolResult).toMatchObject({ callId: 'c1', result: 'ok', error: false });
+  });
+
+  it('skips ACP tool-result without callId', () => {
+    const result = normalizeDecryptedMessage(BASE, {
+      role: 'agent',
+      content: { type: 'acp', provider: 'omp', data: { type: 'tool-result', output: 'ok', id: 'i3' } },
+    });
     expect(result).toHaveLength(0);
+  });
+
+  it('marks ACP tool-result with is_error flag', () => {
+    const result = normalizeDecryptedMessage(BASE, {
+      role: 'agent',
+      content: { type: 'acp', provider: 'omp', data: { type: 'tool-result', callId: 'c2', output: 'failed', is_error: true, id: 'i4' } },
+    });
+    expect(result[0].toolResult).toMatchObject({ callId: 'c2', error: true });
   });
 
   it('maps ACP file-edit to a tool summary', () => {
@@ -178,6 +219,7 @@ describe('normalizeDecryptedMessage', () => {
       ev: { t: 'tool-call-start', call: 'c1', name: 'Edit', args: { file_path: 'x.ts' }, description: null },
     }));
     expect(toolStart[0].view).toMatchObject({ role: 'agent', kind: 'tool', text: 'Edit: x.ts' });
+    expect(toolStart[0].view.toolData).toMatchObject({ callId: 'c1', name: 'Edit', input: { file_path: 'x.ts' } });
   });
 
   it('also accepts the unwrapped session envelope shape', () => {

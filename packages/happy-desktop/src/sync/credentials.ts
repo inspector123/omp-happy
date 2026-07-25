@@ -1,8 +1,8 @@
 /**
- * Credential loading for the desktop sync core.
  * Reads the local Happy CLI credentials ($HAPPY_HOME_DIR/access.key,
- * default ~/.omp-happy) — same files parsed by packages/happy-cli/src/persistence.ts
- * readCredentials(). The `token` authenticates user-scoped REST + socket.
+ * default ~/.omp-happy) and the optional Happy Agent account credential
+ * ($HAPPY_HOME_DIR/agent.key). These are the same files parsed by Happy CLI's
+ * persistence and resume credential loaders. Key material stays in sync core.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -58,6 +58,35 @@ export async function loadCredentials(homeDir: string = defaultHappyHomeDir()): 
   }
 
   return { token: parsed.token, homeDir, encryption };
+}
+
+/**
+ * Read the account master secret stored by Happy Agent authentication.
+ *
+ * Modern access.key credentials intentionally contain only the content public
+ * key, so agent.key is the co-located source capable of opening server-wrapped
+ * per-session keys. Missing and malformed files are expected and nonfatal.
+ */
+export async function loadAccountSecret(homeDir: string = defaultHappyHomeDir()): Promise<Uint8Array | null> {
+  try {
+    const value: unknown = JSON.parse(await readFile(join(homeDir, 'agent.key'), 'utf8'));
+    if (!value || typeof value !== 'object') {
+      return null;
+    }
+    const parsed = value as Record<string, unknown>;
+    if (
+      typeof parsed.token !== 'string'
+      || parsed.token.length === 0
+      || typeof parsed.secret !== 'string'
+      || parsed.secret.length === 0
+    ) {
+      return null;
+    }
+    const secret = new Uint8Array(Buffer.from(parsed.secret, 'base64'));
+    return secret.length === 32 ? secret : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The machine RPC key: machineKey (dataKey creds) or master secret (legacy creds). */

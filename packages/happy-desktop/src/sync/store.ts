@@ -151,14 +151,39 @@ export function createDesktopStore(): DesktopStore {
       const next = [...current];
       let changed = false;
 
-      for (const { view, stream, localId } of views) {
+      for (const { view, stream, localId, toolResult } of views) {
+        // Correlate tool-result with an existing tool-call by (subagentId, callId).
+        // Child results only match child calls; root (no subagentId) only matches root.
+        if (toolResult) {
+          const scope = view.subagentId;
+          const matchIdx = next.findIndex(
+            (m) =>
+              m.kind === 'tool'
+              && m.toolData?.callId === toolResult.callId
+              && m.subagentId === scope,
+          );
+          if (matchIdx !== -1) {
+            const existing = next[matchIdx];
+            next[matchIdx] = {
+              ...existing,
+              toolData: {
+                ...existing.toolData!,
+                result: toolResult.result,
+                error: toolResult.error,
+              },
+            };
+            changed = true;
+          }
+          // If no matching call found, skip (don't create orphan result row).
+          continue;
+        }
+
         // Server echo of an optimistic outbox message replaces the local copy.
         if (localId) {
           const optimisticIndex = byId.get(`local:${localId}`);
           if (optimisticIndex !== undefined) {
             next.splice(optimisticIndex, 1);
             byId.delete(`local:${localId}`);
-            // Re-index after removal (indices shifted).
             byId.clear();
             next.forEach((m, i) => byId.set(m.id, i));
             changed = true;
@@ -169,7 +194,6 @@ export function createDesktopStore(): DesktopStore {
         if (existingIndex !== undefined) {
           const existing = next[existingIndex];
           if (stream?.append) {
-            // Stream delta: accumulate text, advance seq, keep original createdAt.
             next[existingIndex] = { ...view, text: existing.text + view.text, createdAt: existing.createdAt };
           } else {
             next[existingIndex] = view;
@@ -184,7 +208,80 @@ export function createDesktopStore(): DesktopStore {
         changed = true;
       }
 
-      if (changed) {
+      // Build recursive child tree: nest messages with subagentId under the
+      // delegate_task whose task's sessionSubagent matches, at any depth.
+      // Handles buffering (child arrives before parent) and grandchild nesting.
+      {
+        const msgById = new Map(next.map((m) => [m.id, m]));
+
+        // Collect all delegate_task tool messages and their sessionSubagent mapping.
+        const delegateMap = new Map<string, string>(); // sessionSubagent -> delegate msg id
+        for (const m of next) {
+          if (m.kind !== 'tool' || !m.toolData) continue;
+          if (m.toolData.name !== 'delegate_task') continue;
+          const tasks = (m.toolData.input as Record<string, unknown>)?.tasks;
+          if (!Array.isArray(tasks)) continue;
+          for (const task of tasks) {
+            if (!task || typeof task !== 'object') continue;
+            const t = task as Record<string, unknown>;
+            const sa = typeof t.sessionSubagent === 'string' ? t.sessionSubagent : undefined;
+            if (sa) delegateMap.set(sa, m.id);
+          }
+        }
+
+        // Recursively find the parent delegate for a subagentId within a scope.
+        // scopeChildren: array of message ids already nested under the current delegate.
+        function findParentForSubagent(subagentId: string, scopeChildren: string[]): string | null {
+          // First check top-level delegates
+          if (delegateMap.has(subagentId)) {
+            return delegateMap.get(subagentId) ?? null;
+          }
+          // Then check nested delegates within the current scope
+          for (const childId of scopeChildren) {
+            const child = msgById.get(childId);
+            if (!child || child.kind !== 'tool' || !child.toolData) continue;
+            if (child.toolData.name !== 'delegate_task') continue;
+            const tasks = (child.toolData.input as Record<string, unknown>)?.tasks;
+            if (!Array.isArray(tasks)) continue;
+            for (const task of tasks) {
+              if (!task || typeof task !== 'object') continue;
+              const t = task as Record<string, unknown>;
+              const sa = typeof t.sessionSubagent === 'string' ? t.sessionSubagent : undefined;
+              if (sa === subagentId) return childId;
+              // Recurse into this child's children
+              const grandChildren = child.toolData.childMessageIds ?? [];
+              const deeper = findParentForSubagent(subagentId, grandChildren);
+              if (deeper) return deeper;
+            }
+          }
+          return null;
+        }
+
+        // Clear existing childMessageIds to rebuild from scratch.
+        for (const m of next) {
+          if (m.toolData?.childMessageIds) {
+            m.toolData.childMessageIds = [];
+          }
+        }
+
+        // For each message with a subagentId, find its parent delegate and nest it.
+        for (const m of next) {
+          if (!m.subagentId) continue;
+          const parentId = findParentForSubagent(m.subagentId, []);
+          if (!parentId) continue;
+          const parent = msgById.get(parentId);
+          if (!parent?.toolData) continue;
+          if (!parent.toolData.childMessageIds) {
+            parent.toolData.childMessageIds = [];
+          }
+          if (!parent.toolData.childMessageIds.includes(m.id)) {
+            parent.toolData.childMessageIds.push(m.id);
+            changed = true;
+          }
+        }
+      }
+
+      if (changed || state.messages[sessionId] === undefined) {
         store.setState({ messages: { ...state.messages, [sessionId]: next } });
       }
     },

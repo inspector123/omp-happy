@@ -162,4 +162,67 @@ describe('desktop store', () => {
     store.setStatus('connecting');
     expect(seen).toEqual(['online', 'offline']);
   });
+
+  it('correlates a tool-result with an existing tool-call by callId', () => {
+    const store = createDesktopStore();
+    // Insert a tool-call with structured toolData
+    store.applyMessages('s', [{
+      view: {
+        id: 'tool-1', seq: 1, createdAt: 10, role: 'agent', kind: 'tool', text: 'Bash: make',
+        toolData: { callId: 'c1', name: 'Bash', input: { command: 'make' } },
+      },
+    }]);
+    // Apply the tool-result
+    store.applyMessages('s', [{
+      view: { id: 'res-1', seq: 2, createdAt: 20, role: 'agent', kind: 'tool', text: '' },
+      toolResult: { callId: 'c1', result: { output: 'done' }, error: false },
+    }]);
+    const messages = store.getSnapshot().messages['s'];
+    expect(messages).toHaveLength(1); // result correlated, no new row
+    expect(messages[0].id).toBe('tool-1');
+    expect(messages[0].toolData).toMatchObject({
+      callId: 'c1', name: 'Bash', input: { command: 'make' },
+      result: { output: 'done' }, error: false,
+    });
+  });
+
+  it('skips a tool-result when no matching callId exists', () => {
+    const store = createDesktopStore();
+    store.applyMessages('s', [{
+      view: { id: 'res-2', seq: 1, createdAt: 10, role: 'agent', kind: 'tool', text: '' },
+      toolResult: { callId: 'nonexistent', result: 'ok', error: false },
+    }]);
+    expect(store.getSnapshot().messages['s']).toHaveLength(0);
+  });
+
+  it('preserves delegate_task input and result through correlation', () => {
+    const store = createDesktopStore();
+    // delegate_task call
+    store.applyMessages('s', [{
+      view: {
+        id: 'del-1', seq: 1, createdAt: 10, role: 'agent', kind: 'tool', text: 'delegate_task',
+        toolData: {
+          callId: 'd1', name: 'delegate_task',
+          input: { tasks: [{ id: 'a1', description: 'fix auth', role: 'worker' }] },
+        },
+      },
+    }]);
+    // delegate_task result with progress
+    store.applyMessages('s', [{
+      view: { id: 'del-res-1', seq: 2, createdAt: 20, role: 'agent', kind: 'tool', text: '' },
+      toolResult: {
+        callId: 'd1',
+        result: { details: { progress: [{ id: 'a1', status: 'running', toolCount: 3, tokens: 5000 }] } },
+        error: false,
+      },
+    }]);
+    const messages = store.getSnapshot().messages['s'];
+    expect(messages).toHaveLength(1);
+    const toolData = messages[0].toolData!;
+    expect(toolData.name).toBe('delegate_task');
+    expect(toolData.input).toMatchObject({ tasks: [{ id: 'a1', description: 'fix auth', role: 'worker' }] });
+    expect(toolData.result).toMatchObject({
+      details: { progress: [{ id: 'a1', status: 'running', toolCount: 3, tokens: 5000 }] },
+    });
+  });
 });

@@ -1742,6 +1742,39 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
             });
         });
 
+        it.each([
+            ['completed', 'completed'],
+            ['failed', 'error'],
+            ['cancelled', 'aborted'],
+        ] as const)('preserves sidechain turn-end status %s as %s', (wireStatus, status) => {
+            const subagentId = createId();
+            const normalized = normalizeRawMessage(`db-sidechain-${wireStatus}`, null, 1, {
+                ...base,
+                content: {
+                    type: 'session',
+                    data: {
+                        id: `env-sidechain-${wireStatus}`,
+                        time: 1,
+                        role: 'agent',
+                        turn: subagentId,
+                        subagent: subagentId,
+                        ev: { t: 'turn-end', status: wireStatus }
+                    }
+                }
+            });
+
+            expect(normalized).toMatchObject({
+                role: 'agent',
+                isSidechain: true,
+                content: [{
+                    type: 'subagent-lifecycle',
+                    subagentId,
+                    status,
+                    parentUUID: subagentId
+                }]
+            });
+        });
+
         it('normalizes file events with required size and optional image metadata', () => {
             const fileOnly = normalizeRawMessage('db-file-1', null, 1, {
                 ...base,
@@ -1880,7 +1913,7 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
             }
         });
 
-        it('drops start/stop lifecycle markers', () => {
+        it('preserves start/stop lifecycle markers as sidechain state', () => {
             const subagent = createId();
             const start = normalizeRawMessage('db-start-1', null, 1, {
                 ...base,
@@ -1896,7 +1929,17 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
                     }
                 }
             });
-            expect(start).toBeNull();
+            expect(start).toMatchObject({
+                role: 'agent',
+                isSidechain: true,
+                content: [{
+                    type: 'subagent-lifecycle',
+                    subagentId: subagent,
+                    status: 'running',
+                    title: 'Research agent',
+                    parentUUID: subagent
+                }]
+            });
 
             const stop = normalizeRawMessage('db-stop-1', null, 1, {
                 ...base,
@@ -1912,7 +1955,16 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
                     }
                 }
             });
-            expect(stop).toBeNull();
+            expect(stop).toMatchObject({
+                role: 'agent',
+                isSidechain: true,
+                content: [{
+                    type: 'subagent-lifecycle',
+                    subagentId: subagent,
+                    status: 'completed',
+                    parentUUID: subagent
+                }]
+            });
         });
 
         it('returns null for non-cuid subagent identifiers', () => {

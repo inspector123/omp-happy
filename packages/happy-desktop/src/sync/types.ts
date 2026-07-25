@@ -36,6 +36,29 @@ export interface MessageView {
   kind: 'text' | 'thinking' | 'tool' | 'event';
   text: string;           // rendered plaintext (tool => summary line)
   raw?: unknown;          // decrypted payload for future rich renderers
+  /** Structured data for tool-kind messages (callId, name, input, result, error). */
+  toolData?: ToolData;
+  /** Opaque subagent ID for future child timeline correlation. */
+  subagentId?: string;
+}
+
+/**
+ * Structured payload attached to a tool-kind MessageView.
+ * Carries the ACP tool-call start data and, when correlated, the matching tool-result.
+ */
+export interface ToolData {
+  /** ACP callId — correlates a tool-call with its later tool-result. */
+  callId?: string;
+  /** Tool name (e.g. "delegate_task", "Bash", "Read"). */
+  name: string;
+  /** Original input object from the tool-call. */
+  input?: unknown;
+  /** Result payload from the correlated tool-result (set after correlation). */
+  result?: unknown;
+  /** True when the correlated tool-result reported an error. */
+  error?: boolean;
+  /** Child message IDs nested under this tool (child timeline for delegate_task). */
+  childMessageIds?: string[];
 }
 
 export interface DesktopState {

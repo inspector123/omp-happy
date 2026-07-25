@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { isCuid } from '@paralleldrive/cuid2';
 
 import type { Credentials } from '@/persistence';
 
@@ -21,6 +22,7 @@ const mocks = vi.hoisted(() => {
   let listeningHandler: BridgeEventHandler | null = null;
   let killSessionHandler: (() => Promise<void>) | null = null;
   const bridgeDataHandlers = new Map<object, BridgeDataHandler>();
+  const bridgeCloseHandlers = new Map<object, BridgeEventHandler>();
 
   const createBridgeSocket = () => {
     const socket = {
@@ -30,6 +32,7 @@ const mocks = vi.hoisted(() => {
       destroy: vi.fn(),
       on: vi.fn((event: string, handler: BridgeEventHandler) => {
         if (event === 'data') bridgeDataHandlers.set(socket, handler as BridgeDataHandler);
+        if (event === 'close') bridgeCloseHandlers.set(socket, handler);
         return socket;
       }),
     };
@@ -119,11 +122,15 @@ const mocks = vi.hoisted(() => {
     emitBridgeFrameOn: (socket: object, frame: unknown) => {
       bridgeDataHandlers.get(socket)?.(`${JSON.stringify(frame)}\n`);
     },
+    emitBridgeClose: (socket: object) => {
+      bridgeCloseHandlers.get(socket)?.();
+    },
     resetHandlers: () => {
       userMessageHandler = null;
       fileEventHandler = null;
       bridgeConnectionHandler = null;
       bridgeDataHandlers.clear();
+      bridgeCloseHandlers.clear();
       listeningHandler = null;
       killSessionHandler = null;
     },
@@ -283,7 +290,7 @@ describe('runOmp', () => {
     await settleMicrotasks();
 
     expect(mocks.mockSpawnPty).toHaveBeenCalledWith(
-      expect.stringMatching(/(?:^omp$|\/\.local\/bin\/omp$)/),
+      expect.stringMatching(/(?:^|[/\\])omp(?:\.exe)?$/),
       ['--allow-home', '--extension', expect.stringMatching(/scripts\/omp-happy-bridge\.mjs$/), '--model', 'test-model', '--config', expect.stringMatching(/scripts\/omp-happy-config\.overlay\.yml$/)],
       expect.objectContaining({
         cwd: process.cwd(),
@@ -509,6 +516,701 @@ describe('runOmp', () => {
     expect(childSocket.write).not.toHaveBeenCalled();
     expect(mocks.mockBridgeSocket.write).toHaveBeenCalledTimes(1);
 
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
+  it('attaches concurrent child streams by progress id rather than socket order', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-root-sidechains' });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_start' } });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_start',
+        toolCallId: 'delegate-parent',
+        toolName: 'task',
+        args: {
+          tasks: [
+            { name: 'AlphaWorker', task: 'Handle alpha' },
+            { name: 'BetaWorker', task: 'Handle beta' },
+          ],
+        },
+      },
+    });
+
+    const delegateMessage = mocks.mockSession.sendAgentMessage.mock.calls
+      .map((call) => call[1])
+      .find((message) => isRecord(message) && message.type === 'tool-call' && message.callId === 'delegate-parent');
+    if (!isRecord(delegateMessage) || !isRecord(delegateMessage.input) || !Array.isArray(delegateMessage.input.tasks)) {
+      throw new Error('Expected normalized delegate task input');
+    }
+    const alphaTask = delegateMessage.input.tasks[0];
+    const betaTask = delegateMessage.input.tasks[1];
+    if (!isRecord(alphaTask) || !isRecord(betaTask)) throw new Error('Expected two delegate tasks');
+    const alphaSubagent = alphaTask.sessionSubagent;
+    const betaSubagent = betaTask.sessionSubagent;
+    expect(typeof alphaSubagent === 'string' && isCuid(alphaSubagent)).toBe(true);
+    expect(typeof betaSubagent === 'string' && isCuid(betaSubagent)).toBe(true);
+    expect(alphaSubagent).not.toBe(betaSubagent);
+
+    const betaSocket = mocks.connectBridgeSocket();
+    mocks.emitBridgeFrameOn(betaSocket, {
+      type: 'ready',
+      protocolVersion: 1,
+      sessionId: 'omp-child-beta',
+      sessionFile: '/tmp/root/BetaWorker.jsonl',
+    });
+    mocks.emitBridgeFrameOn(betaSocket, {
+      type: 'agent_event',
+      event: {
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          id: 'beta-message',
+          content: [
+            { type: 'thinking', thinking: 'Beta reasoning' },
+            { type: 'text', text: 'Beta finished' },
+          ],
+        },
+      },
+    });
+    const alphaSocket = mocks.connectBridgeSocket();
+    mocks.emitBridgeFrameOn(alphaSocket, {
+      type: 'ready',
+      protocolVersion: 1,
+      sessionId: 'omp-child-alpha',
+      sessionFile: '/tmp/root/AlphaWorker.jsonl',
+    });
+    mocks.emitBridgeFrameOn(alphaSocket, {
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_start',
+        toolCallId: 'shared-tool-id',
+        toolName: 'read',
+        args: { path: '/tmp/alpha.ts' },
+      },
+    });
+    expect(mocks.mockSession.sendSessionProtocolMessage).not.toHaveBeenCalled();
+
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_update',
+        toolCallId: 'delegate-parent',
+        toolName: 'task',
+        partialResult: {
+          details: {
+            progress: [
+              { index: 1, id: 'BetaWorker', status: 'running' },
+              { index: 0, id: 'AlphaWorker', status: 'running' },
+            ],
+          },
+        },
+      },
+    });
+    mocks.emitBridgeFrameOn(alphaSocket, {
+      type: 'agent_event',
+      event: {
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          id: 'alpha-message',
+          content: [{ type: 'text', text: 'Alpha finished' }],
+        },
+      },
+    });
+    mocks.emitBridgeFrameOn(alphaSocket, {
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_end',
+        toolCallId: 'shared-tool-id',
+        toolName: 'read',
+        result: { ok: true },
+      },
+    });
+    mocks.emitBridgeFrameOn(betaSocket, { type: 'agent_event', event: { type: 'session_shutdown' } });
+    mocks.emitBridgeFrameOn(alphaSocket, { type: 'agent_event', event: { type: 'session_shutdown' } });
+
+    const envelopes = mocks.mockSession.sendSessionProtocolMessage.mock.calls
+      .map((call) => call[0])
+      .filter(isRecord);
+    expect(envelopes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ subagent: alphaSubagent, ev: { t: 'start', title: 'AlphaWorker' } }),
+      expect.objectContaining({ subagent: betaSubagent, ev: { t: 'start', title: 'BetaWorker' } }),
+      expect.objectContaining({ subagent: alphaSubagent, ev: { t: 'text', text: 'Alpha finished' } }),
+      expect.objectContaining({ subagent: betaSubagent, ev: { t: 'text', text: 'Beta reasoning', thinking: true } }),
+      expect.objectContaining({ subagent: betaSubagent, ev: { t: 'text', text: 'Beta finished' } }),
+      expect.objectContaining({ subagent: alphaSubagent, ev: { t: 'stop' } }),
+      expect.objectContaining({ subagent: betaSubagent, ev: { t: 'stop' } }),
+    ]));
+    const childToolStart = envelopes.find((envelope) => (
+      envelope.subagent === alphaSubagent
+      && isRecord(envelope.ev)
+      && envelope.ev.t === 'tool-call-start'
+    ));
+    expect(isRecord(childToolStart?.ev) ? childToolStart.ev.call : undefined)
+      .toBe(`omp-child:${alphaSubagent}:shared-tool-id`);
+
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: { type: 'tool_execution_end', toolCallId: 'delegate-parent', toolName: 'task', result: {} },
+    });
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_end' } });
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
+  it('recursively binds a grandchild that connects before its parent mapping replays', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-root-recursive' });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_start' } });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_start',
+        toolCallId: 'root-delegate',
+        toolName: 'task',
+        args: { tasks: [{ name: 'ParentWorker', task: 'Spawn nested work' }] },
+      },
+    });
+
+    const rootDelegate = mocks.mockSession.sendAgentMessage.mock.calls
+      .map((call) => call[1])
+      .find((message) => isRecord(message) && message.type === 'tool-call' && message.callId === 'root-delegate');
+    if (!isRecord(rootDelegate) || !isRecord(rootDelegate.input) || !Array.isArray(rootDelegate.input.tasks)) {
+      throw new Error('Expected root delegate input');
+    }
+    const parentTask = rootDelegate.input.tasks[0];
+    if (!isRecord(parentTask) || typeof parentTask.sessionSubagent !== 'string') {
+      throw new Error('Expected parent session subagent');
+    }
+    const parentSubagent = parentTask.sessionSubagent;
+
+    const parentSocket = mocks.connectBridgeSocket();
+    mocks.emitBridgeFrameOn(parentSocket, {
+      type: 'ready',
+      protocolVersion: 1,
+      sessionId: 'omp-parent-worker',
+      sessionFile: '/tmp/root/ParentWorker.jsonl',
+    });
+    const grandchildSocket = mocks.connectBridgeSocket();
+    mocks.emitBridgeFrameOn(grandchildSocket, {
+      type: 'ready',
+      protocolVersion: 1,
+      sessionId: 'omp-grand-worker',
+      sessionFile: '/tmp/root/ParentWorker/ParentWorker.GrandWorker.jsonl',
+    });
+    mocks.emitBridgeFrameOn(grandchildSocket, {
+      type: 'agent_event',
+      event: {
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          id: 'grandchild-output',
+          content: [{ type: 'text', text: 'Grandchild finished' }],
+        },
+      },
+    });
+    mocks.emitBridgeFrameOn(parentSocket, {
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_start',
+        toolCallId: 'nested-delegate',
+        toolName: 'task',
+        args: { tasks: [{ name: 'GrandWorker', task: 'Do nested work' }] },
+      },
+    });
+    mocks.emitBridgeFrameOn(parentSocket, {
+      type: 'subagent_lifecycle',
+      payload: {
+        id: 'ParentWorker.GrandWorker',
+        parentToolCallId: 'nested-delegate',
+        index: 0,
+        status: 'started',
+        sessionFile: '/tmp/root/ParentWorker/ParentWorker.GrandWorker.jsonl',
+        detached: true,
+      },
+    });
+    expect(mocks.mockSession.sendSessionProtocolMessage).not.toHaveBeenCalled();
+
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_update',
+        toolCallId: 'root-delegate',
+        toolName: 'task',
+        partialResult: {
+          details: { progress: [{ index: 0, id: 'ParentWorker', status: 'running' }] },
+        },
+      },
+    });
+
+    const envelopes = mocks.mockSession.sendSessionProtocolMessage.mock.calls
+      .map((call) => call[0])
+      .filter(isRecord);
+    const nestedDelegate = envelopes.find((envelope) => (
+      envelope.subagent === parentSubagent
+      && isRecord(envelope.ev)
+      && envelope.ev.t === 'tool-call-start'
+      && envelope.ev.name === 'delegate_task'
+    ));
+    if (!isRecord(nestedDelegate?.ev) || !isRecord(nestedDelegate.ev.args) || !Array.isArray(nestedDelegate.ev.args.tasks)) {
+      throw new Error('Expected nested delegate envelope');
+    }
+    const grandchildTask = nestedDelegate.ev.args.tasks[0];
+    if (!isRecord(grandchildTask) || typeof grandchildTask.sessionSubagent !== 'string') {
+      throw new Error('Expected grandchild session subagent');
+    }
+    const grandchildSubagent = grandchildTask.sessionSubagent;
+    expect(isCuid(grandchildSubagent)).toBe(true);
+    expect(envelopes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ subagent: parentSubagent, ev: { t: 'start', title: 'ParentWorker' } }),
+      expect.objectContaining({ subagent: grandchildSubagent, ev: { t: 'start', title: 'GrandWorker' } }),
+      expect.objectContaining({ subagent: grandchildSubagent, ev: { t: 'text', text: 'Grandchild finished' } }),
+    ]));
+
+    mocks.emitBridgeFrameOn(parentSocket, {
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_end',
+        toolCallId: 'nested-delegate',
+        toolName: 'task',
+        result: {},
+      },
+    });
+    mocks.emitBridgeFrameOn(parentSocket, {
+      type: 'subagent_lifecycle',
+      payload: {
+        id: 'ParentWorker.GrandWorker',
+        parentToolCallId: 'nested-delegate',
+        index: 0,
+        status: 'completed',
+        sessionFile: '/tmp/root/ParentWorker/ParentWorker.GrandWorker.jsonl',
+        detached: true,
+      },
+    });
+    mocks.emitBridgeFrameOn(parentSocket, { type: 'agent_event', event: { type: 'session_shutdown' } });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: { type: 'tool_execution_end', toolCallId: 'root-delegate', toolName: 'task', result: {} },
+    });
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_end' } });
+    const finalEnvelopes = mocks.mockSession.sendSessionProtocolMessage.mock.calls
+      .map((call) => call[0])
+      .filter(isRecord);
+    expect(finalEnvelopes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ subagent: grandchildSubagent, ev: { t: 'stop' } }),
+      expect.objectContaining({ subagent: grandchildSubagent, ev: { t: 'turn-end', status: 'completed' } }),
+      expect.objectContaining({ subagent: parentSubagent, ev: { t: 'stop' } }),
+    ]));
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
+  it('continues relaying a detached child after the parent delegate tool and turn end', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-root-detached' });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_start' } });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_start',
+        toolCallId: 'detached-delegate',
+        toolName: 'task',
+        args: { tasks: [{ name: 'DetachedWorker', task: 'Keep working' }] },
+      },
+    });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_update',
+        toolCallId: 'detached-delegate',
+        toolName: 'task',
+        partialResult: {
+          details: { progress: [{ index: 0, id: 'DetachedWorker', status: 'running' }] },
+        },
+      },
+    });
+    const delegateMessage = mocks.mockSession.sendAgentMessage.mock.calls
+      .map((call) => call[1])
+      .find((message) => isRecord(message) && message.type === 'tool-call' && message.callId === 'detached-delegate');
+    if (!isRecord(delegateMessage) || !isRecord(delegateMessage.input) || !Array.isArray(delegateMessage.input.tasks)) {
+      throw new Error('Expected detached delegate input');
+    }
+    const detachedTask = delegateMessage.input.tasks[0];
+    if (!isRecord(detachedTask) || typeof detachedTask.sessionSubagent !== 'string') {
+      throw new Error('Expected detached session subagent');
+    }
+    const detachedSubagent = detachedTask.sessionSubagent;
+
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_end',
+        toolCallId: 'detached-delegate',
+        toolName: 'task',
+        result: {},
+      },
+    });
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_end' } });
+
+    const detachedSocket = mocks.connectBridgeSocket();
+    mocks.emitBridgeFrameOn(detachedSocket, {
+      type: 'ready',
+      protocolVersion: 1,
+      sessionId: 'omp-detached-worker',
+      sessionFile: '/tmp/root/DetachedWorker.jsonl',
+    });
+    mocks.emitBridgeFrameOn(detachedSocket, {
+      type: 'agent_event',
+      event: {
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          id: 'detached-message',
+          content: [{ type: 'text', text: 'Detached output after parent completion' }],
+        },
+      },
+    });
+    mocks.emitBridgeFrameOn(detachedSocket, {
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_start',
+        toolCallId: 'detached-tool',
+        toolName: 'read',
+        args: { path: '/tmp/detached.ts' },
+      },
+    });
+    mocks.emitBridgeFrameOn(detachedSocket, {
+      type: 'agent_event',
+      event: { type: 'tool_execution_end', toolCallId: 'detached-tool', toolName: 'read', result: {} },
+    });
+    mocks.emitBridgeFrameOn(detachedSocket, { type: 'agent_event', event: { type: 'agent_end' } });
+
+    let envelopes = mocks.mockSession.sendSessionProtocolMessage.mock.calls
+      .map((call) => call[0])
+      .filter(isRecord);
+    expect(envelopes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        subagent: detachedSubagent,
+        ev: { t: 'text', text: 'Detached output after parent completion' },
+      }),
+      expect.objectContaining({
+        subagent: detachedSubagent,
+        ev: expect.objectContaining({ t: 'tool-call-start', name: 'read' }),
+      }),
+    ]));
+    expect(envelopes.some((envelope) => (
+      envelope.subagent === detachedSubagent && isRecord(envelope.ev) && envelope.ev.t === 'stop'
+    ))).toBe(false);
+
+    mocks.emitBridgeFrame({
+      type: 'subagent_lifecycle',
+      payload: {
+        id: 'DetachedWorker',
+        parentToolCallId: 'detached-delegate',
+        index: 0,
+        status: 'completed',
+        sessionFile: '/tmp/root/DetachedWorker.jsonl',
+        detached: true,
+      },
+    });
+    envelopes = mocks.mockSession.sendSessionProtocolMessage.mock.calls
+      .map((call) => call[0])
+      .filter(isRecord);
+    expect(envelopes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        subagent: detachedSubagent,
+        ev: { t: 'turn-end', status: 'completed' },
+      }),
+    ]));
+    expect(envelopes.some((envelope) => (
+      envelope.subagent === detachedSubagent && isRecord(envelope.ev) && envelope.ev.t === 'stop'
+    ))).toBe(true);
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
+  it.each([
+    ['failed', 'failed'],
+    ['aborted', 'cancelled'],
+  ] as const)('uses terminal lifecycle %s after a default-detached parent tool ends', async (lifecycleStatus, turnStatus) => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+    const workerName = lifecycleStatus === 'failed' ? 'FailedWorker' : 'AbortedWorker';
+    const callId = `detached-${lifecycleStatus}`;
+
+    mocks.emitBridgeFrame({
+      type: 'ready',
+      protocolVersion: 1,
+      sessionId: `omp-root-${lifecycleStatus}`,
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_start' } });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_start',
+        toolCallId: callId,
+        toolName: 'task',
+        args: { tasks: [{ name: workerName, task: 'Finish after the parent turn' }] },
+      },
+    });
+    const delegateMessage = mocks.mockSession.sendAgentMessage.mock.calls
+      .map((call) => call[1])
+      .find((message) => isRecord(message) && message.type === 'tool-call' && message.callId === callId);
+    if (!isRecord(delegateMessage) || !isRecord(delegateMessage.input) || !Array.isArray(delegateMessage.input.tasks)) {
+      throw new Error('Expected detached delegate input');
+    }
+    const task = delegateMessage.input.tasks[0];
+    if (!isRecord(task) || typeof task.sessionSubagent !== 'string') {
+      throw new Error('Expected detached session subagent');
+    }
+    const subagent = task.sessionSubagent;
+
+    const childSocket = mocks.connectBridgeSocket();
+    mocks.emitBridgeFrameOn(childSocket, {
+      type: 'ready',
+      protocolVersion: 1,
+      sessionId: `omp-child-${lifecycleStatus}`,
+      sessionFile: `/tmp/root/${workerName}.jsonl`,
+    });
+    mocks.emitBridgeFrameOn(childSocket, { type: 'agent_event', event: { type: 'agent_end' } });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: { type: 'tool_execution_end', toolCallId: callId, toolName: 'task', result: {} },
+    });
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_end' } });
+    mocks.emitBridgeFrame({
+      type: 'subagent_lifecycle',
+      payload: {
+        id: workerName,
+        parentToolCallId: callId,
+        index: 0,
+        status: lifecycleStatus,
+        sessionFile: `/tmp/root/${workerName}.jsonl`,
+        detached: true,
+      },
+    });
+
+    const envelopes = mocks.mockSession.sendSessionProtocolMessage.mock.calls
+      .map((call) => call[0])
+      .filter(isRecord);
+    expect(envelopes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ subagent, ev: { t: 'start', title: workerName } }),
+      expect.objectContaining({ subagent, ev: { t: 'turn-end', status: turnStatus } }),
+      expect.objectContaining({ subagent, ev: { t: 'stop' } }),
+    ]));
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
+  it('keeps a child mapping across transient socket reconnect without duplicate lifecycle markers', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-root-reconnect' });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_start' } });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_start',
+        toolCallId: 'reconnect-delegate',
+        toolName: 'task',
+        args: { tasks: [{ name: 'ReconnectWorker', task: 'Survive reconnect' }] },
+      },
+    });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_update',
+        toolCallId: 'reconnect-delegate',
+        toolName: 'task',
+        partialResult: {
+          details: { progress: [{ index: 0, id: 'ReconnectWorker', status: 'running' }] },
+        },
+      },
+    });
+    const delegateMessage = mocks.mockSession.sendAgentMessage.mock.calls
+      .map((call) => call[1])
+      .find((message) => isRecord(message) && message.type === 'tool-call' && message.callId === 'reconnect-delegate');
+    if (!isRecord(delegateMessage) || !isRecord(delegateMessage.input) || !Array.isArray(delegateMessage.input.tasks)) {
+      throw new Error('Expected reconnect delegate input');
+    }
+    const reconnectTask = delegateMessage.input.tasks[0];
+    if (!isRecord(reconnectTask) || typeof reconnectTask.sessionSubagent !== 'string') {
+      throw new Error('Expected reconnect session subagent');
+    }
+    const reconnectSubagent = reconnectTask.sessionSubagent;
+
+    const firstSocket = mocks.connectBridgeSocket();
+    mocks.emitBridgeFrameOn(firstSocket, {
+      type: 'ready',
+      protocolVersion: 1,
+      sessionId: 'omp-reconnect-worker',
+      sessionFile: '/tmp/root/ReconnectWorker.jsonl',
+    });
+    mocks.emitBridgeFrameOn(firstSocket, {
+      type: 'agent_event',
+      event: {
+        type: 'message_end',
+        message: { role: 'assistant', id: 'before-reconnect', content: [{ type: 'text', text: 'Before reconnect' }] },
+      },
+    });
+    mocks.emitBridgeClose(firstSocket);
+
+    let envelopes = mocks.mockSession.sendSessionProtocolMessage.mock.calls
+      .map((call) => call[0])
+      .filter(isRecord);
+    expect(envelopes.some((envelope) => (
+      envelope.subagent === reconnectSubagent && isRecord(envelope.ev) && envelope.ev.t === 'stop'
+    ))).toBe(false);
+
+    const secondSocket = mocks.connectBridgeSocket();
+    mocks.emitBridgeFrameOn(secondSocket, {
+      type: 'ready',
+      protocolVersion: 1,
+      sessionId: 'omp-reconnect-worker',
+      sessionFile: '/tmp/root/ReconnectWorker.jsonl',
+    });
+    mocks.emitBridgeFrameOn(secondSocket, {
+      type: 'agent_event',
+      event: {
+        type: 'message_end',
+        message: { role: 'assistant', id: 'after-reconnect', content: [{ type: 'text', text: 'After reconnect' }] },
+      },
+    });
+    mocks.emitBridgeFrameOn(secondSocket, { type: 'agent_event', event: { type: 'session_shutdown' } });
+
+    envelopes = mocks.mockSession.sendSessionProtocolMessage.mock.calls
+      .map((call) => call[0])
+      .filter(isRecord);
+    const lifecycle = envelopes.filter((envelope) => (
+      envelope.subagent === reconnectSubagent
+      && isRecord(envelope.ev)
+      && (envelope.ev.t === 'start' || envelope.ev.t === 'stop')
+    ));
+    expect(lifecycle.filter((envelope) => isRecord(envelope.ev) && envelope.ev.t === 'start')).toHaveLength(1);
+    expect(lifecycle.filter((envelope) => isRecord(envelope.ev) && envelope.ev.t === 'stop')).toHaveLength(1);
+    expect(envelopes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ subagent: reconnectSubagent, ev: { t: 'text', text: 'Before reconnect' } }),
+      expect.objectContaining({ subagent: reconnectSubagent, ev: { t: 'text', text: 'After reconnect' } }),
+    ]));
+
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: { type: 'tool_execution_end', toolCallId: 'reconnect-delegate', toolName: 'task', result: {} },
+    });
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_end' } });
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
+  it('drops unmatched, duplicate, and metadata-free child streams', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-root-rejections' });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_start' } });
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_start',
+        toolCallId: 'delegate-rejections',
+        toolName: 'task',
+        args: { tasks: [{ name: 'ExpectedWorker', task: 'Expected task' }] },
+      },
+    });
+
+    for (const sessionId of ['duplicate-a', 'duplicate-b']) {
+      const socket = mocks.connectBridgeSocket();
+      mocks.emitBridgeFrameOn(socket, {
+        type: 'ready',
+        protocolVersion: 1,
+        sessionId,
+        sessionFile: '/tmp/root/ExpectedWorker.jsonl',
+      });
+      mocks.emitBridgeFrameOn(socket, {
+        type: 'agent_event',
+        event: {
+          type: 'message_end',
+          message: { role: 'assistant', content: [{ type: 'text', text: sessionId }] },
+        },
+      });
+    }
+    const unmatchedSocket = mocks.connectBridgeSocket();
+    mocks.emitBridgeFrameOn(unmatchedSocket, {
+      type: 'ready',
+      protocolVersion: 1,
+      sessionId: 'unmatched',
+      sessionFile: '/tmp/root/OtherWorker.jsonl',
+    });
+    mocks.emitBridgeFrameOn(unmatchedSocket, {
+      type: 'agent_event',
+      event: {
+        type: 'message_end',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'unmatched output' }] },
+      },
+    });
+    const metadataFreeSocket = mocks.connectBridgeSocket();
+    mocks.emitBridgeFrameOn(metadataFreeSocket, {
+      type: 'ready',
+      protocolVersion: 1,
+      sessionId: 'metadata-free',
+    });
+    mocks.emitBridgeFrameOn(metadataFreeSocket, {
+      type: 'agent_event',
+      event: {
+        type: 'message_end',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'metadata-free output' }] },
+      },
+    });
+
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_update',
+        toolCallId: 'delegate-rejections',
+        toolName: 'task',
+        partialResult: {
+          details: { progress: [{ index: 0, id: 'ExpectedWorker', status: 'running' }] },
+        },
+      },
+    });
+    expect(mocks.mockSession.sendSessionProtocolMessage).not.toHaveBeenCalled();
+
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: { type: 'tool_execution_end', toolCallId: 'delegate-rejections', toolName: 'task', result: {} },
+    });
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_end' } });
     child.emitExit(0);
     await vi.advanceTimersByTimeAsync(200);
     await runPromise;

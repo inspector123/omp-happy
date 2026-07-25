@@ -294,6 +294,68 @@ describe('reducerTracer', () => {
             expect(traced[0].sidechainId).toBe('parent-agent-msg');
         });
 
+        it('should index every delegate task session subagent under the parent tool message', () => {
+            const state = createTracer();
+            const parentToolMessage: NormalizedMessage = {
+                id: 'delegate-parent-msg',
+                localId: null,
+                createdAt: 1000,
+                role: 'agent',
+                isSidechain: false,
+                content: [{
+                    type: 'tool-call',
+                    id: 'delegate-parent-call',
+                    name: 'delegate_task',
+                    input: {
+                        tasks: [
+                            { id: 'AlphaWorker', sessionSubagent: 'session-alpha' },
+                            { id: 'BetaWorker', sessionSubagent: 'session-beta' },
+                        ],
+                    },
+                    description: null,
+                    uuid: 'delegate-parent-uuid',
+                    parentUUID: null
+                }]
+            };
+
+            traceMessages(state, [parentToolMessage]);
+            const childMessages: NormalizedMessage[] = [
+                {
+                    id: 'delegate-child-alpha',
+                    localId: null,
+                    createdAt: 2000,
+                    role: 'agent',
+                    isSidechain: true,
+                    content: [{
+                        type: 'text',
+                        text: 'alpha output',
+                        uuid: 'delegate-child-alpha-uuid',
+                        parentUUID: 'session-alpha'
+                    }]
+                },
+                {
+                    id: 'delegate-child-beta',
+                    localId: null,
+                    createdAt: 2001,
+                    role: 'agent',
+                    isSidechain: true,
+                    content: [{
+                        type: 'text',
+                        text: 'beta output',
+                        uuid: 'delegate-child-beta-uuid',
+                        parentUUID: 'session-beta'
+                    }]
+                }
+            ];
+
+            const traced = traceMessages(state, childMessages);
+            expect(traced).toHaveLength(2);
+            expect(traced.map((message) => message.sidechainId)).toEqual([
+                'delegate-parent-msg',
+                'delegate-parent-msg'
+            ]);
+        });
+
         it('should buffer orphan messages until parent arrives', () => {
             const state = createTracer();
             

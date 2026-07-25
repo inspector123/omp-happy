@@ -118,11 +118,22 @@ function isUuidLike(value: string): boolean {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
-function getToolCallParentIds(content: { id: string; input: any }): string[] {
+function getToolCallParentIds(content: { id: string; name: string; input: unknown }): string[] {
     const ids = new Set<string>([content.id]);
-    const sessionSubagent = content.input?.sessionSubagent;
+    const input = typeof content.input === 'object' && content.input !== null ? content.input : null;
+    const sessionSubagent = input && 'sessionSubagent' in input ? input.sessionSubagent : undefined;
     if (typeof sessionSubagent === 'string' && sessionSubagent.length > 0) {
         ids.add(sessionSubagent);
+    }
+    const tasks = input && 'tasks' in input ? input.tasks : undefined;
+    if (content.name === 'delegate_task' && Array.isArray(tasks)) {
+        for (const task of tasks) {
+            if (typeof task !== 'object' || task === null || !('sessionSubagent' in task)) continue;
+            const taskSubagent = task.sessionSubagent;
+            if (typeof taskSubagent === 'string' && taskSubagent.length > 0) {
+                ids.add(taskSubagent);
+            }
+        }
     }
     return [...ids];
 }

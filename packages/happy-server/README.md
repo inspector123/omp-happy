@@ -22,55 +22,77 @@ Happy Server is the synchronization backbone for secure Claude Code clients. It 
 
 Your Claude Code clients generate encryption keys locally and use Happy Server as a secure relay. Messages are end-to-end encrypted before leaving your device. The server's job is simple: store encrypted blobs and sync them between your devices in real-time.
 
-## Hosting
+## Hosting choices
 
-**You don't need to self-host!** Our free cloud Happy Server at `happy-api.slopus.com` is just as secure as running your own. Since all data is end-to-end encrypted before it reaches our servers, we literally cannot read your messages even if we wanted to. The encryption happens on your device, and only you have the keys.
+Upstream Happy clients can use the official hosted service, but self-hosted
+clients must explicitly select the operator's own origin. The app, CLI/daemon,
+and Electron client must all use that same server; accounts and credentials are
+server-specific.
 
-That said, Happy Server is open source and self-hostable if you prefer running your own infrastructure. The security model is identical whether you use our servers or your own.
+### Local server from this repository
 
-## Self-Hosting with Docker
+From the monorepo root:
 
-The standalone Docker image runs everything in a single container with no external dependencies (no Postgres, no Redis, no S3).
+```bash
+pnpm install
+export HAPPY_HOME_DIR="$HOME/.happy-self-host"
+pnpm run self-host:dev
+curl --fail http://127.0.0.1:3005/health
+```
+
+The root script builds the local CLI and invokes `happy server`, which generates
+a persistent 32-byte master secret, migrates embedded PGlite, uses local file
+storage, and keeps all server data under
+`$HAPPY_HOME_DIR/server-data`. No external services are required.
+
+For a trusted LAN, use an explicit client-reachable origin:
+
+```bash
+pnpm run self-host:dev -- \
+  --host 0.0.0.0 \
+  --public-url http://192.168.1.20:3005
+```
+
+Use [`../../SETUP.md`](../../SETUP.md) to link clients and
+[`../../docs/deployment.md`](../../docs/deployment.md) for TLS, production
+secrets, backups, S3, PostgreSQL, and Redis.
+
+### Standalone Docker image
+
+The root `Dockerfile` runs PGlite, local files, and an in-process event bus in
+one container:
 
 ```bash
 docker build -t happy-server -f Dockerfile .
-```
-
-Run from the monorepo root:
-
-```bash
-docker run -p 3005:3005 \
-  -e HANDY_MASTER_SECRET=<your-secret> \
+docker run --name happy-server \
+  -p 127.0.0.1:3005:3005 \
+  -e HOST=0.0.0.0 \
+  -e PUBLIC_URL=https://happy.example \
+  -e HANDY_MASTER_SECRET="$(openssl rand -hex 32)" \
   -v happy-data:/data \
   happy-server
 ```
 
-This uses:
-- **PGlite** - embedded PostgreSQL (data stored in `/data/pglite`)
-- **Local filesystem** - for file uploads (stored in `/data/files`)
-- **In-memory event bus** - no Redis needed
+For a durable deployment, persist the generated secret outside shell history
+and back it up with the `happy-data` volume; the complete production command is
+in the deployment guide. Put the container behind HTTPS/WSS before exposing it
+publicly.
 
-Data persists in the `happy-data` Docker volume across container restarts.
-
-### Environment Variables
+### Standalone environment variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `HANDY_MASTER_SECRET` | Yes | - | Master secret for auth/encryption |
-| `PUBLIC_URL` | No | `http://localhost:3005` | Public base URL for file URLs sent to clients |
-| `PORT` | No | `3005` | Server port |
-| `DATA_DIR` | No | `/data` | Base data directory |
-| `PGLITE_DIR` | No | `/data/pglite` | PGlite database directory |
+| `HANDY_MASTER_SECRET` | Yes | - | Persistent high-entropy server secret |
+| `HOST` | No | `0.0.0.0` | Listen address |
+| `PORT` | No | `3005` | HTTP and Socket.IO port |
+| `PUBLIC_URL` | Recommended | `http://localhost:3005` | Client-reachable origin used for local file URLs |
+| `DATA_DIR` | No | `./data` (`/data` in Docker) | PGlite and local-file base directory |
+| `PGLITE_DIR` | No | `$DATA_DIR/pglite` | PGlite database directory |
 
-### Optional: External Services
-
-To use external Postgres or Redis instead of the embedded defaults, set:
-
-| Variable | Description |
-|----------|-------------|
-| `DATABASE_URL` | PostgreSQL connection URL (bypasses PGlite) |
-| `REDIS_URL` | Redis connection URL |
-| `S3_HOST` | S3/MinIO host (bypasses local file storage) |
+The standalone runtime does not require `DATABASE_URL`, `REDIS_URL`, or S3.
+External PostgreSQL and multi-replica deployments use `Dockerfile.server` or
+the Kubernetes manifests and the conditional variables documented in
+`docs/deployment.md`.
 
 ### S3 bucket configuration (when self-hosting with S3)
 

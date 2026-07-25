@@ -3,9 +3,40 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SyncEngine, defaultHappyHomeDir } from '../sync';
-import type { Credentials, DesktopState } from '../sync';
+import type { Credentials, DesktopState, SpawnSessionResult } from '../sync';
 
-const SERVER_URL = process.env.HAPPY_SERVER_URL || 'http://192.168.0.252:30003';
+type ServerConfiguration =
+  | { url: string; error: null }
+  | { url: null; error: string };
+
+function readServerConfiguration(): ServerConfiguration {
+  const value = process.env.HAPPY_SERVER_URL?.trim();
+  if (!value) {
+    return {
+      url: null,
+      error: 'HAPPY_SERVER_URL is required. Set it to the HTTP(S) origin of your Happy server before starting Electron.',
+    };
+  }
+  try {
+    const parsed = new URL(value);
+    if (
+      (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+      || parsed.username
+      || parsed.password
+      || parsed.pathname !== '/'
+      || parsed.search
+      || parsed.hash
+    ) {
+      throw new Error('expected an HTTP(S) origin with no credentials, path, query, or fragment');
+    }
+    return { url: parsed.origin, error: null };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'invalid URL';
+    return { url: null, error: `Invalid HAPPY_SERVER_URL: ${detail}` };
+  }
+}
+
+const SERVER_CONFIGURATION = readServerConfiguration();
 
 const mainDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -13,6 +44,46 @@ let mainWindow: BrowserWindow | null = null;
 let engine: SyncEngine | null = null;
 let engineError: string | null = null;
 let quitting = false;
+
+type SpawnSessionAgent = 'omp' | 'claude' | 'codex' | 'gemini' | 'openclaw';
+
+const SUPPORTED_SPAWN_AGENTS: Record<SpawnSessionAgent, true> = {
+  omp: true,
+  claude: true,
+  codex: true,
+  gemini: true,
+  openclaw: true,
+};
+
+function isSpawnSessionAgent(value: string): value is SpawnSessionAgent {
+  return Object.hasOwn(SUPPORTED_SPAWN_AGENTS, value);
+}
+
+interface SpawnSessionInput {
+  machineId: string;
+  directory: string;
+  agent: SpawnSessionAgent;
+}
+
+function parseSpawnSessionInput(value: unknown): SpawnSessionInput {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('New session details are required');
+  }
+  const input = value as Record<string, unknown>;
+  const machineId = typeof input.machineId === 'string' ? input.machineId.trim() : '';
+  const directory = typeof input.directory === 'string' ? input.directory.trim() : '';
+  const agent = typeof input.agent === 'string' ? input.agent.trim() : '';
+  if (!machineId) {
+    throw new Error('Choose a machine before starting a session');
+  }
+  if (!directory) {
+    throw new Error('Enter a directory before starting a session');
+  }
+  if (!isSpawnSessionAgent(agent)) {
+    throw new Error('Choose a supported agent before starting a session');
+  }
+  return { machineId, directory, agent };
+}
 
 
 async function loadCredentials(homeDir: string): Promise<Credentials | null> {
@@ -69,6 +140,13 @@ function errorMessage(err: unknown): string {
 }
 
 async function bootEngine(): Promise<void> {
+  if (SERVER_CONFIGURATION.url === null) {
+    const configurationError = SERVER_CONFIGURATION.error;
+    engineError = configurationError;
+    console.error('[happy-desktop]', configurationError);
+    pushState(fallbackState(configurationError));
+    return;
+  }
   const homeDir = defaultHappyHomeDir();
   const credentials = await loadCredentials(homeDir);
   if (!credentials) {
@@ -81,7 +159,7 @@ async function bootEngine(): Promise<void> {
   // sessions.json fallback inside the sync core.
   const port = await readDaemonPort(homeDir);
   engine = new SyncEngine({
-    serverUrl: SERVER_URL,
+    serverUrl: SERVER_CONFIGURATION.url,
     credentials,
     ...(port !== null ? { daemon: { port } } : {}),
   });
@@ -153,6 +231,23 @@ function registerIpc(): void {
     }
     return requireEngine().openSession(sessionId);
   });
+  ipcMain.handle('hd:spawn', (_event, input: unknown): Promise<SpawnSessionResult> => {
+    const request = parseSpawnSessionInput(input);
+    const syncEngine = requireEngine();
+    if (!syncEngine.getState().sessions.some((session) => session.machineId === request.machineId)) {
+      throw new Error('The selected machine is no longer available in synced session metadata');
+    }
+    return syncEngine.spawnSession(request.machineId, request.directory, request.agent);
+  });
+  ipcMain.handle(
+    'hd:stopSession',
+    (_event, sessionId: unknown): Promise<{ success: boolean; message: string }> => {
+      if (typeof sessionId !== 'string' || !sessionId.trim()) {
+        throw new Error('Choose an active session before stopping it');
+      }
+      return requireEngine().killSession(sessionId.trim());
+    },
+  );
 }
 
 void app.whenReady().then(async () => {

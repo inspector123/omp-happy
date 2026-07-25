@@ -1,19 +1,18 @@
 /**
  * LIVE end-to-end test against the real self-hosted server.
  *
- * Gated on HD_LIVE=1 — skipped by default so `vitest run` stays hermetic.
- * Run with: HD_LIVE=1 pnpm --filter happy-desktop exec vitest run tests/live.e2e.test.ts
+ * Gated on HD_LIVE=1 and explicit endpoint/credential paths so a test can
+ * never contact a developer's server by accident.
+ * Run with:
+ *   HD_LIVE=1 HAPPY_SERVER_URL=https://happy.example \
+ *   HAPPY_HOME_DIR="$HOME/.happy-self-host" \
+ *   pnpm --filter happy-desktop exec vitest run tests/live.e2e.test.ts
  *
- * Flow (contract): engine against http://192.168.0.252:30003 with
- * ~/.omp-happy creds; daemon port from ~/.omp-happy/daemon.state.json;
- * spawn (machineRPC, agent 'omp') -> session appears; openSession ->
- * decrypted messages; sendMessage('Reply with exactly: DESKTOP-E2E-OK') ->
- * streamed agent reply containing DESKTOP-E2E-OK within 120s.
+ * Flow: connect with the selected credentials, spawn an `omp` session through
+ * the selected daemon, then verify a streamed agent reply.
  */
 
 import { describe, it, expect } from 'vitest';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { SyncEngine } from '../src/sync/syncEngine';
 import { loadCredentials, readMachineId } from '../src/sync/credentials';
 import { readDaemonPort, stopDaemonSession } from '../src/sync/daemonClient';
@@ -21,9 +20,17 @@ import type { DesktopState } from '../src/sync/types';
 
 const LIVE = process.env.HD_LIVE === '1';
 
-const SERVER_URL = 'http://192.168.0.252:30003';
-const HOME_DIR = join(homedir(), '.omp-happy');
-const SPAWN_DIRECTORY = join(homedir(), 'projects/omp-happy/tmp');
+function requiredLiveEnv(name: 'HAPPY_SERVER_URL' | 'HAPPY_HOME_DIR'): string {
+  const value = process.env[name]?.trim();
+  if (LIVE && !value) {
+    throw new Error(`${name} is required when HD_LIVE=1`);
+  }
+  return value ?? '';
+}
+
+const SERVER_URL = requiredLiveEnv('HAPPY_SERVER_URL');
+const HOME_DIR = requiredLiveEnv('HAPPY_HOME_DIR');
+const SPAWN_DIRECTORY = process.env.HAPPY_E2E_DIRECTORY ?? process.cwd();
 const E2E_TEXT = 'Reply with exactly: DESKTOP-E2E-OK';
 const E2E_TOKEN = 'DESKTOP-E2E-OK';
 

@@ -1,21 +1,31 @@
 import { test, expect, _electron as electron } from '@playwright/test';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SyncEngine } from '../src/sync/syncEngine';
 import { loadCredentials, readMachineId } from '../src/sync/credentials';
 import { readDaemonPort, stopDaemonSession } from '../src/sync/daemonClient';
 
-// Live desktop e2e: requires a real server + daemon + credentials.
-// Run with: HD_LIVE=1 pnpm --filter happy-desktop build && pnpm --filter happy-desktop test:e2e
+// Live desktop e2e: requires an explicitly selected server, daemon, and credentials.
+// Run with:
+//   HD_LIVE=1 HAPPY_SERVER_URL=https://happy.example \
+//   HAPPY_HOME_DIR="$HOME/.happy-self-host" \
+//   pnpm --filter happy-desktop build && pnpm --filter happy-desktop test:e2e
 const LIVE = process.env.HD_LIVE === '1';
 test.skip(!LIVE, 'Live desktop e2e is gated on HD_LIVE=1');
 
+function requiredLiveEnv(name: 'HAPPY_SERVER_URL' | 'HAPPY_HOME_DIR'): string {
+  const value = process.env[name]?.trim();
+  if (LIVE && !value) {
+    throw new Error(`${name} is required when HD_LIVE=1`);
+  }
+  return value ?? '';
+}
+
 const packageRoot = fileURLToPath(new URL('..', import.meta.url));
-const SERVER_URL = process.env.HAPPY_SERVER_URL ?? 'http://192.168.0.252:30003';
-const HOME_DIR = process.env.HAPPY_HOME_DIR ?? join(homedir(), '.omp-happy');
-const SPAWN_DIRECTORY = join(homedir(), 'projects/omp-happy/tmp');
+const SERVER_URL = requiredLiveEnv('HAPPY_SERVER_URL');
+const HOME_DIR = requiredLiveEnv('HAPPY_HOME_DIR');
+const SPAWN_DIRECTORY = process.env.HAPPY_E2E_DIRECTORY ?? process.cwd();
 
 async function waitFor(description: string, predicate: () => boolean, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;

@@ -3,6 +3,26 @@ import { truncateMiddle, useDesktop } from '../api';
 export function StatusBar() {
   const session = useDesktop((s) => s.sessions.find((x) => x.id === s.selectedSessionId));
   const status = useDesktop((s) => s.status);
+  const stoppingSessionId = useDesktop((s) => s.stoppingSessionId);
+  const stopSession = useDesktop((s) => s.stopSession);
+  const stopping = !!session && stoppingSessionId === session.id;
+  const stopDisabledReason = !session
+    ? undefined
+    : status !== 'online'
+      ? 'Connect to Happy before stopping this session.'
+      : !session.keyAvailable
+        ? 'The session encryption key is unavailable.'
+        : undefined;
+
+  function requestStop(): void {
+    if (!session || stopDisabledReason || stopping) return;
+    const confirmed = window.confirm(
+      `Stop "${session.title}"? This terminates the agent process on its machine.`,
+    );
+    if (confirmed) {
+      void stopSession(session.id);
+    }
+  }
 
   return (
     <header className="flex h-[44px] shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/30 px-4">
@@ -25,6 +45,18 @@ export function StatusBar() {
               </svg>
               thinking
             </span>
+          )}
+          {session.active && (
+            <button
+              type="button"
+              onClick={requestStop}
+              disabled={!!stopDisabledReason || stopping}
+              title={stopDisabledReason ?? 'Stop this session'}
+              aria-label="Stop session"
+              className="h-7 shrink-0 rounded-md border border-red-900/70 px-2.5 text-[11px] text-red-400 transition-colors hover:border-red-800 hover:bg-red-950/40 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {stopping ? 'Stopping…' : 'Stop'}
+            </button>
           )}
         </>
       ) : (
