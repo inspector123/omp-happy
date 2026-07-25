@@ -450,6 +450,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
 
   let child: IPty | null = null;
   let shouldExit = false;
+  let archiveOnExit = false;
   let turnStarted = false;
   let abortInProgress = false;
   const queuedAfterAbort: Array<{ message: UserMessage; attachments: PhoneAttachment[] }> = [];
@@ -1046,6 +1047,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   });
 
   registerKillSessionHandler(session.rpcHandlerManager, async () => {
+    archiveOnExit = true;
     shouldExit = true;
     try {
       const ptyChild = child as IPty | null;
@@ -1119,13 +1121,15 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
 
     try {
-      session.updateMetadata((currentMetadata) => ({
-        ...currentMetadata,
-        lifecycleState: 'archived',
-        lifecycleStateSince: Date.now(),
-        archivedBy: 'cli',
-        archiveReason: 'Session ended',
-      }));
+      if (archiveOnExit) {
+        session.updateMetadata((currentMetadata) => ({
+          ...currentMetadata,
+          lifecycleState: 'archived',
+          lifecycleStateSince: Date.now(),
+          archivedBy: 'cli',
+          archiveReason: 'User terminated',
+        }));
+      }
       session.sendSessionDeath();
       log('Flushing and closing Happy session');
       const withShutdownTimeout = async (label: string, promise: Promise<unknown>): Promise<void> => {

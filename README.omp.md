@@ -117,15 +117,21 @@ When more than one phone-started OMP session is active, the command lists the av
 
 `packages/happy-cli/scripts/omp-happy-launcher.sh` routes ordinary interactive OMP invocations through `happy omp`. It deliberately bypasses Happy for `acp`, `update`, RPC modes, help, and version commands.
 
-The script contains workstation-specific defaults. Set all relevant paths and the relay explicitly instead of installing it over the real OMP binary:
+Do not install the launcher over the native OMP binary: `omp update` replaces that path. Invoke it directly, or define an updater-independent shell function in `.zshrc`/`.bashrc`:
 
-```bash
-OMP_HAPPY_REAL_BIN="/absolute/path/to/real/omp" \
-HAPPY_OMP_CLI="$PWD/packages/happy-cli/bin/happy.mjs" \
-HAPPY_HOME_DIR="$HOME/.omp-happy" \
-HAPPY_SERVER_URL="https://your-happy-relay.example" \
-packages/happy-cli/scripts/omp-happy-launcher.sh
+```zsh
+omp() {
+  local real_omp="$HOME/.bun/bin/omp"
+  [[ -x "$real_omp" ]] || real_omp="$HOME/.local/bin/omp"
+  OMP_HAPPY_REAL_BIN="$real_omp" \
+    HAPPY_OMP_CLI="$HOME/src/happy/packages/happy-cli/bin/happy.mjs" \
+    HAPPY_HOME_DIR="$HOME/.omp-happy" \
+    HAPPY_SERVER_URL="https://your-happy-relay.example" \
+    "$HOME/src/happy/packages/happy-cli/scripts/omp-happy-launcher.sh" "$@"
+}
 ```
+
+Replace `$HOME/src/happy` with this repository's path. The launcher bypasses Happy for updater and non-interactive commands, so the function can remain the default `omp` entry point.
 
 The older `scripts/omp-run.sh` uses the generic ACP path and is not the native extension-bridge entry point documented here.
 
@@ -137,7 +143,7 @@ The older `scripts/omp-run.sh` uses the generic ACP path and is not the native e
 - The session sends keepalives every two seconds and preserves local/remote control state.
 - Phone images are downloaded, decrypted, converted to OMP image messages, and delivered with the prompt.
 - The native OMP session ID is saved in Happy metadata for resume and session correlation.
-- Session shutdown terminates the PTY, closes the bridge, archives the Happy session, flushes pending events, and closes the relay connection.
+- Normal terminal exit marks the relay session inactive without archiving it, so it remains in history and can be resumed. Explicit termination from the app archives it.
 - Structured OMP advisor notes render as dedicated app cards with Markdown, severity, and source attribution.
 
 ## Current limitations

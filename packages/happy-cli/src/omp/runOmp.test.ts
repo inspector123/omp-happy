@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => {
   let fileEventHandler: FileEventHandler | null = null;
   let bridgeConnectionHandler: BridgeConnectionHandler | null = null;
   let listeningHandler: BridgeEventHandler | null = null;
+  let killSessionHandler: (() => Promise<void>) | null = null;
   const bridgeDataHandlers = new Map<object, BridgeDataHandler>();
 
   const createBridgeSocket = () => {
@@ -95,7 +96,9 @@ const mocks = vi.hoisted(() => {
     mockCreateSessionMetadata: vi.fn(() => ({ state: { started: true }, metadata: { path: '/repo' } })),
     mockSetupOfflineReconnection: vi.fn(),
     mockNotifyDaemonSessionStarted: vi.fn(async () => ({ error: null })),
-    mockRegisterKillSessionHandler: vi.fn(),
+    mockRegisterKillSessionHandler: vi.fn((_manager: unknown, handler: () => Promise<void>) => {
+      killSessionHandler = handler;
+    }),
     mockSetBackend: vi.fn(),
     mockLoggerDebug: vi.fn(),
     mockCancel: vi.fn(),
@@ -103,6 +106,7 @@ const mocks = vi.hoisted(() => {
     mockSession,
     getUserMessageHandler: () => userMessageHandler,
     getFileEventHandler: () => fileEventHandler,
+    getKillSessionHandler: () => killSessionHandler,
     connectBridgeSocket: () => {
       const socket = createBridgeSocket();
       bridgeConnectionHandler?.(socket);
@@ -121,6 +125,7 @@ const mocks = vi.hoisted(() => {
       bridgeConnectionHandler = null;
       bridgeDataHandlers.clear();
       listeningHandler = null;
+      killSessionHandler = null;
     },
   };
 });
@@ -341,6 +346,46 @@ describe('runOmp', () => {
     child.emitExit(0);
     await vi.advanceTimersByTimeAsync(200);
     await runPromise;
+  });
+
+  it('keeps a normally exited OMP session visible and resumable', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-normal-exit' });
+    await vi.advanceTimersByTimeAsync(1);
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+
+    const metadataUpdates = mocks.mockSession.updateMetadata.mock.calls
+      .map(([update]) => update({ path: '/repo' }));
+    expect(metadataUpdates).not.toContainEqual(expect.objectContaining({
+      lifecycleState: 'archived',
+    }));
+    expect(mocks.mockSession.sendSessionDeath).toHaveBeenCalledOnce();
+  });
+
+  it('archives an OMP session only when the app explicitly kills it', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-explicit-kill' });
+    await vi.advanceTimersByTimeAsync(1);
+    const killSession = mocks.getKillSessionHandler();
+    expect(killSession).toBeTypeOf('function');
+    await killSession?.();
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+
+    const metadataUpdates = mocks.mockSession.updateMetadata.mock.calls
+      .map(([update]) => update({ path: '/repo' }));
+    expect(metadataUpdates).toContainEqual(expect.objectContaining({
+      lifecycleState: 'archived',
+      archivedBy: 'cli',
+    }));
   });
 
   it('updates the Happy app title from the OMP change_title tool', async () => {
