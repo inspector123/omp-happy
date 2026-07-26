@@ -446,6 +446,31 @@ let optimisticCounter = 0;
 
 const NO_MESSAGES: MessageView[] = [];
 
+function preserveSessionOrder(previous: SessionView[], incoming: SessionView[]): SessionView[] {
+  if (previous.length === 0 || incoming.length === 0) {
+    return incoming;
+  }
+
+  const incomingById = new Map(incoming.map((session) => [session.id, session] as const));
+  const previousIds = new Set(previous.map((session) => session.id));
+  const sessions: SessionView[] = [];
+
+  // New sessions appear at the top. Existing sessions keep their relative
+  // positions when live activity changes updatedAt.
+  for (const session of incoming) {
+    if (!previousIds.has(session.id)) {
+      sessions.push(session);
+    }
+  }
+  for (const session of previous) {
+    const updated = incomingById.get(session.id);
+    if (updated) {
+      sessions.push(updated);
+    }
+  }
+  return sessions;
+}
+
 /**
  * Store selector for the selected session's messages. MUST return a cached
  * reference when the underlying state is unchanged — useSyncExternalStore
@@ -497,6 +522,7 @@ export const useDesktop = create<RendererStore>()((set, get) => {
     applyState(s) {
       let automaticSelectionId: string | null = null;
       set((prev) => {
+        const sessions = preserveSessionOrder(prev.sessions, s.sessions);
         const messages: Record<string, MessageView[]> = {};
         for (const [sid, list] of Object.entries(s.messages)) {
           const incoming = normalizeMessages(list);
@@ -515,24 +541,24 @@ export const useDesktop = create<RendererStore>()((set, get) => {
 
         if (!prev.hydrated) {
           // First state: pick the most recent session, nothing counts as unseen.
-          if (!selectedSessionId || !s.sessions.some((x) => x.id === selectedSessionId)) {
-            selectedSessionId = s.sessions[0]?.id ?? null;
+          if (!selectedSessionId || !sessions.some((x) => x.id === selectedSessionId)) {
+            selectedSessionId = sessions[0]?.id ?? null;
           }
         } else {
           const prevUpdated = new Map(prev.sessions.map((x) => [x.id, x.updatedAt] as const));
-          for (const sess of s.sessions) {
+          for (const sess of sessions) {
             if (sess.id === selectedSessionId) continue;
             const before = prevUpdated.get(sess.id);
             if (before === undefined || sess.updatedAt > before) unseen[sess.id] = true;
           }
           if (selectedSessionId) delete unseen[selectedSessionId];
-          if (selectedSessionId && !s.sessions.some((x) => x.id === selectedSessionId)) {
-            selectedSessionId = s.sessions[0]?.id ?? null;
+          if (selectedSessionId && !sessions.some((x) => x.id === selectedSessionId)) {
+            selectedSessionId = sessions[0]?.id ?? null;
             if (selectedSessionId) delete unseen[selectedSessionId];
           }
         }
 
-        if (pendingSessionId && s.sessions.some((session) => session.id === pendingSessionId)) {
+        if (pendingSessionId && sessions.some((session) => session.id === pendingSessionId)) {
           selectedSessionId = pendingSessionId;
           delete unseen[pendingSessionId];
           pendingSessionId = null;
@@ -544,7 +570,7 @@ export const useDesktop = create<RendererStore>()((set, get) => {
 
         return {
           status: s.status,
-          sessions: s.sessions,
+          sessions,
           messages,
           error: s.error ?? prev.controlError,
           hydrated: true,

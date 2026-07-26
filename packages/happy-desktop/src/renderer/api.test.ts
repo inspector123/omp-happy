@@ -234,6 +234,39 @@ describe('store: hydration and selection', () => {
     );
     expect(useDesktop.getState().selectedSessionId).toBe('b');
   });
+
+  it('keeps existing row positions stable while placing new sessions at the top', () => {
+    useDesktop.getState().applyState(
+      makeState({
+        sessions: [
+          makeSession({ id: 'a', updatedAt: 2000 }),
+          makeSession({ id: 'b', updatedAt: 1000 }),
+        ],
+      }),
+    );
+    useDesktop.getState().applyState(
+      makeState({
+        sessions: [
+          makeSession({ id: 'c', updatedAt: 4000 }),
+          makeSession({ id: 'b', updatedAt: 3000 }),
+          makeSession({ id: 'a', updatedAt: 2000 }),
+        ],
+      }),
+    );
+    useDesktop.getState().applyState(
+      makeState({
+        sessions: [
+          makeSession({ id: 'b', updatedAt: 5000 }),
+          makeSession({ id: 'c', updatedAt: 4000 }),
+          makeSession({ id: 'a', updatedAt: 2000 }),
+        ],
+      }),
+    );
+
+    const sessions = useDesktop.getState().sessions;
+    expect(sessions.map((session) => session.id)).toEqual(['c', 'a', 'b']);
+    expect(sessions.find((session) => session.id === 'b')?.updatedAt).toBe(5000);
+  });
 });
 
 describe('store: unseen tracking', () => {
