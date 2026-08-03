@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 // The bridge is intentionally plain ESM because native OMP loads it directly.
 // @ts-expect-error TypeScript has no declaration for the runtime extension module.
-import { formatAskResult, getModelSnapshot, getThinkingSnapshot, resolveModel, resolveRequestedModel, selectAskTools, sendPromptCommand, setOmpSessionTitle } from './omp-happy-bridge.mjs';
+import { formatAskResult, getModelSnapshot, getThinkingSnapshot, resolveModel, resolveRequestedModel, resolveTuiCommand, selectAskTools, sendPromptCommand, setOmpSessionTitle } from './omp-happy-bridge.mjs';
 
 describe('OMP Happy bridge models', () => {
   const models = [
@@ -202,6 +202,14 @@ describe('OMP Happy bridge models', () => {
     expect(sendUserMessage).toHaveBeenCalledWith([
       { type: 'image', data: 'AQID', mimeType: 'image/png' },
     ], undefined);
+  });
+
+  it('resolves goal controls to a safe single-line TUI command', () => {
+    expect(resolveTuiCommand({
+      type: 'set_goal',
+      objective: '  Ship the API\n\twithout \u001B[31m regressions  ',
+    })).toBe('/goal set Ship the API without regressions');
+    expect(resolveTuiCommand({ type: 'set_goal', objective: ' \n\t ' })).toBeUndefined();
   });
 
 });

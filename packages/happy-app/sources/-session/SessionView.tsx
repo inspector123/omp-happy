@@ -1,6 +1,7 @@
 import { AgentContentView } from '@/components/AgentContentView';
 import { AgentGoalBar, type AgentGoalAction } from '@/components/AgentGoalBar';
 import { AgentInput } from '@/components/AgentInput';
+import { parseOmpGoalSetCommand } from '@/components/parseLocalCommandMessage';
 import { resolveVisibleAgentGoalStatus } from '@/components/agentGoalStatus';
 import type { MultiTextInputHandle } from '@/components/MultiTextInput';
 import { layout } from '@/components/layout';
@@ -24,7 +25,7 @@ import { Modal } from '@/modal';
 import { voiceHooks } from '@/realtime/hooks/voiceHooks';
 import { getCurrentVoiceConversationId, getCurrentVoiceSessionDurationSeconds, startRealtimeSession, stopRealtimeSession } from '@/realtime/RealtimeSession';
 import { gitStatusSync } from '@/sync/gitStatusSync';
-import { sessionAbort, sessionCompactSnapcompact, sessionGoalAction, sessionSetAdvisor, sessionSetModel } from '@/sync/ops';
+import { sessionAbort, sessionCompactSnapcompact, sessionGoalAction, sessionSetAdvisor, sessionSetGoal, sessionSetModel } from '@/sync/ops';
 import { editQueuedMessageWithDraftProtection, storage, useIsDataReady, useLocalSetting, useRealtimeStatus, useSessionMessages, useSessionUsage, useSetting } from '@/sync/storage';
 import { useSession } from '@/sync/storage';
 import { Session } from '@/sync/storageTypes';
@@ -592,6 +593,7 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
 
     const [advisorControlPending, setAdvisorControlPending] = React.useState(false);
     const [compactPending, setCompactPending] = React.useState(false);
+    const [goalControlPending, setGoalControlPending] = React.useState(false);
     const updateAdvisorEnabled = React.useCallback(async (enabled: boolean) => {
         setAdvisorControlPending(true);
         try {
@@ -619,6 +621,34 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
         }
     }, [sessionId]);
 
+    const setOmpGoal = React.useCallback(async (objective: string): Promise<boolean> => {
+        setGoalControlPending(true);
+        try {
+            const result = await sessionSetGoal(sessionId, objective);
+            if (!result.success) {
+                Modal.alert(t('common.error'), 'Could not set the goal for this session.');
+            }
+            return result.success;
+        } catch {
+            Modal.alert(t('common.error'), 'Could not set the goal for this session.');
+            return false;
+        } finally {
+            setGoalControlPending(false);
+        }
+    }, [sessionId]);
+
+    const promptSetGoal = React.useCallback(async () => {
+        const objective = await Modal.prompt('Set goal', undefined, {
+            placeholder: 'What should OMP work toward?',
+            cancelText: t('common.cancel'),
+            confirmText: 'Set goal',
+        });
+        const normalizedObjective = objective?.trim();
+        if (normalizedObjective) {
+            await setOmpGoal(normalizedObjective);
+        }
+    }, [setOmpGoal]);
+
     // Memoize header-dependent styles to prevent re-renders
     const headerDependentStyles = React.useMemo(() => ({
         contentContainer: {
@@ -637,7 +667,23 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
         if (!liveMessage.trim() && selectedImages.length === 0) return;
 
         const attachments = selectedImages;
+        const goalObjective = flavor === 'omp' && attachments.length === 0
+            ? parseOmpGoalSetCommand(liveMessage)
+            : null;
         sendInFlightRef.current = true;
+        if (goalObjective) {
+            void setOmpGoal(goalObjective)
+                .then((success) => {
+                    if (success && composerHandleRef.current?.getMessage() === liveMessage) {
+                        composerHandleRef.current.clearMessage();
+                    }
+                })
+                .finally(() => {
+                    sendInFlightRef.current = false;
+                });
+            return;
+        }
+
         void sync.sendMessage(sessionId, liveMessage, { source: 'chat', attachments })
             .then((result) => {
                 if (result.queued && composerHandleRef.current?.getMessage() === liveMessage) {
@@ -653,7 +699,7 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
             .finally(() => {
                 sendInFlightRef.current = false;
             });
-    }, [sessionId, selectedImages, removeImage]);
+    }, [flavor, sessionId, selectedImages, removeImage, setOmpGoal]);
 
     const handleAbort = React.useCallback(() => {
         storage.getState().resetSessionAgentOverrides(sessionId);
@@ -820,6 +866,8 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
             advisorControlDisabled={advisorControlPending}
             onCompactSnapcompact={compactSnapcompact}
             compactSnapcompactDisabled={compactPending || sessionStatus.state === 'thinking'}
+            onSetGoal={promptSetGoal}
+            setGoalDisabled={goalControlPending}
             metadata={session.metadata}
             connectionStatus={connectionStatus}
             blockSend={false}

@@ -1,3 +1,10 @@
+# August 2 — Better remote session controls
+
+- Remote OMP sessions now load the selected machine's model catalog before launch.
+- The fixed OMP label is now a searchable model picker that matches both model selectors and display names.
+- OMP settings now include a Goal action that submits `/goal set <text>` through the native terminal command path.
+- Goal text sent from the composer now executes the command instead of being treated as an ordinary prompt.
+
 # July 25 — Safer queued-message editing
 
 - Pull back offline text-only messages for editing before transmission starts.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseLocalCommandMessage, isUserSlashCommandEcho } from './parseLocalCommandMessage';
+import { parseLocalCommandMessage, isUserSlashCommandEcho, parseOmpGoalSetCommand } from './parseLocalCommandMessage';
 
 describe('parseLocalCommandMessage', () => {
     it('hides the local-command caveat wrapper', () => {
@@ -43,6 +43,13 @@ describe('parseLocalCommandMessage', () => {
         expect(parseLocalCommandMessage('  /goal проанализируй проект  ')).toEqual({
             kind: 'goal-run',
             goal: 'проанализируй проект',
+        });
+    });
+
+    it('collapses the OMP /goal set form to only the objective', () => {
+        expect(parseLocalCommandMessage('  /goal set ship the feature  ')).toEqual({
+            kind: 'goal-run',
+            goal: 'ship the feature',
         });
     });
 
@@ -108,6 +115,18 @@ describe('parseLocalCommandMessage', () => {
     it('passes ordinary user text through untouched', () => {
         const text = 'just a normal message';
         expect(parseLocalCommandMessage(text)).toEqual({ kind: 'text', text });
+    });
+});
+
+describe('parseOmpGoalSetCommand', () => {
+    it('accepts both the OMP set form and the legacy shorthand', () => {
+        expect(parseOmpGoalSetCommand('/goal set ship the feature')).toBe('ship the feature');
+        expect(parseOmpGoalSetCommand(' /goal ship the feature ')).toBe('ship the feature');
+    });
+
+    it('rejects unrelated and empty commands', () => {
+        expect(parseOmpGoalSetCommand('/compact snapcompact')).toBeNull();
+        expect(parseOmpGoalSetCommand('/goal')).toBeNull();
     });
 });
 

@@ -597,6 +597,17 @@ export async function sessionSetAdvisor(
     );
 }
 
+export async function sessionSetGoal(
+    sessionId: string,
+    objective: string,
+): Promise<{ success: boolean }> {
+    return apiSocket.sessionRPC<{ success: boolean }, { objective: string }>(
+        sessionId,
+        'set-goal',
+        { objective },
+    );
+}
+
 export async function sessionCompactSnapcompact(sessionId: string): Promise<{ success: boolean }> {
     return apiSocket.sessionRPC<{ success: boolean }, Record<string, never>>(
         sessionId,

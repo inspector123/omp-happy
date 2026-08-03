@@ -1808,7 +1808,7 @@ describe('runOmp', () => {
     await runPromise;
   });
 
-  it('executes advisor and snapcompact controls through the session PTY', async () => {
+  it('executes advisor, snapcompact, and goal controls through the session PTY', async () => {
     vi.useFakeTimers();
     const runPromise = runOmp({ credentials, startedBy: 'daemon' });
     await settleMicrotasks();
@@ -1822,6 +1822,9 @@ describe('runOmp', () => {
     const compactHandler = mocks.mockSession.rpcHandlerManager.registerHandler.mock.calls.find(
       ([name]) => name === 'compact-snapcompact',
     )?.[1] as (() => Promise<{ success: boolean }>) | undefined;
+    const goalHandler = mocks.mockSession.rpcHandlerManager.registerHandler.mock.calls.find(
+      ([name]) => name === 'set-goal',
+    )?.[1] as ((request: { objective: string }) => Promise<{ success: boolean }>) | undefined;
 
     await expect(advisorHandler?.({ enabled: false })).resolves.toEqual({ success: true });
     expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith('{"type":"set_advisor","enabled":false}\n');
@@ -1835,6 +1838,14 @@ describe('runOmp', () => {
     expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith('{"type":"compact_snapcompact"}\n');
     mocks.emitBridgeFrame({ type: 'tui_command_ready', command: '/compact snapcompact' });
     expect(child.write).toHaveBeenCalledTimes(2);
+
+    await expect(goalHandler?.({ objective: '  Ship\nsafely  ' })).resolves.toEqual({ success: true });
+    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
+      '{"type":"set_goal","objective":"  Ship\\nsafely  "}\n',
+    );
+    mocks.emitBridgeFrame({ type: 'tui_command_ready', command: '/goal set Ship safely' });
+    expect(child.write).toHaveBeenCalledTimes(3);
+    await expect(goalHandler?.({ objective: ' \n\t ' })).resolves.toEqual({ success: false });
 
     child.emitExit(0);
     await vi.advanceTimersByTimeAsync(200);

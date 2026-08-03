@@ -170,6 +170,25 @@ export async function sendPromptCommand(pi, command) {
   return true;
 }
 
+export function resolveTuiCommand(command) {
+  if (!command || typeof command !== 'object') return undefined;
+  if (command.type === 'set_advisor' && typeof command.enabled === 'boolean') {
+    return `/advisor ${command.enabled ? 'on' : 'off'}`;
+  }
+  if (command.type === 'compact_snapcompact') {
+    return '/compact snapcompact';
+  }
+  if (command.type === 'set_goal' && typeof command.objective === 'string') {
+    const objective = command.objective
+      .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
+      .replace(/[\x00-\x1F\x7F]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return objective ? `/goal set ${objective}` : undefined;
+  }
+  return undefined;
+}
+
 export default function happyBridgeExtension(pi) {
   const socketPath = process.env[SOCKET_ENV];
   if (!socketPath) return;
@@ -306,11 +325,7 @@ export default function happyBridgeExtension(pi) {
       }
       return;
     }
-    const tuiCommand = command.type === 'set_advisor' && typeof command.enabled === 'boolean'
-      ? `/advisor ${command.enabled ? 'on' : 'off'}`
-      : command.type === 'compact_snapcompact'
-        ? '/compact snapcompact'
-        : undefined;
+    const tuiCommand = resolveTuiCommand(command);
     if (tuiCommand) {
       if (!latestContext?.ui) {
         send({ type: 'bridge_error', message: 'OMP command control requires an interactive session' });

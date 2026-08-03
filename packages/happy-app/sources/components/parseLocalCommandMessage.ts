@@ -62,6 +62,21 @@ function rawSlashCommand(text: string): { commandName: string; args?: string } |
     };
 }
 
+function goalFromArgs(args: string): string | undefined {
+    const trimmed = args.trim();
+    const setMatch = trimmed.match(/^set\s+([\s\S]+)$/i);
+    const goal = (setMatch?.[1] ?? trimmed).trim();
+    return goal.length > 0 ? goal : undefined;
+}
+
+export function parseOmpGoalSetCommand(text: string): string | null {
+    const match = text.match(RAW_SLASH_COMMAND_RE);
+    if (!match || match[1].toLowerCase() !== 'goal' || !match[2]) {
+        return null;
+    }
+    return goalFromArgs(match[2]) ?? null;
+}
+
 function goalFromStdout(text: string): string | undefined {
     const match = text.trim().match(GOAL_STDOUT_RE);
     const goal = match?.[1]?.trim();
@@ -85,8 +100,11 @@ export function parseLocalCommandMessage(text: string): LocalCommandMessage {
 
     const rawCommand = rawSlashCommand(text);
     if (rawCommand) {
-        if (rawCommand.commandName.toLowerCase() === 'goal' && rawCommand.args) {
-            return { kind: 'goal-run', goal: rawCommand.args };
+        const goal = rawCommand.commandName.toLowerCase() === 'goal' && rawCommand.args
+            ? goalFromArgs(rawCommand.args)
+            : undefined;
+        if (goal) {
+            return { kind: 'goal-run', goal };
         }
         return {
             kind: 'command-run',
@@ -111,10 +129,13 @@ export function parseLocalCommandMessage(text: string): LocalCommandMessage {
             .replace(COMMAND_ARGS_TAG_RE, '')
             .trim();
         if (stripped.length === 0) {
-            if (commandName.toLowerCase() === 'goal' && args && args.length > 0) {
+            const goal = commandName.toLowerCase() === 'goal' && args
+                ? goalFromArgs(args)
+                : undefined;
+            if (goal) {
                 return {
                     kind: 'goal-run',
-                    goal: args,
+                    goal,
                 };
             }
             return {

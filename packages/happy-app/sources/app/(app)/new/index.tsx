@@ -60,6 +60,7 @@ import { isRunningOnMac } from '@/utils/platform';
 import { getNewSessionSidebarLayout } from '@/utils/newSessionSidebarLayout';
 import { getAgentPickerItems, getModePickerItems } from '@/utils/newSessionPickerItems';
 import { resolveAgentDefaultConfig } from '@/sync/agentDefaults';
+import { listOmpModels } from '@/utils/ompModels';
 
 // Agent icon assets
 const agentIcons = {
@@ -237,7 +238,10 @@ function PickerContent({
     const filtered = React.useMemo(() => {
         if (!shouldShowSearch || !search) return items;
         const q = search.toLowerCase();
-        return items.filter(item => item.label.toLowerCase().includes(q));
+        return items.filter(item => (
+            item.label.toLowerCase().includes(q)
+            || item.subtitle?.toLowerCase().includes(q)
+        ));
     }, [shouldShowSearch, search, items]);
 
     const renderOption = (item: PickerItem) => {
@@ -604,6 +608,7 @@ function NewSessionScreen() {
     const [effortIndex, setEffortIndex] = React.useState(0);
     const [isSpawning, setIsSpawning] = React.useState(false);
     const [activePicker, setActivePicker] = React.useState<PickerType | null>(null);
+    const [remoteOmpModels, setRemoteOmpModels] = React.useState<ModelMode[]>([]);
 
     // Config collapse — auto-collapses when typing, expands when empty
     const [isConfigExpanded, setIsConfigExpanded] = React.useState(true);
@@ -621,6 +626,35 @@ function NewSessionScreen() {
         [allMachines, selectedMachineId],
     );
     const selectedHomeDir = selectedMachine?.metadata?.homeDir;
+    const selectedMachineOnline = selectedMachine ? isMachineOnline(selectedMachine) : false;
+
+    React.useEffect(() => {
+        if (
+            selectedAgent !== 'omp'
+            || !selectedMachineId
+            || !selectedMachineOnline
+        ) {
+            setRemoteOmpModels([]);
+            return;
+        }
+
+        let cancelled = false;
+        setRemoteOmpModels([]);
+        void listOmpModels(selectedMachineId, '/')
+            .then((models) => {
+                if (!cancelled) {
+                    setRemoteOmpModels(models);
+                }
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setRemoteOmpModels([]);
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [selectedAgent, selectedMachineId, selectedMachineOnline]);
 
     // Build machine picker items: online first, then offline
     const machineItems = React.useMemo<PickerItem[]>(() => {
@@ -741,10 +775,12 @@ function NewSessionScreen() {
         () => getHardcodedPermissionModes(selectedAgent, t),
         [selectedAgent],
     );
-    const modelModes = React.useMemo<ModelMode[]>(
-        () => getHardcodedModelModes(selectedAgent, t),
-        [selectedAgent],
-    );
+    const modelModes = React.useMemo<ModelMode[]>(() => {
+        if (selectedAgent === 'omp' && remoteOmpModels.length > 0) {
+            return remoteOmpModels;
+        }
+        return getHardcodedModelModes(selectedAgent, t);
+    }, [remoteOmpModels, selectedAgent]);
 
     const currentModel = modelModes[modelIndex] ?? modelModes[0];
     const currentModelKey = currentModel?.key ?? 'default';
@@ -1159,7 +1195,7 @@ function NewSessionScreen() {
 
                             <View style={styles.configRow}>
                                 <Pressable
-                                    onPress={() => togglePicker('agent')}
+                                    onPress={() => togglePicker(selectedAgent === 'omp' ? 'model' : 'agent')}
                                     style={(p) => [styles.configInlineField, p.pressed && styles.configRowPressed]}
                                 >
                                     <RNImage
@@ -1168,12 +1204,12 @@ function NewSessionScreen() {
                                         resizeMode="contain"
                                     />
                                     <Text style={[styles.configLabel, styles.configInlineText]} numberOfLines={1}>
-                                        {agent.label}
+                                        {selectedAgent === 'omp' ? currentModel.name : agent.label}
                                     </Text>
                                     <Ionicons name="chevron-down" size={12} color={theme.colors.textSecondary} />
                                 </Pressable>
 
-                                {showModel && (
+                                {selectedAgent !== 'omp' && showModel && (
                                     <>
                                         <Text style={[styles.configLabel, { color: theme.colors.textSecondary }]}>·</Text>
                                         <Pressable onPress={() => togglePicker('model')} style={(p) => [styles.configInlineField, p.pressed && styles.configRowPressed]}>
@@ -1197,7 +1233,7 @@ function NewSessionScreen() {
                                     </>
                                 )}
                             </View>
-                            {renderActivePickerPopover('agent')}
+                            {selectedAgent !== 'omp' && renderActivePickerPopover('agent')}
                             {renderActivePickerPopover('model')}
                             {renderActivePickerPopover('effort')}
 

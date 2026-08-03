@@ -57,6 +57,8 @@ interface AgentInputProps {
     advisorControlDisabled?: boolean;
     onCompactSnapcompact?: () => void;
     compactSnapcompactDisabled?: boolean;
+    onSetGoal?: () => void;
+    setGoalDisabled?: boolean;
     metadata?: Metadata | null;
     onAbort?: () => void | Promise<void>;
     showAbortButton?: boolean;
@@ -1293,6 +1295,27 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                                 disabled={props.advisorControlDisabled}
                                                 onValueChange={props.onAdvisorEnabledChange}
                                             />
+                                            <Pressable
+                                                accessibilityRole="button"
+                                                accessibilityLabel="Set goal"
+                                                disabled={props.setGoalDisabled}
+                                                onPress={() => {
+                                                    hapticsLight();
+                                                    props.onSetGoal?.();
+                                                    setShowSettings(false);
+                                                }}
+                                                style={({ pressed }) => ({
+                                                    paddingHorizontal: 12,
+                                                    paddingVertical: 8,
+                                                    borderRadius: 8,
+                                                    backgroundColor: pressed ? theme.colors.surfacePressed : theme.colors.surface,
+                                                    opacity: props.setGoalDisabled ? 0.5 : 1,
+                                                })}
+                                            >
+                                                <Text style={{ fontSize: 13, color: theme.colors.radio.active, ...Typography.default() }}>
+                                                    Goal
+                                                </Text>
+                                            </Pressable>
                                             <Pressable
                                                 disabled={props.compactSnapcompactDisabled}
                                                 onPress={() => {

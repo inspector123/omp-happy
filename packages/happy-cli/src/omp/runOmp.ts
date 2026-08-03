@@ -111,7 +111,7 @@ type BridgeChangeTitleFrame = {
 
 type BridgeTuiCommandReadyFrame = {
   type: 'tui_command_ready';
-  command: '/advisor on' | '/advisor off' | '/compact snapcompact';
+  command: string;
 };
 
 type PhoneAttachment = {
@@ -1600,6 +1600,17 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     success: boolean;
   }>('compact-snapcompact', async () => {
     const success = bridgeServer?.send({ type: 'compact_snapcompact' }) ?? false;
+    return { success };
+  });
+  session.rpcHandlerManager.registerHandler<{
+    objective: string;
+  }, {
+    success: boolean;
+  }>('set-goal', async ({ objective }) => {
+    if (typeof objective !== 'string' || !objective.trim()) {
+      return { success: false };
+    }
+    const success = bridgeServer?.send({ type: 'set_goal', objective }) ?? false;
     return { success };
   });
   session.rpcHandlerManager.registerHandler<{
