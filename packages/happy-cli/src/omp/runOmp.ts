@@ -1603,14 +1603,22 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     return { success };
   });
   session.rpcHandlerManager.registerHandler<{
-    objective: string;
+    action: 'set' | 'show' | 'pause' | 'resume' | 'drop';
+    objective?: string;
   }, {
     success: boolean;
-  }>('set-goal', async ({ objective }) => {
-    if (typeof objective !== 'string' || !objective.trim()) {
+  }>('goal-command', async ({ action, objective }) => {
+    if (!['set', 'show', 'pause', 'resume', 'drop'].includes(action)) {
       return { success: false };
     }
-    const success = bridgeServer?.send({ type: 'set_goal', objective }) ?? false;
+    if (action === 'set' && (typeof objective !== 'string' || !objective.trim())) {
+      return { success: false };
+    }
+    const success = bridgeServer?.send({
+      type: 'goal_command',
+      action,
+      ...(action === 'set' ? { objective } : {}),
+    }) ?? false;
     return { success };
   });
   session.rpcHandlerManager.registerHandler<{

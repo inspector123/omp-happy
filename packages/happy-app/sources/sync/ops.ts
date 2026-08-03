@@ -597,14 +597,20 @@ export async function sessionSetAdvisor(
     );
 }
 
-export async function sessionSetGoal(
+export type SessionGoalCommandAction = 'set' | 'show' | 'pause' | 'resume' | 'drop';
+
+export async function sessionGoalCommand(
     sessionId: string,
-    objective: string,
+    action: SessionGoalCommandAction,
+    objective?: string,
 ): Promise<{ success: boolean }> {
-    return apiSocket.sessionRPC<{ success: boolean }, { objective: string }>(
+    return apiSocket.sessionRPC<
+        { success: boolean },
+        { action: SessionGoalCommandAction; objective?: string }
+    >(
         sessionId,
-        'set-goal',
-        { objective },
+        'goal-command',
+        { action, ...(objective !== undefined ? { objective } : {}) },
     );
 }
 

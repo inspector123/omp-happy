@@ -178,7 +178,16 @@ export function resolveTuiCommand(command) {
   if (command.type === 'compact_snapcompact') {
     return '/compact snapcompact';
   }
-  if (command.type === 'set_goal' && typeof command.objective === 'string') {
+  if (command.type === 'goal_command') {
+    if (!['set', 'show', 'pause', 'resume', 'drop'].includes(command.action)) {
+      return undefined;
+    }
+    if (command.action !== 'set') {
+      return `/goal ${command.action}`;
+    }
+    if (typeof command.objective !== 'string') {
+      return undefined;
+    }
     const objective = command.objective
       .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
       .replace(/[\x00-\x1F\x7F]+/g, ' ')

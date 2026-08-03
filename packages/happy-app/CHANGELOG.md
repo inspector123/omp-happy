@@ -2,8 +2,8 @@
 
 - Remote OMP sessions now load the selected machine's model catalog before launch.
 - The fixed OMP label is now a searchable model picker that matches both model selectors and display names.
-- OMP settings now include a Goal action that submits `/goal set <text>` through the native terminal command path.
-- Goal text sent from the composer now executes the command instead of being treated as an ordinary prompt.
+- OMP settings now expose every native Goal action: set, show, pause, resume, and drop.
+- Goal commands sent from the composer now execute through the native terminal command path instead of becoming ordinary prompts.
 
 # July 25 — Safer queued-message editing
 

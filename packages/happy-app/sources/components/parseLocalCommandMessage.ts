@@ -62,19 +62,34 @@ function rawSlashCommand(text: string): { commandName: string; args?: string } |
     };
 }
 
-function goalFromArgs(args: string): string | undefined {
+export type OmpGoalAction = 'set' | 'show' | 'pause' | 'resume' | 'drop';
+export type OmpGoalCommand =
+    | { action: 'set'; objective: string }
+    | { action: Exclude<OmpGoalAction, 'set'> };
+
+function goalCommandFromArgs(args: string): OmpGoalCommand | null {
     const trimmed = args.trim();
-    const setMatch = trimmed.match(/^set\s+([\s\S]+)$/i);
-    const goal = (setMatch?.[1] ?? trimmed).trim();
-    return goal.length > 0 ? goal : undefined;
+    if (!trimmed) {
+        return null;
+    }
+    const actionMatch = trimmed.match(/^(\S+)(?:\s+([\s\S]+))?$/);
+    const action = actionMatch?.[1]?.toLowerCase();
+    const remainder = actionMatch?.[2]?.trim();
+    if (action === 'set') {
+        return remainder ? { action: 'set', objective: remainder } : null;
+    }
+    if (action === 'show' || action === 'pause' || action === 'resume' || action === 'drop') {
+        return remainder ? null : { action };
+    }
+    return { action: 'set', objective: trimmed };
 }
 
-export function parseOmpGoalSetCommand(text: string): string | null {
+export function parseOmpGoalCommand(text: string): OmpGoalCommand | null {
     const match = text.match(RAW_SLASH_COMMAND_RE);
     if (!match || match[1].toLowerCase() !== 'goal' || !match[2]) {
         return null;
     }
-    return goalFromArgs(match[2]) ?? null;
+    return goalCommandFromArgs(match[2]);
 }
 
 function goalFromStdout(text: string): string | undefined {
@@ -100,11 +115,11 @@ export function parseLocalCommandMessage(text: string): LocalCommandMessage {
 
     const rawCommand = rawSlashCommand(text);
     if (rawCommand) {
-        const goal = rawCommand.commandName.toLowerCase() === 'goal' && rawCommand.args
-            ? goalFromArgs(rawCommand.args)
-            : undefined;
-        if (goal) {
-            return { kind: 'goal-run', goal };
+        const goalCommand = rawCommand.commandName.toLowerCase() === 'goal' && rawCommand.args
+            ? goalCommandFromArgs(rawCommand.args)
+            : null;
+        if (goalCommand?.action === 'set') {
+            return { kind: 'goal-run', goal: goalCommand.objective };
         }
         return {
             kind: 'command-run',
@@ -129,13 +144,13 @@ export function parseLocalCommandMessage(text: string): LocalCommandMessage {
             .replace(COMMAND_ARGS_TAG_RE, '')
             .trim();
         if (stripped.length === 0) {
-            const goal = commandName.toLowerCase() === 'goal' && args
-                ? goalFromArgs(args)
-                : undefined;
-            if (goal) {
+            const goalCommand = commandName.toLowerCase() === 'goal' && args
+                ? goalCommandFromArgs(args)
+                : null;
+            if (goalCommand?.action === 'set') {
                 return {
                     kind: 'goal-run',
-                    goal,
+                    goal: goalCommand.objective,
                 };
             }
             return {

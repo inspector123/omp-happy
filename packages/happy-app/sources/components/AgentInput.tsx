@@ -57,8 +57,8 @@ interface AgentInputProps {
     advisorControlDisabled?: boolean;
     onCompactSnapcompact?: () => void;
     compactSnapcompactDisabled?: boolean;
-    onSetGoal?: () => void;
-    setGoalDisabled?: boolean;
+    onGoalPress?: () => void;
+    goalControlDisabled?: boolean;
     metadata?: Metadata | null;
     onAbort?: () => void | Promise<void>;
     showAbortButton?: boolean;
@@ -1297,11 +1297,11 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                             />
                                             <Pressable
                                                 accessibilityRole="button"
-                                                accessibilityLabel="Set goal"
-                                                disabled={props.setGoalDisabled}
+                                                accessibilityLabel="Goal actions"
+                                                disabled={props.goalControlDisabled}
                                                 onPress={() => {
                                                     hapticsLight();
-                                                    props.onSetGoal?.();
+                                                    props.onGoalPress?.();
                                                     setShowSettings(false);
                                                 }}
                                                 style={({ pressed }) => ({
@@ -1309,7 +1309,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                                     paddingVertical: 8,
                                                     borderRadius: 8,
                                                     backgroundColor: pressed ? theme.colors.surfacePressed : theme.colors.surface,
-                                                    opacity: props.setGoalDisabled ? 0.5 : 1,
+                                                    opacity: props.goalControlDisabled ? 0.5 : 1,
                                                 })}
                                             >
                                                 <Text style={{ fontSize: 13, color: theme.colors.radio.active, ...Typography.default() }}>

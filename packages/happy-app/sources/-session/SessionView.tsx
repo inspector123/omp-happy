@@ -1,7 +1,8 @@
 import { AgentContentView } from '@/components/AgentContentView';
 import { AgentGoalBar, type AgentGoalAction } from '@/components/AgentGoalBar';
 import { AgentInput } from '@/components/AgentInput';
-import { parseOmpGoalSetCommand } from '@/components/parseLocalCommandMessage';
+import { GoalActionsModal } from '@/components/GoalActionsModal';
+import { parseOmpGoalCommand, type OmpGoalAction, type OmpGoalCommand } from '@/components/parseLocalCommandMessage';
 import { resolveVisibleAgentGoalStatus } from '@/components/agentGoalStatus';
 import type { MultiTextInputHandle } from '@/components/MultiTextInput';
 import { layout } from '@/components/layout';
@@ -25,7 +26,7 @@ import { Modal } from '@/modal';
 import { voiceHooks } from '@/realtime/hooks/voiceHooks';
 import { getCurrentVoiceConversationId, getCurrentVoiceSessionDurationSeconds, startRealtimeSession, stopRealtimeSession } from '@/realtime/RealtimeSession';
 import { gitStatusSync } from '@/sync/gitStatusSync';
-import { sessionAbort, sessionCompactSnapcompact, sessionGoalAction, sessionSetAdvisor, sessionSetGoal, sessionSetModel } from '@/sync/ops';
+import { sessionAbort, sessionCompactSnapcompact, sessionGoalAction, sessionGoalCommand, sessionSetAdvisor, sessionSetModel } from '@/sync/ops';
 import { editQueuedMessageWithDraftProtection, storage, useIsDataReady, useLocalSetting, useRealtimeStatus, useSessionMessages, useSessionUsage, useSetting } from '@/sync/storage';
 import { useSession } from '@/sync/storage';
 import { Session } from '@/sync/storageTypes';
@@ -621,16 +622,20 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
         }
     }, [sessionId]);
 
-    const setOmpGoal = React.useCallback(async (objective: string): Promise<boolean> => {
+    const runOmpGoalCommand = React.useCallback(async (command: OmpGoalCommand): Promise<boolean> => {
         setGoalControlPending(true);
         try {
-            const result = await sessionSetGoal(sessionId, objective);
+            const result = await sessionGoalCommand(
+                sessionId,
+                command.action,
+                command.action === 'set' ? command.objective : undefined,
+            );
             if (!result.success) {
-                Modal.alert(t('common.error'), 'Could not set the goal for this session.');
+                Modal.alert(t('common.error'), 'Could not run the goal command for this session.');
             }
             return result.success;
         } catch {
-            Modal.alert(t('common.error'), 'Could not set the goal for this session.');
+            Modal.alert(t('common.error'), 'Could not run the goal command for this session.');
             return false;
         } finally {
             setGoalControlPending(false);
@@ -645,9 +650,24 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
         });
         const normalizedObjective = objective?.trim();
         if (normalizedObjective) {
-            await setOmpGoal(normalizedObjective);
+            await runOmpGoalCommand({ action: 'set', objective: normalizedObjective });
         }
-    }, [setOmpGoal]);
+    }, [runOmpGoalCommand]);
+
+    const showGoalActions = React.useCallback(() => {
+        Modal.show({
+            component: GoalActionsModal,
+            props: {
+                onAction: (action: OmpGoalAction) => {
+                    if (action === 'set') {
+                        void promptSetGoal();
+                    } else {
+                        void runOmpGoalCommand({ action });
+                    }
+                },
+            },
+        });
+    }, [promptSetGoal, runOmpGoalCommand]);
 
     // Memoize header-dependent styles to prevent re-renders
     const headerDependentStyles = React.useMemo(() => ({
@@ -667,12 +687,12 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
         if (!liveMessage.trim() && selectedImages.length === 0) return;
 
         const attachments = selectedImages;
-        const goalObjective = flavor === 'omp' && attachments.length === 0
-            ? parseOmpGoalSetCommand(liveMessage)
+        const goalCommand = flavor === 'omp' && attachments.length === 0
+            ? parseOmpGoalCommand(liveMessage)
             : null;
         sendInFlightRef.current = true;
-        if (goalObjective) {
-            void setOmpGoal(goalObjective)
+        if (goalCommand) {
+            void runOmpGoalCommand(goalCommand)
                 .then((success) => {
                     if (success && composerHandleRef.current?.getMessage() === liveMessage) {
                         composerHandleRef.current.clearMessage();
@@ -699,7 +719,7 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
             .finally(() => {
                 sendInFlightRef.current = false;
             });
-    }, [flavor, sessionId, selectedImages, removeImage, setOmpGoal]);
+    }, [flavor, sessionId, selectedImages, removeImage, runOmpGoalCommand]);
 
     const handleAbort = React.useCallback(() => {
         storage.getState().resetSessionAgentOverrides(sessionId);
@@ -866,8 +886,8 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
             advisorControlDisabled={advisorControlPending}
             onCompactSnapcompact={compactSnapcompact}
             compactSnapcompactDisabled={compactPending || sessionStatus.state === 'thinking'}
-            onSetGoal={promptSetGoal}
-            setGoalDisabled={goalControlPending}
+            onGoalPress={showGoalActions}
+            goalControlDisabled={goalControlPending}
             metadata={session.metadata}
             connectionStatus={connectionStatus}
             blockSend={false}

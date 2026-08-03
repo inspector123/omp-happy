@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseLocalCommandMessage, isUserSlashCommandEcho, parseOmpGoalSetCommand } from './parseLocalCommandMessage';
+import { parseLocalCommandMessage, isUserSlashCommandEcho, parseOmpGoalCommand } from './parseLocalCommandMessage';
 
 describe('parseLocalCommandMessage', () => {
     it('hides the local-command caveat wrapper', () => {
@@ -50,6 +50,14 @@ describe('parseLocalCommandMessage', () => {
         expect(parseLocalCommandMessage('  /goal set ship the feature  ')).toEqual({
             kind: 'goal-run',
             goal: 'ship the feature',
+        });
+    });
+
+    it.each(['show', 'pause', 'resume', 'drop'])('renders /goal %s as a command action', (action) => {
+        expect(parseLocalCommandMessage(`/goal ${action}`)).toEqual({
+            kind: 'command-run',
+            commandName: 'goal',
+            args: action,
         });
     });
 
@@ -118,15 +126,27 @@ describe('parseLocalCommandMessage', () => {
     });
 });
 
-describe('parseOmpGoalSetCommand', () => {
+describe('parseOmpGoalCommand', () => {
     it('accepts both the OMP set form and the legacy shorthand', () => {
-        expect(parseOmpGoalSetCommand('/goal set ship the feature')).toBe('ship the feature');
-        expect(parseOmpGoalSetCommand(' /goal ship the feature ')).toBe('ship the feature');
+        expect(parseOmpGoalCommand('/goal set ship the feature')).toEqual({
+            action: 'set',
+            objective: 'ship the feature',
+        });
+        expect(parseOmpGoalCommand(' /goal ship the feature ')).toEqual({
+            action: 'set',
+            objective: 'ship the feature',
+        });
     });
 
-    it('rejects unrelated and empty commands', () => {
-        expect(parseOmpGoalSetCommand('/compact snapcompact')).toBeNull();
-        expect(parseOmpGoalSetCommand('/goal')).toBeNull();
+    it.each(['show', 'pause', 'resume', 'drop'] as const)('parses the %s action', (action) => {
+        expect(parseOmpGoalCommand(`/goal ${action}`)).toEqual({ action });
+    });
+
+    it('rejects unrelated, empty, and malformed commands', () => {
+        expect(parseOmpGoalCommand('/compact snapcompact')).toBeNull();
+        expect(parseOmpGoalCommand('/goal')).toBeNull();
+        expect(parseOmpGoalCommand('/goal set')).toBeNull();
+        expect(parseOmpGoalCommand('/goal pause later')).toBeNull();
     });
 });
 

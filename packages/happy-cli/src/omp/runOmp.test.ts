@@ -1823,8 +1823,8 @@ describe('runOmp', () => {
       ([name]) => name === 'compact-snapcompact',
     )?.[1] as (() => Promise<{ success: boolean }>) | undefined;
     const goalHandler = mocks.mockSession.rpcHandlerManager.registerHandler.mock.calls.find(
-      ([name]) => name === 'set-goal',
-    )?.[1] as ((request: { objective: string }) => Promise<{ success: boolean }>) | undefined;
+      ([name]) => name === 'goal-command',
+    )?.[1] as ((request: { action: string; objective?: string }) => Promise<{ success: boolean }>) | undefined;
 
     await expect(advisorHandler?.({ enabled: false })).resolves.toEqual({ success: true });
     expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith('{"type":"set_advisor","enabled":false}\n');
@@ -1839,13 +1839,27 @@ describe('runOmp', () => {
     mocks.emitBridgeFrame({ type: 'tui_command_ready', command: '/compact snapcompact' });
     expect(child.write).toHaveBeenCalledTimes(2);
 
-    await expect(goalHandler?.({ objective: '  Ship\nsafely  ' })).resolves.toEqual({ success: true });
+    await expect(goalHandler?.({ action: 'set', objective: '  Ship\nsafely  ' })).resolves.toEqual({ success: true });
     expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
-      '{"type":"set_goal","objective":"  Ship\\nsafely  "}\n',
+      '{"type":"goal_command","action":"set","objective":"  Ship\\nsafely  "}\n',
     );
     mocks.emitBridgeFrame({ type: 'tui_command_ready', command: '/goal set Ship safely' });
     expect(child.write).toHaveBeenCalledTimes(3);
-    await expect(goalHandler?.({ objective: ' \n\t ' })).resolves.toEqual({ success: false });
+
+    for (const action of ['show', 'pause', 'resume', 'drop']) {
+      await expect(goalHandler?.({ action })).resolves.toEqual({ success: true });
+      expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
+        `{"type":"goal_command","action":"${action}"}\n`,
+      );
+      mocks.emitBridgeFrame({ type: 'tui_command_ready', command: `/goal ${action}` });
+    }
+    expect(child.write).toHaveBeenCalledTimes(7);
+
+    const writesBeforeInvalidRequests = mocks.mockBridgeSocket.write.mock.calls.length;
+    await expect(goalHandler?.({ action: 'invalid' })).resolves.toEqual({ success: false });
+    await expect(goalHandler?.({ action: 'set' })).resolves.toEqual({ success: false });
+    await expect(goalHandler?.({ action: 'set', objective: ' \n\t ' })).resolves.toEqual({ success: false });
+    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledTimes(writesBeforeInvalidRequests);
 
     child.emitExit(0);
     await vi.advanceTimersByTimeAsync(200);

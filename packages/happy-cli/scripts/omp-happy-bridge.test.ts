@@ -204,12 +204,23 @@ describe('OMP Happy bridge models', () => {
     ], undefined);
   });
 
-  it('resolves goal controls to a safe single-line TUI command', () => {
+  it('resolves every goal action to a safe single-line TUI command', () => {
     expect(resolveTuiCommand({
-      type: 'set_goal',
+      type: 'goal_command',
+      action: 'set',
       objective: '  Ship the API\n\twithout \u001B[31m regressions  ',
     })).toBe('/goal set Ship the API without regressions');
-    expect(resolveTuiCommand({ type: 'set_goal', objective: ' \n\t ' })).toBeUndefined();
+    expect(resolveTuiCommand({ type: 'goal_command', action: 'show' })).toBe('/goal show');
+    expect(resolveTuiCommand({ type: 'goal_command', action: 'pause' })).toBe('/goal pause');
+    expect(resolveTuiCommand({ type: 'goal_command', action: 'resume' })).toBe('/goal resume');
+    expect(resolveTuiCommand({ type: 'goal_command', action: 'drop' })).toBe('/goal drop');
+    expect(resolveTuiCommand({ type: 'goal_command', action: 'invalid' })).toBeUndefined();
+    expect(resolveTuiCommand({ type: 'goal_command', action: 'set' })).toBeUndefined();
+    expect(resolveTuiCommand({
+      type: 'goal_command',
+      action: 'set',
+      objective: ' \n\t ',
+    })).toBeUndefined();
   });
 
 });
