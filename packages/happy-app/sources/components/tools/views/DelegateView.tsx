@@ -457,36 +457,86 @@ const ChildTimeline = React.memo<{
 /*  AgentRowView — one task row with optional child timeline           */
 /* ------------------------------------------------------------------ */
 
+type DelegateViewProps = ToolViewProps & {
+    collapseCompleted?: boolean;
+    sortOpenFirst?: boolean;
+};
+
+export function getSubagentStatusSortRank(status?: string): number {
+    switch (status) {
+        case 'completed': return 2;
+        case 'failed':
+        case 'aborted': return 1;
+        default: return 0;
+    }
+}
+
 const AgentRowView = React.memo<{
     agent: AgentRow;
     childItems: ChildItem[];
     depth: number;
     metadata: ToolViewProps['metadata'];
-}>(({ agent, childItems, depth, metadata }) => {
+    collapseCompleted?: boolean;
+}>(({ agent, childItems, depth, metadata, collapseCompleted = false }) => {
     const { theme } = useUnistyles();
     const metrics = metricsLine(agent);
+    const isCollapsible = collapseCompleted && agent.status === 'completed';
+    const [expanded, setExpanded] = React.useState(!isCollapsible);
+
+    React.useEffect(() => {
+        if (isCollapsible) setExpanded(false);
+    }, [isCollapsible]);
+
+    const headerContent = (
+        <>
+            <View style={[styles.statusDot, { backgroundColor: statusColor(agent.status) }]} />
+            <Text style={styles.agentId}>{agent.id}</Text>
+            {agent.status && <Text style={styles.statusText}>{agent.status}</Text>}
+            {isCollapsible && (
+                <View style={styles.agentHeaderChevron}>
+                    <Ionicons
+                        name={expanded ? 'chevron-down' : 'chevron-forward'}
+                        size={14}
+                        color={theme.colors.textSecondary}
+                    />
+                </View>
+            )}
+        </>
+    );
 
     return (
         <View style={[styles.agentRow, depth > 0 && { marginLeft: depth * 16, borderLeftColor: theme.colors.textSecondary }]}>
-            <View style={styles.agentHeader}>
-                <View style={[styles.statusDot, { backgroundColor: statusColor(agent.status) }]} />
-                <Text style={styles.agentId}>{agent.id}</Text>
-                {agent.status && <Text style={styles.statusText}>{agent.status}</Text>}
-            </View>
-            {!!agent.description && <Text style={styles.description}>{agent.description}</Text>}
-            {!!agent.role && <Text style={styles.role}>{agent.role}</Text>}
-            {!!metrics && <Text style={styles.metrics}>{metrics}</Text>}
-            {!!agent.output && (
-                <ToolSectionView fullWidth>
-                    <CodeView code={agent.output.length > 2000 ? `${agent.output.slice(0, 2000)}…` : agent.output} />
-                </ToolSectionView>
+            {isCollapsible ? (
+                <TouchableOpacity
+                    style={styles.agentHeader}
+                    onPress={() => setExpanded((value) => !value)}
+                    activeOpacity={0.6}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${agent.id}, completed, ${expanded ? 'collapse' : 'expand'} details`}
+                >
+                    {headerContent}
+                </TouchableOpacity>
+            ) : (
+                <View style={styles.agentHeader}>{headerContent}</View>
             )}
-            <ChildTimeline
-                items={childItems}
-                depth={depth + 1}
-                metadata={metadata}
-                initiallyExpanded={agent.status === 'running' || agent.status === 'pending'}
-            />
+            {expanded && (
+                <>
+                    {!!agent.description && <Text style={styles.description}>{agent.description}</Text>}
+                    {!!agent.role && <Text style={styles.role}>{agent.role}</Text>}
+                    {!!metrics && <Text style={styles.metrics}>{metrics}</Text>}
+                    {!!agent.output && (
+                        <ToolSectionView fullWidth>
+                            <CodeView code={agent.output.length > 2000 ? `${agent.output.slice(0, 2000)}…` : agent.output} />
+                        </ToolSectionView>
+                    )}
+                    <ChildTimeline
+                        items={childItems}
+                        depth={depth + 1}
+                        metadata={metadata}
+                        initiallyExpanded={agent.status === 'running' || agent.status === 'pending'}
+                    />
+                </>
+            )}
         </View>
     );
 });
@@ -495,7 +545,13 @@ const AgentRowView = React.memo<{
 /*  DelegateView — main component                                     */
 /* ------------------------------------------------------------------ */
 
-export const DelegateView = React.memo<ToolViewProps>(({ tool, messages, metadata }) => {
+export const DelegateView = React.memo<DelegateViewProps>(({
+    tool,
+    messages,
+    metadata,
+    collapseCompleted = false,
+    sortOpenFirst = false,
+}) => {
     const { assigned, unassigned } = React.useMemo(
         () => groupChildMessages(messages),
         [messages],
@@ -504,18 +560,28 @@ export const DelegateView = React.memo<ToolViewProps>(({ tool, messages, metadat
         () => mergeAgents(tool.input, tool.result, tool.state, assigned),
         [assigned, tool.input, tool.result, tool.state],
     );
+    const displayedAgents = React.useMemo(() => {
+        if (!sortOpenFirst) return agents;
+        return agents
+            .map((agent, index) => ({ agent, index }))
+            .sort((left, right) => (
+                getSubagentStatusSortRank(left.agent.status) - getSubagentStatusSortRank(right.agent.status)
+                || left.index - right.index
+            ))
+            .map(({ agent }) => agent);
+    }, [agents, sortOpenFirst]);
     const unassignedItems = React.useMemo(() => extractChildItems(unassigned), [unassigned]);
 
-    if (agents.length === 0 && unassignedItems.length === 0) {
+    if (displayedAgents.length === 0 && unassignedItems.length === 0) {
         return null;
     }
 
     return (
         <View style={styles.container}>
-            {agents.length > 0 && (
-                <Text style={styles.header}>{agents.length} agent{agents.length === 1 ? '' : 's'}</Text>
+            {displayedAgents.length > 0 && (
+                <Text style={styles.header}>{displayedAgents.length} agent{displayedAgents.length === 1 ? '' : 's'}</Text>
             )}
-            {agents.map((agent) => {
+            {displayedAgents.map((agent) => {
                 const childItems = extractChildItems(
                     agent.sessionSubagent ? assigned.get(agent.sessionSubagent) ?? [] : [],
                 );
@@ -526,6 +592,7 @@ export const DelegateView = React.memo<ToolViewProps>(({ tool, messages, metadat
                         childItems={childItems}
                         depth={0}
                         metadata={metadata}
+                        collapseCompleted={collapseCompleted}
                     />
                 );
             })}
@@ -591,6 +658,9 @@ const styles = StyleSheet.create((theme) => ({
         fontSize: 11,
         color: theme.colors.textSecondary,
         textTransform: 'uppercase',
+    },
+    agentHeaderChevron: {
+        marginLeft: 'auto',
     },
     description: {
         fontSize: 13,

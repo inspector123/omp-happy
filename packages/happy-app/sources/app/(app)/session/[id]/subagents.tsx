@@ -123,6 +123,8 @@ export default function SubagentDetailsScreen() {
                         tool={message.tool}
                         messages={message.children}
                         metadata={session.metadata}
+                        sortOpenFirst
+                        collapseCompleted
                     />
                 </View>
             ))}
