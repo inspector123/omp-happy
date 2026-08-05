@@ -201,17 +201,33 @@ export const SessionView = React.memo((props: { id: string }) => {
     }, [session, isDataReady]);
     const headerRight = session && deviceType === 'phone' && Platform.OS !== 'web'
         ? (
-            <Pressable
-                onPress={() => router.push(`/session/${sessionId}/info`)}
-                hitSlop={10}
-            >
-                <Avatar
-                    id={getSessionAvatarId(session)}
-                    size={28}
-                    monochrome={!headerProps.isConnected}
-                    flavor={session.metadata?.flavor}
-                />
-            </Pressable>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                <Pressable
+                    onPress={() => router.push(`/session/${sessionId}/subagents`)}
+                    hitSlop={10}
+                    accessibilityRole="button"
+                    accessibilityLabel="Subagents"
+                >
+                    <Ionicons
+                        name="people-outline"
+                        size={25}
+                        color={theme.colors.header.tint}
+                    />
+                </Pressable>
+                <Pressable
+                    onPress={() => router.push(`/session/${sessionId}/info`)}
+                    hitSlop={10}
+                    accessibilityRole="button"
+                    accessibilityLabel="Session info"
+                >
+                    <Avatar
+                        id={getSessionAvatarId(session)}
+                        size={28}
+                        monochrome={!headerProps.isConnected}
+                        flavor={session.metadata?.flavor}
+                    />
+                </Pressable>
+            </View>
         )
         : null;
 
