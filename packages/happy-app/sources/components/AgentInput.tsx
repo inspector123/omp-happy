@@ -1301,8 +1301,10 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                                 disabled={props.goalControlDisabled}
                                                 onPress={() => {
                                                     hapticsLight();
-                                                    props.onGoalPress?.();
                                                     setShowSettings(false);
+                                                    requestAnimationFrame(() => {
+                                                        props.onGoalPress?.();
+                                                    });
                                                 }}
                                                 style={({ pressed }) => ({
                                                     paddingHorizontal: 12,
