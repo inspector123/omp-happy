@@ -167,4 +167,13 @@ describe('parseMarkdownBlock - display math', () => {
             content: '\\frac{buy volume}{sell volume}',
         }]);
     });
+
+    it('parses compact bracketed equations emitted on one line', () => {
+        const md = '\\[\\text{gross impulse}=\\frac{\\text{alert gross}-\\text{prior mean gross}}{\\text{alert gross}+\\text{prior mean gross}}\\]';
+
+        expect(parseMarkdown(md)).toEqual([{
+            type: 'math',
+            content: '\\text{gross impulse}=\\frac{\\text{alert gross}-\\text{prior mean gross}}{\\text{alert gross}+\\text{prior mean gross}}',
+        }]);
+    });
 });

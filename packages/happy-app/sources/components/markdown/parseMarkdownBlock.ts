@@ -111,24 +111,50 @@ export function parseMarkdownBlock(markdown: string) {
             continue;
         }
 
-        // Display math is kept as TeX for the platform renderer.
-        if (trimmed === '\\[' || trimmed === '$$') {
-            const closingDelimiter = trimmed === '\\[' ? '\\]' : '$$';
-            const content: string[] = [];
-            let closingIndex = index;
+        // Display math is kept as TeX for the platform renderer. Models emit
+        // both delimiter-only lines and compact forms such as \[...\].
+        const openingDelimiter = trimmed.startsWith('\\[')
+            ? '\\['
+            : trimmed.startsWith('$$')
+                ? '$$'
+                : null;
+        if (openingDelimiter) {
+            const closingDelimiter = openingDelimiter === '\\[' ? '\\]' : '$$';
+            const firstContent = trimmed.slice(openingDelimiter.length);
+            const inlineClosingIndex = firstContent.indexOf(closingDelimiter);
 
-            while (closingIndex < lines.length && lines[closingIndex].trim() !== closingDelimiter) {
-                content.push(lines[closingIndex]);
-                closingIndex++;
-            }
-
-            if (closingIndex < lines.length) {
+            if (inlineClosingIndex >= 0) {
                 blocks.push({
                     type: 'math',
-                    content: content.join('\n').trim(),
+                    content: firstContent.slice(0, inlineClosingIndex).trim(),
                 });
-                index = closingIndex + 1;
+                const trailingText = firstContent.slice(inlineClosingIndex + closingDelimiter.length).trim();
+                if (trailingText) {
+                    blocks.push({ type: 'text', content: parseMarkdownSpans(trailingText, false) });
+                }
                 continue;
+            }
+
+            const content = firstContent ? [firstContent] : [];
+            let closingIndex = index;
+            while (closingIndex < lines.length) {
+                const closingLine = lines[closingIndex];
+                const delimiterIndex = closingLine.indexOf(closingDelimiter);
+                if (delimiterIndex >= 0) {
+                    content.push(closingLine.slice(0, delimiterIndex));
+                    blocks.push({
+                        type: 'math',
+                        content: content.join('\n').trim(),
+                    });
+                    const trailingText = closingLine.slice(delimiterIndex + closingDelimiter.length).trim();
+                    if (trailingText) {
+                        blocks.push({ type: 'text', content: parseMarkdownSpans(trailingText, false) });
+                    }
+                    index = closingIndex + 1;
+                    continue outer;
+                }
+                content.push(closingLine);
+                closingIndex++;
             }
         }
 
