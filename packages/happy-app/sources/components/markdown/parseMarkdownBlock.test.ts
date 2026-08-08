@@ -140,3 +140,31 @@ describe('parseMarkdownBlock - fenced code blocks', () => {
         }]);
     });
 });
+
+describe('parseMarkdownBlock - display math', () => {
+    it('renders text-only bracketed LaTeX without exposing delimiters or commands', () => {
+        const md = [
+            '\\[',
+            '\\text{net delta}=\\text{market-buy volume}-\\text{market-sell volume}',
+            '\\]',
+        ].join('\n');
+
+        expect(parseMarkdown(md)).toEqual([{
+            type: 'text',
+            content: spans('net delta=market-buy volume-market-sell volume'),
+        }]);
+    });
+
+    it('renders text-only dollar-delimited LaTeX the same way', () => {
+        const md = [
+            '$$',
+            '\\text{net delta}=\\text{market-buy volume}-\\text{market-sell volume}',
+            '$$',
+        ].join('\n');
+
+        expect(parseMarkdown(md)).toEqual([{
+            type: 'text',
+            content: spans('net delta=market-buy volume-market-sell volume'),
+        }]);
+    });
+});

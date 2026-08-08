@@ -65,6 +65,13 @@ function parseTable(lines: string[], startIndex: number): { table: MarkdownBlock
     return { table, nextIndex: index };
 }
 
+function displayMathToPlainText(source: string): string {
+    return source
+        .replace(/\\text\{([^{}]*)\}/g, '$1')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
 export function parseMarkdownBlock(markdown: string) {
     const blocks: MarkdownBlock[] = [];
     const lines = markdown.split('\n');
@@ -108,6 +115,28 @@ export function parseMarkdownBlock(markdown: string) {
                 blocks.push({ type: 'code-block', language, content: contentString });
             }
             continue;
+        }
+
+        // Display math. The native renderer does not typeset TeX, but text-only
+        // equations should still read normally instead of exposing TeX syntax.
+        if (trimmed === '\\[' || trimmed === '$$') {
+            const closingDelimiter = trimmed === '\\[' ? '\\]' : '$$';
+            const content: string[] = [];
+            let closingIndex = index;
+
+            while (closingIndex < lines.length && lines[closingIndex].trim() !== closingDelimiter) {
+                content.push(lines[closingIndex]);
+                closingIndex++;
+            }
+
+            if (closingIndex < lines.length) {
+                blocks.push({
+                    type: 'text',
+                    content: parseMarkdownSpans(displayMathToPlainText(content.join(' ')), false),
+                });
+                index = closingIndex + 1;
+                continue;
+            }
         }
 
         // Horizontal rule

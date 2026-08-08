@@ -1,3 +1,7 @@
+# August 7 — Cleaner equations
+
+- Text-only display equations now render as readable chat text instead of exposing LaTeX delimiters and `\text{...}` commands.
+
 # August 2 — Better remote session controls
 
 - Remote OMP sessions now load the selected machine's model catalog before launch.
