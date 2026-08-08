@@ -13,7 +13,9 @@ function escapeHtml(value: string): string {
 export const LatexRenderer = React.memo((props: { content: string }) => {
     const { theme } = useUnistyles();
     const html = React.useMemo(() => createKaTeXHTML(
-        `\\[${escapeHtml(props.content)}\\]`,
+        // The renderer's bracket-delimiter config loses its backslashes when
+        // embedded in WebView JavaScript. Dollar delimiters are preserved.
+        `$$${escapeHtml(props.content)}$$`,
         {
             padding: '8px 0',
             color: theme.colors.text,
