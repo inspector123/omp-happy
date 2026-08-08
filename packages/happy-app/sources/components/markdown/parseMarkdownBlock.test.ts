@@ -142,7 +142,7 @@ describe('parseMarkdownBlock - fenced code blocks', () => {
 });
 
 describe('parseMarkdownBlock - display math', () => {
-    it('renders text-only bracketed LaTeX without exposing delimiters or commands', () => {
+    it('preserves bracketed LaTeX for the math renderer', () => {
         const md = [
             '\\[',
             '\\text{net delta}=\\text{market-buy volume}-\\text{market-sell volume}',
@@ -150,21 +150,21 @@ describe('parseMarkdownBlock - display math', () => {
         ].join('\n');
 
         expect(parseMarkdown(md)).toEqual([{
-            type: 'text',
-            content: spans('net delta=market-buy volume-market-sell volume'),
+            type: 'math',
+            content: '\\text{net delta}=\\text{market-buy volume}-\\text{market-sell volume}',
         }]);
     });
 
-    it('renders text-only dollar-delimited LaTeX the same way', () => {
+    it('preserves fractions inside dollar-delimited display math', () => {
         const md = [
             '$$',
-            '\\text{net delta}=\\text{market-buy volume}-\\text{market-sell volume}',
+            '\\frac{buy volume}{sell volume}',
             '$$',
         ].join('\n');
 
         expect(parseMarkdown(md)).toEqual([{
-            type: 'text',
-            content: spans('net delta=market-buy volume-market-sell volume'),
+            type: 'math',
+            content: '\\frac{buy volume}{sell volume}',
         }]);
     });
 });

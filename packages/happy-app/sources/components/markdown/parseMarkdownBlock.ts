@@ -65,12 +65,6 @@ function parseTable(lines: string[], startIndex: number): { table: MarkdownBlock
     return { table, nextIndex: index };
 }
 
-function displayMathToPlainText(source: string): string {
-    return source
-        .replace(/\\text\{([^{}]*)\}/g, '$1')
-        .replace(/\s+/g, ' ')
-        .trim();
-}
 
 export function parseMarkdownBlock(markdown: string) {
     const blocks: MarkdownBlock[] = [];
@@ -117,8 +111,7 @@ export function parseMarkdownBlock(markdown: string) {
             continue;
         }
 
-        // Display math. The native renderer does not typeset TeX, but text-only
-        // equations should still read normally instead of exposing TeX syntax.
+        // Display math is kept as TeX for the platform renderer.
         if (trimmed === '\\[' || trimmed === '$$') {
             const closingDelimiter = trimmed === '\\[' ? '\\]' : '$$';
             const content: string[] = [];
@@ -131,8 +124,8 @@ export function parseMarkdownBlock(markdown: string) {
 
             if (closingIndex < lines.length) {
                 blocks.push({
-                    type: 'text',
-                    content: parseMarkdownSpans(displayMathToPlainText(content.join(' ')), false),
+                    type: 'math',
+                    content: content.join('\n').trim(),
                 });
                 index = closingIndex + 1;
                 continue;

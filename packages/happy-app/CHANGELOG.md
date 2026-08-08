@@ -1,6 +1,6 @@
 # August 7 — Cleaner equations
 
-- Text-only display equations now render as readable chat text instead of exposing LaTeX delimiters and `\text{...}` commands.
+- Display equations now render as formatted LaTeX, including fractions, instead of exposing delimiters and commands.
 
 # August 2 — Better remote session controls
 
