@@ -3,7 +3,22 @@ import type { MarkdownSpan } from "./parseMarkdown";
 // Updated pattern to handle nested markdown and asterisks
 const pattern = /(\*\*(.*?)(?:\*\*|$))|(\*(.*?)(?:\*|$))|(\[([^\]]+)\](?:\(([^)]+)\))?)|(`(.*?)(?:`|$))/g;
 
+function normalizeInlineMath(text: string): string {
+    return text.replace(/\\\((.*?)\\\)/g, (_match, expression: string) => expression
+        .replace(/\\text\{([^{}]*)\}/g, '$1')
+        .replace(/\\%/g, '%')
+        .replace(/\\times/g, '×')
+        .replace(/\\cdot/g, '·')
+        .replace(/\\leq?/g, '≤')
+        .replace(/\\geq?/g, '≥')
+        .replace(/\\neq/g, '≠')
+        .replace(/\\,/g, ' ')
+        .trim());
+}
+
 function pushTextWithAutoLinks(spans: MarkdownSpan[], text: string, styles: MarkdownSpan['styles']) {
+    text = normalizeInlineMath(text);
+
     const urlPattern = /https?:\/\/[^\s<]+/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;

@@ -1,6 +1,7 @@
 # August 7 — Cleaner equations
 
 - Display equations now render as formatted LaTeX, including fractions, instead of exposing delimiters and commands.
+- Inline equations now read normally in prose and lists instead of showing `\(...\)` and escaped symbols.
 
 # August 2 — Better remote session controls
 

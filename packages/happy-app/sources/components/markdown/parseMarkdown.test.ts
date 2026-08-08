@@ -61,4 +61,28 @@ describe('parseMarkdown', () => {
             { styles: [], text: ' for more.', url: null },
         ]);
     });
+
+    it('renders inline LaTeX as readable text without exposing delimiters', () => {
+        const blocks = parseMarkdown([
+            'The **Fisher probability** is the one-sided Fisher exact-test \\(p\\)-value.',
+            '- Candidate state: \\(21/56 = 37.5\\%\\)',
+        ].join('\n'));
+
+        expect(blocks).toEqual([
+            {
+                type: 'text',
+                content: [
+                    { styles: [], text: 'The ', url: null },
+                    { styles: ['bold'], text: 'Fisher probability', url: null },
+                    { styles: [], text: ' is the one-sided Fisher exact-test p-value.', url: null },
+                ],
+            },
+            {
+                type: 'list',
+                items: [item([
+                    { styles: [], text: 'Candidate state: 21/56 = 37.5%', url: null },
+                ])],
+            },
+        ]);
+    });
 });
