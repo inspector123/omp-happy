@@ -233,6 +233,6 @@ copy of your entire Happy home.
 - **`omp` cannot spawn:** make sure `omp` is on the daemon's `PATH` and verify
   `omp acp --help` from the same environment.
 
-See [`README.omp.md`](README.omp.md) for fork-specific agent features and
+See [`README.md`](README.md) for fork-specific agent features and
 [`packages/happy-server/README.md`](packages/happy-server/README.md) for
 standalone server details.

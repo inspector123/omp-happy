@@ -659,7 +659,7 @@ uses the generic ACP integration and does not validate the native Pi extension b
 
 ## Next reading
 
-- [`README.omp.md`](README.omp.md): complete native OMP/Pi bridge architecture and protocol.
+- [`README.md`](README.md): complete native OMP/Pi bridge architecture and protocol.
 - [`SETUP.md`](SETUP.md): self-hosted account and client linking details.
 - [`docs/deployment.md`](docs/deployment.md): production server deployment and backups.
 - [`packages/happy-server/README.md`](packages/happy-server/README.md): standalone server behavior.
