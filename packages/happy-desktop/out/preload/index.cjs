@@ -12,6 +12,8 @@ electron.contextBridge.exposeInMainWorld("hd", {
 		};
 	},
 	sendMessage: (sessionId, text) => electron.ipcRenderer.invoke("hd:send", sessionId, text),
-	openSession: (sessionId) => electron.ipcRenderer.invoke("hd:open", sessionId)
+	openSession: (sessionId) => electron.ipcRenderer.invoke("hd:open", sessionId),
+	spawnSession: (input) => electron.ipcRenderer.invoke("hd:spawn", input),
+	stopSession: (sessionId) => electron.ipcRenderer.invoke("hd:stopSession", sessionId)
 });
 //#endregion

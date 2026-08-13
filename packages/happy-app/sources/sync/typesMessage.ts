@@ -10,6 +10,7 @@ export type ToolCall = {
     completedAt: number | null;
     description: string | null;
     result?: any;
+    inlineRequest?: ToolCall;
     permission?: {
         id: string;
         status: 'pending' | 'approved' | 'denied' | 'canceled';

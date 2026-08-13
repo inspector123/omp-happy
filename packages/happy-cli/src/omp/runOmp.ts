@@ -28,6 +28,10 @@ import { createOmpConfigCommandRunner, persistOmpDefaultModel } from './ompModel
 const KEEPALIVE_INTERVAL_MS = 2_000;
 const MIRROR_FLUSH_DELAY_MS = 150;
 const BRIDGE_READY_TIMEOUT_MS = 15_000;
+const PTY_PROMPT_SETTLE_MS = 120;
+const PTY_PROMPT_MAX_CHARS = 2_048;
+const EXPLICIT_SUDO_PROMPT_PATTERN = /(?:\[sudo\]|sudo:)\s*password(?:\s+for\s+[^:\r\n]+)?:/i;
+const TRAILING_PASSWORD_PROMPT_PATTERN = /(?:^|\n)(?:\[[^\]\r\n]+\]\s*)?password(?:\s+for\s+[^:\r\n]+)?:\s*$/i;
 const SESSION_CLOSE_TIMEOUT_MS = 5_000;
 const BRIDGE_EXIT_GRACE_MS = 300;
 const BRIDGE_SOCKET_ENV = 'OMP_HAPPY_BRIDGE_SOCKET';
@@ -112,6 +116,11 @@ type BridgeChangeTitleFrame = {
 type BridgeTuiCommandReadyFrame = {
   type: 'tui_command_ready';
   command: string;
+};
+
+type PendingPtyPrompt = {
+  id: string;
+  callId?: string;
 };
 
 type PhoneAttachment = {
@@ -211,6 +220,24 @@ function normalizeBridgeToolName(toolName: string): string {
   }
 }
 
+
+function stripTerminalControlSequences(value: string): string {
+  return value
+    .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, '')
+    .replace(/\u001B(?:\[[0-?]*[ -/]*[@-~]|[@-_])/g, '')
+    .replace(/\r/g, '\n')
+    .replace(/\u0008/g, '');
+}
+
+function detectExplicitSudoPasswordPrompt(value: string): string | null {
+  const match = EXPLICIT_SUDO_PROMPT_PATTERN.exec(stripTerminalControlSequences(value));
+  return match?.[0].trim() ?? null;
+}
+
+function detectTrailingPasswordPrompt(value: string): string | null {
+  const match = TRAILING_PASSWORD_PROMPT_PATTERN.exec(stripTerminalControlSequences(value));
+  return match?.[0].trim() ?? null;
+}
 function normalizeBridgeToolInput(toolName: string, input: unknown): unknown {
   if (!isRecord(input)) {
     return input;
@@ -581,6 +608,10 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   let lastPlanJson = '';
   const liveDelegateBindings = new Set<DelegateTaskBinding>();
   const compactTodoCallIds = new Set<string>();
+  const activeInteractiveBashCalls = new Set<string>();
+  let pendingPtyPrompt: PendingPtyPrompt | null = null;
+  let ptyPromptScanBuffer = '';
+  let ptyPromptTimer: NodeJS.Timeout | null = null;
   const activeDelegateTasksByBridge = new Map<string, Map<string, DelegateTaskBinding[]>>();
   const childMirrorsBySource = new Map<BridgeFrameSource, ChildMirrorState>();
   let bridgeServer: BridgeServer | null = null;
@@ -627,6 +658,68 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     });
     modelPersistenceQueue = operation;
     return operation.then(() => succeeded);
+  };
+
+  const clearPendingPtyPrompt = (): void => {
+    if (ptyPromptTimer) {
+      clearTimeout(ptyPromptTimer);
+      ptyPromptTimer = null;
+    }
+    pendingPtyPrompt = null;
+    ptyPromptScanBuffer = '';
+  };
+
+  const publishPtyPrompt = (prompt: string, callId?: string): void => {
+    if (pendingPtyPrompt) {
+      return;
+    }
+    const id = `omp-pty-${randomUUID()}`;
+    pendingPtyPrompt = { id, callId };
+    session.sendAgentMessage('omp', {
+      type: 'permission-request',
+      permissionId: id,
+      toolName: 'AskUserQuestion',
+      description: prompt,
+      ...(callId ? { parentToolCallId: callId } : {}),
+      options: {
+        inputKind: 'password',
+        questions: [{
+          id: 'password',
+          question: prompt,
+          header: 'Authentication',
+          options: [],
+          multiSelect: false,
+          secret: true,
+        }],
+      },
+    });
+  };
+
+  const scanPtyOutputForPasswordPrompt = (data: string): void => {
+    ptyPromptScanBuffer = `${ptyPromptScanBuffer}${data}`.slice(-PTY_PROMPT_MAX_CHARS);
+    if (pendingPtyPrompt || activeInteractiveBashCalls.size === 0) {
+      return;
+    }
+    const callId = activeInteractiveBashCalls.size === 1
+      ? activeInteractiveBashCalls.values().next().value
+      : undefined;
+    const explicitSudoPrompt = detectExplicitSudoPasswordPrompt(ptyPromptScanBuffer);
+    if (explicitSudoPrompt) {
+      if (ptyPromptTimer) {
+        clearTimeout(ptyPromptTimer);
+        ptyPromptTimer = null;
+      }
+      publishPtyPrompt(explicitSudoPrompt, callId);
+      return;
+    }
+    clearTimeout(ptyPromptTimer ?? undefined);
+    ptyPromptTimer = setTimeout(() => {
+      ptyPromptTimer = null;
+      const prompt = detectTrailingPasswordPrompt(ptyPromptScanBuffer);
+      if (prompt) {
+        publishPtyPrompt(prompt, callId);
+      }
+    }, PTY_PROMPT_SETTLE_MS);
   };
 
 
@@ -1195,6 +1288,13 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
           compactTodoCallIds.add(toolCallId);
           return;
         }
+        if (rawToolName === 'bash') {
+          activeInteractiveBashCalls.add(toolCallId);
+          // PTY output and extension lifecycle events arrive on independent
+          // channels. Rescan output that may have reached us just before the
+          // tool start frame instead of discarding a fast password prompt.
+          scanPtyOutputForPasswordPrompt('');
+        }
         const input = toolName === 'delegate_task'
           ? prepareDelegateTaskInput(ROOT_BRIDGE_KEY, toolCallId, event.args)
           : normalizeBridgeToolInput(toolName, event.args);
@@ -1211,6 +1311,16 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         const toolCallId = asString(event.toolCallId) ?? randomUUID();
         if (asString(event.toolName) === 'happy_ask') {
           return;
+        }
+        const wasInteractiveBash = activeInteractiveBashCalls.delete(toolCallId);
+        if (wasInteractiveBash && pendingPtyPrompt?.callId === toolCallId) {
+          clearPendingPtyPrompt();
+        } else if (wasInteractiveBash && activeInteractiveBashCalls.size === 0) {
+          if (ptyPromptTimer) {
+            clearTimeout(ptyPromptTimer);
+            ptyPromptTimer = null;
+          }
+          ptyPromptScanBuffer = '';
         }
         if (compactTodoCallIds.delete(toolCallId)) {
           emitPlanTodos(event.result);
@@ -1431,6 +1541,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     });
     child.onData((data) => {
       process.stdout.write(data);
+      scanPtyOutputForPasswordPrompt(data);
     });
     child.onExit(({ exitCode, signal }) => {
       log(`Native omp child exited (code=${exitCode} signal=${signal ?? 'null'})`);
@@ -1624,8 +1735,26 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   session.rpcHandlerManager.registerHandler<{
     id: string;
     approved: boolean;
-    updatedInput?: { answers?: Record<string, string | string[]> };
+    updatedInput?: { answers?: Record<string, string | string[]>; value?: string };
   }, void>('permission', async (response) => {
+    if (pendingPtyPrompt?.id === response.id) {
+      const answer = response.updatedInput?.answers?.password;
+      const value = response.updatedInput?.value ?? (typeof answer === 'string' ? answer : undefined);
+      if (response.approved && typeof value === 'string') {
+        writeToChild(`${value}\r`);
+      } else {
+        writeToChild('\u0003');
+      }
+      session.sendAgentMessage('omp', {
+        type: 'tool-result',
+        callId: response.id,
+        output: response.approved ? 'Input sent to the PTY.' : 'PTY input cancelled.',
+        id: randomUUID(),
+        isError: !response.approved,
+      });
+      clearPendingPtyPrompt();
+      return;
+    }
     // Ask is a tool-level interaction, not a permission gate. Always resolve
     // the pending bridge request so OMP can finish the tool call and continue.
     bridgeServer?.send({
@@ -1667,6 +1796,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       clearTimeout(pendingFlushTimer);
       pendingFlushTimer = null;
     }
+    clearPendingPtyPrompt();
     flushPendingText();
     process.off('SIGINT', swallowSigint);
     if (resizeHandler) {

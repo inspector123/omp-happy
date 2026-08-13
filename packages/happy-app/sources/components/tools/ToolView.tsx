@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Text, View, TouchableOpacity, ActivityIndicator, Platform, Pressable } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Ionicons, Octicons } from '@expo/vector-icons';
+import { AskUserQuestionView } from './views/AskUserQuestionView';
 import { getToolViewComponent } from './views/_all';
 import { Message, ToolCall } from '@/sync/typesMessage';
 import { CodeView } from '../CodeView';
@@ -239,10 +240,21 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
                     </View>
                 )
             ) : null}
+            {tool.inlineRequest ? (
+                <View style={styles.inlineRequest}>
+                    <AskUserQuestionView
+                        tool={tool.inlineRequest}
+                        metadata={props.metadata}
+                        messages={[]}
+                        sessionId={sessionId}
+                    />
+                </View>
+            ) : null}
 
             {/* Content area - either custom children or tool-specific view */}
             {(() => {
-                // Check if minimal first - minimal tools don't show content
+                // Compact terminal tools normally omit their body, but an active
+                // inline request is rendered directly above this content area.
                 if (minimal || isCompactTerminalTool) {
                     return null;
                 }
@@ -381,6 +393,12 @@ const styles = StyleSheet.create((theme) => ({
         backgroundColor: 'transparent',
         marginVertical: 1,
         overflow: 'visible',
+    },
+    inlineRequest: {
+        marginTop: 6,
+        borderRadius: 8,
+        overflow: 'hidden',
+        backgroundColor: theme.colors.surfaceHigh,
     },
     header: {
         flexDirection: 'row',

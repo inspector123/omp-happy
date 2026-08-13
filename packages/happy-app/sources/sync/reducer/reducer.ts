@@ -799,6 +799,30 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
         if (msg.role === 'agent') {
             for (let c of msg.content) {
                 if (c.type === 'tool-call') {
+                    if (c.parentToolCallId) {
+                        const parentMessageId = state.toolIdToMessageId.get(c.parentToolCallId);
+                        if (parentMessageId) {
+                            const parentMessage = state.messages.get(parentMessageId);
+                            if (parentMessage?.tool) {
+                                parentMessage.tool.inlineRequest = {
+                                    name: c.name,
+                                    state: 'running',
+                                    input: c.input,
+                                    createdAt: msg.createdAt,
+                                    startedAt: msg.createdAt,
+                                    completedAt: null,
+                                    description: c.description,
+                                    permission: {
+                                        id: c.id,
+                                        status: 'pending',
+                                    },
+                                };
+                                state.toolIdToMessageId.set(c.id, parentMessageId);
+                                changed.add(parentMessageId);
+                                continue;
+                            }
+                        }
+                    }
                     // Direct lookup by tool ID (since permission ID = tool ID now)
                     const existingMessageId = state.toolIdToMessageId.get(c.id);
 
@@ -902,6 +926,17 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
 
                     let message = state.messages.get(messageId);
                     if (!message || !message.tool) {
+                        continue;
+                    }
+                    if (message.tool.inlineRequest?.permission?.id === c.tool_use_id) {
+                        message.tool.inlineRequest.state = c.is_error ? 'error' : 'completed';
+                        message.tool.inlineRequest.result = c.content;
+                        message.tool.inlineRequest.completedAt = msg.createdAt;
+                        message.tool.inlineRequest.permission = {
+                            ...message.tool.inlineRequest.permission,
+                            status: c.is_error ? 'denied' : 'approved',
+                        };
+                        changed.add(messageId);
                         continue;
                     }
 

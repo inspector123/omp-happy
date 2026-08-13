@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { View, Text, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, TouchableOpacity, ActivityIndicator, TextInput } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { ToolViewProps } from './_all';
 import { ToolSectionView } from '../ToolSectionView';
@@ -17,6 +17,7 @@ import {
 
 interface AskUserQuestionInput {
     questions: AskQuestion[];
+    inputKind?: 'password';
 }
 
 // Styles MUST be defined outside the component to prevent infinite re-renders
@@ -47,6 +48,17 @@ const styles = StyleSheet.create((theme) => ({
         fontWeight: '500',
         color: theme.colors.text,
         marginBottom: 8,
+    },
+    passwordInput: {
+        minHeight: 44,
+        borderWidth: 1,
+        borderColor: theme.colors.divider,
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        fontSize: 15,
+        color: theme.colors.text,
+        backgroundColor: theme.colors.input.background,
     },
     optionsContainer: {
         gap: 4,
@@ -166,10 +178,12 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
     const [customAnswers, setCustomAnswers] = React.useState<Map<number, string>>(new Map());
     const [isSubmitting, setIsSubmitting] = React.useState(false);
     const [isSubmitted, setIsSubmitted] = React.useState(false);
+    const [secretAnswer, setSecretAnswer] = React.useState('');
 
     // Parse input
     const input = tool.input as AskUserQuestionInput | undefined;
     const questions = input?.questions;
+    const isPasswordPrompt = input?.inputKind === 'password';
 
     if (!questions || !Array.isArray(questions) || questions.length === 0) {
         return null;
@@ -179,9 +193,9 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
     const permissionId = tool.permission?.id;
     const canInteract = isRunning && !isSubmitting && !isSubmitted;
 
-    const allQuestionsAnswered = questions.every((_, qIndex) =>
-        isQuestionAnswered(qIndex, selections, customAnswers)
-    );
+    const allQuestionsAnswered = isPasswordPrompt
+        ? secretAnswer.length > 0
+        : questions.every((_, qIndex) => isQuestionAnswered(qIndex, selections, customAnswers));
 
     const handleOptionToggle = React.useCallback((questionIndex: number, optionIndex: number, multiSelect: boolean) => {
         if (!canInteract) return;
@@ -250,7 +264,9 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
 
         setIsSubmitting(true);
 
-        const answers = buildAskAnswers(questions, selections, customAnswers);
+        const answers = isPasswordPrompt
+            ? { password: secretAnswer }
+            : buildAskAnswers(questions, selections, customAnswers);
 
         try {
             // AskUserQuestion expects answers to be returned as part of the tool input,
@@ -262,23 +278,21 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
         } finally {
             setIsSubmitting(false);
         }
-    }, [sessionId, permissionId, questions, selections, customAnswers, allQuestionsAnswered, isSubmitting]);
+    }, [sessionId, permissionId, questions, selections, customAnswers, allQuestionsAnswered, isSubmitting, isPasswordPrompt, secretAnswer]);
 
     // Show submitted state
     if (isSubmitted || tool.state === 'completed') {
         return (
             <ToolSectionView>
                 <View style={styles.submittedContainer}>
-                    {questions.map((q, qIndex) => {
-                        const selectedValues = getAnswerValues(q, qIndex, selections, customAnswers);
-                        const selectedLabels = selectedValues.length > 0 ? selectedValues.join(', ') : '-';
-                        return (
-                            <View key={qIndex} style={styles.submittedItem}>
-                                <Text style={styles.submittedHeader}>{q.header}:</Text>
-                                <Text style={styles.submittedValue}>{selectedLabels}</Text>
-                            </View>
-                        );
-                    })}
+                    {questions.map((q) => (
+                        <View key={q.id ?? q.question} style={styles.submittedItem}>
+                            <Text style={styles.submittedHeader}>{q.header}:</Text>
+                            <Text style={styles.submittedValue}>
+                                {isPasswordPrompt ? '••••••••' : getAnswerValues(q, questions.indexOf(q), selections, customAnswers).join(', ') || '-'}
+                            </Text>
+                        </View>
+                    ))}
                 </View>
             </ToolSectionView>
         );
@@ -297,6 +311,24 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
                                 <Text style={styles.headerText}>{question.header}</Text>
                             </View>
                             <Text style={styles.questionText}>{question.question}</Text>
+                            {isPasswordPrompt ? (
+                                <TextInput
+                                    value={secretAnswer}
+                                    onChangeText={setSecretAnswer}
+                                    secureTextEntry
+                                    autoCapitalize="none"
+                                    autoCorrect={false}
+                                    autoFocus
+                                    editable={canInteract}
+                                    onSubmitEditing={() => {
+                                        if (allQuestionsAnswered) void handleSubmit();
+                                    }}
+                                    placeholder="Password"
+                                    placeholderTextColor={theme.colors.input.placeholder}
+                                    style={styles.passwordInput}
+                                    accessibilityLabel={question.question}
+                                />
+                            ) : null}
                             <View style={styles.optionsContainer}>
                                 {question.options.map((option, oIndex) => {
                                     const isSelected = selectedOptions.has(oIndex);
@@ -339,42 +371,44 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
                                         </TouchableOpacity>
                                     );
                                 })}
-                                <TouchableOpacity
-                                    style={[
-                                        styles.optionButton,
-                                        isOtherSelected && styles.optionButtonSelected,
-                                        !canInteract && styles.optionButtonDisabled,
-                                    ]}
-                                    onPress={() => handleOtherPress(qIndex, question.multiSelect === true)}
-                                    disabled={!canInteract}
-                                    activeOpacity={0.7}
-                                    accessibilityRole={question.multiSelect ? 'checkbox' : 'radio'}
-                                    accessibilityState={{ selected: isOtherSelected, checked: isOtherSelected }}
-                                >
-                                    {question.multiSelect ? (
-                                        <View style={[
-                                            styles.checkboxOuter,
-                                            isOtherSelected && styles.checkboxOuterSelected,
-                                        ]}>
-                                            {isOtherSelected && (
-                                                <Ionicons name="checkmark" size={14} color="#fff" />
-                                            )}
+                                {!isPasswordPrompt && (
+                                    <TouchableOpacity
+                                        style={[
+                                            styles.optionButton,
+                                            isOtherSelected && styles.optionButtonSelected,
+                                            !canInteract && styles.optionButtonDisabled,
+                                        ]}
+                                        onPress={() => handleOtherPress(qIndex, question.multiSelect === true)}
+                                        disabled={!canInteract}
+                                        activeOpacity={0.7}
+                                        accessibilityRole={question.multiSelect ? 'checkbox' : 'radio'}
+                                        accessibilityState={{ selected: isOtherSelected, checked: isOtherSelected }}
+                                    >
+                                        {question.multiSelect ? (
+                                            <View style={[
+                                                styles.checkboxOuter,
+                                                isOtherSelected && styles.checkboxOuterSelected,
+                                            ]}>
+                                                {isOtherSelected && (
+                                                    <Ionicons name="checkmark" size={14} color="#fff" />
+                                                )}
+                                            </View>
+                                        ) : (
+                                            <View style={[
+                                                styles.radioOuter,
+                                                isOtherSelected && styles.radioOuterSelected,
+                                            ]}>
+                                                {isOtherSelected && <View style={styles.radioInner} />}
+                                            </View>
+                                        )}
+                                        <View style={styles.optionContent}>
+                                            <Text style={styles.optionLabel}>{t('tools.askUserQuestion.other')}</Text>
+                                            <Text style={styles.optionDescription}>
+                                                {customAnswers.get(qIndex) || t('tools.askUserQuestion.otherDescription')}
+                                            </Text>
                                         </View>
-                                    ) : (
-                                        <View style={[
-                                            styles.radioOuter,
-                                            isOtherSelected && styles.radioOuterSelected,
-                                        ]}>
-                                            {isOtherSelected && <View style={styles.radioInner} />}
-                                        </View>
-                                    )}
-                                    <View style={styles.optionContent}>
-                                        <Text style={styles.optionLabel}>{t('tools.askUserQuestion.other')}</Text>
-                                        <Text style={styles.optionDescription}>
-                                            {customAnswers.get(qIndex) || t('tools.askUserQuestion.otherDescription')}
-                                        </Text>
-                                    </View>
-                                </TouchableOpacity>
+                                    </TouchableOpacity>
+                                )}
                             </View>
                         </View>
                     );

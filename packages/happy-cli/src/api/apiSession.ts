@@ -23,10 +23,13 @@ import { InvalidateSync } from '@/utils/sync';
 import axios from 'axios';
 
 /**
- * ACP (Agent Communication Protocol) message data types.
- * This is the unified format for all agent messages - CLI adapts each provider's format to ACP.
+ * Happy's normalized agent-event payload shared by provider adapters.
+ *
+ * The persisted `content.type: 'acp'` discriminator is retained for wire
+ * compatibility. It does not mean every provider runs through an ACP backend;
+ * native OMP uses its interactive process plus the Happy extension bridge.
  */
-export type ACPMessageData =
+export type AgentMessageData =
     // Core message types
     | { type: 'message'; message: string; streamId?: string; append?: boolean }
     | { type: 'reasoning'; message: string }
@@ -43,13 +46,13 @@ export type ACPMessageData =
     | { type: 'task_complete'; id: string }
     | { type: 'turn_aborted'; id: string }
     // Permissions
-    | { type: 'permission-request'; permissionId: string; toolName: string; description: string; options?: unknown }
+    | { type: 'permission-request'; permissionId: string; toolName: string; description: string; options?: unknown; parentToolCallId?: string }
     // Advisor feedback
     | { type: 'advisor'; notes: Array<{ note: string; severity?: 'nit' | 'concern' | 'blocker'; advisor?: string }> }
     // Usage/metrics
     | { type: 'token_count';[key: string]: unknown };
 
-export type ACPProvider = 'gemini' | 'codex' | 'claude' | 'opencode';
+export type AgentMessageProvider = 'gemini' | 'codex' | 'claude' | 'opencode';
 
 type V3SessionMessage = {
     id: string;
@@ -822,13 +825,12 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     /**
-     * Send a generic agent message to the session using ACP (Agent Communication Protocol) format.
-     * Works for any agent type (Gemini, Codex, Claude, etc.) - CLI normalizes to unified ACP format.
-     * 
-     * @param provider - The agent provider sending the message (e.g., 'gemini', 'codex', 'claude')
-     * @param body - The message payload (type: 'message' | 'reasoning' | 'tool-call' | 'tool-result')
+     * Send a normalized agent event through encrypted Happy session sync.
+     *
+     * `content.type: 'acp'` is a legacy persisted discriminator, not a claim
+     * that the provider is running in ACP mode.
      */
-    sendAgentMessage(provider: 'gemini' | 'codex' | 'claude' | 'opencode' | 'openclaw' | 'omp', body: ACPMessageData) {
+    sendAgentMessage(provider: 'gemini' | 'codex' | 'claude' | 'opencode' | 'openclaw' | 'omp', body: AgentMessageData) {
         let content = {
             role: 'agent',
             content: {
@@ -841,7 +843,7 @@ export class ApiSessionClient extends EventEmitter {
             }
         };
 
-        logger.debug(`[SOCKET] Sending ACP message from ${provider}:`, { type: body.type, hasMessage: 'message' in body });
+        logger.debug(`[SOCKET] Sending normalized agent event from ${provider}:`, { type: body.type, hasMessage: 'message' in body });
 
         this.enqueueMessage(content);
     }

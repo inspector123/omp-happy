@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EventEmitter } from "node:events";
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { createStore } from "zustand/vanilla";
 import sodium from "libsodium-wrappers";
 import { homedir } from "node:os";
@@ -112,7 +112,24 @@ function createDesktopStore() {
 			const byId = new Map(current.map((m, i) => [m.id, i]));
 			const next = [...current];
 			let changed = false;
-			for (const { view, stream, localId } of views) {
+			for (const { view, stream, localId, toolResult } of views) {
+				if (toolResult) {
+					const scope = view.subagentId;
+					const matchIdx = next.findIndex((m) => m.kind === "tool" && m.toolData?.callId === toolResult.callId && m.subagentId === scope);
+					if (matchIdx !== -1) {
+						const existing = next[matchIdx];
+						next[matchIdx] = {
+							...existing,
+							toolData: {
+								...existing.toolData,
+								result: toolResult.result,
+								error: toolResult.error
+							}
+						};
+						changed = true;
+					}
+					continue;
+				}
 				if (localId) {
 					const optimisticIndex = byId.get(`local:${localId}`);
 					if (optimisticIndex !== void 0) {
@@ -140,7 +157,54 @@ function createDesktopStore() {
 				next.forEach((m, i) => byId.set(m.id, i));
 				changed = true;
 			}
-			if (changed) store.setState({ messages: {
+			{
+				const msgById = new Map(next.map((m) => [m.id, m]));
+				const delegateMap = /* @__PURE__ */ new Map();
+				for (const m of next) {
+					if (m.kind !== "tool" || !m.toolData) continue;
+					if (m.toolData.name !== "delegate_task") continue;
+					const tasks = m.toolData.input?.tasks;
+					if (!Array.isArray(tasks)) continue;
+					for (const task of tasks) {
+						if (!task || typeof task !== "object") continue;
+						const t = task;
+						const sa = typeof t.sessionSubagent === "string" ? t.sessionSubagent : void 0;
+						if (sa) delegateMap.set(sa, m.id);
+					}
+				}
+				function findParentForSubagent(subagentId, scopeChildren) {
+					if (delegateMap.has(subagentId)) return delegateMap.get(subagentId) ?? null;
+					for (const childId of scopeChildren) {
+						const child = msgById.get(childId);
+						if (!child || child.kind !== "tool" || !child.toolData) continue;
+						if (child.toolData.name !== "delegate_task") continue;
+						const tasks = child.toolData.input?.tasks;
+						if (!Array.isArray(tasks)) continue;
+						for (const task of tasks) {
+							if (!task || typeof task !== "object") continue;
+							const t = task;
+							if ((typeof t.sessionSubagent === "string" ? t.sessionSubagent : void 0) === subagentId) return childId;
+							const deeper = findParentForSubagent(subagentId, child.toolData.childMessageIds ?? []);
+							if (deeper) return deeper;
+						}
+					}
+					return null;
+				}
+				for (const m of next) if (m.toolData?.childMessageIds) m.toolData.childMessageIds = [];
+				for (const m of next) {
+					if (!m.subagentId) continue;
+					const parentId = findParentForSubagent(m.subagentId, []);
+					if (!parentId) continue;
+					const parent = msgById.get(parentId);
+					if (!parent?.toolData) continue;
+					if (!parent.toolData.childMessageIds) parent.toolData.childMessageIds = [];
+					if (!parent.toolData.childMessageIds.includes(m.id)) {
+						parent.toolData.childMessageIds.push(m.id);
+						changed = true;
+					}
+				}
+			}
+			if (changed || state.messages[sessionId] === void 0) store.setState({ messages: {
 				...state.messages,
 				[sessionId]: next
 			} });
@@ -180,8 +244,8 @@ function summarizeToolCall(name, input) {
 		return name;
 	}
 }
-function view(base, id, role, kind, text, raw, createdAt) {
-	return {
+function view(base, id, role, kind, text, raw, createdAt, toolData, subagentId) {
+	const out = {
 		id,
 		seq: base.seq,
 		createdAt: createdAt ?? base.createdAt,
@@ -190,12 +254,15 @@ function view(base, id, role, kind, text, raw, createdAt) {
 		text,
 		raw
 	};
+	if (toolData) out.toolData = toolData;
+	if (subagentId) out.subagentId = subagentId;
+	return out;
 }
-function push(out, v, stream) {
-	out.push(stream ? {
-		view: v,
-		stream
-	} : { view: v });
+function push(out, v, stream, toolResult) {
+	const entry = { view: v };
+	if (stream) entry.stream = stream;
+	if (toolResult) entry.toolResult = toolResult;
+	out.push(entry);
 }
 /**
 * Normalize one decrypted raw record into zero or more MessageViews.
@@ -255,7 +322,16 @@ function normalizeAgentOutput(base, data, raw, out) {
 			index += 1;
 			if (block.type === "text" && typeof block.text === "string") push(out, view(base, id, "agent", "text", block.text, raw));
 			else if (block.type === "thinking" && typeof block.thinking === "string") push(out, view(base, id, "agent", "thinking", block.thinking, raw));
-			else if (block.type === "tool_use" || block.type === "tool-call") push(out, view(base, id, "agent", "tool", summarizeToolCall(asString(block.name) ?? "unknown", block.input), raw));
+			else if (block.type === "tool_use" || block.type === "tool-call") {
+				const name = asString(block.name) ?? "unknown";
+				const callId = asString(block.callId);
+				const toolData = {
+					name,
+					input: block.input
+				};
+				if (callId) toolData.callId = callId;
+				push(out, view(base, id, "agent", "tool", summarizeToolCall(name, block.input), raw, void 0, toolData));
+			}
 		}
 		return;
 	}
@@ -310,7 +386,24 @@ function normalizeAcpLike(base, data, raw, out) {
 	}
 	if (dataType === "tool-call") {
 		const name = asString(data.name) ?? "unknown";
-		push(out, view(base, base.id, "agent", "tool", summarizeToolCall(name, data.input), raw));
+		const callId = asString(data.callId);
+		const toolData = {
+			name,
+			input: data.input
+		};
+		if (callId) toolData.callId = callId;
+		push(out, view(base, base.id, "agent", "tool", summarizeToolCall(name, data.input), raw, void 0, toolData));
+		return;
+	}
+	if (dataType === "tool-result" || dataType === "tool-call-result") {
+		const callId = asString(data.callId);
+		if (!callId) return;
+		const isError = data.is_error === true || data.error === true;
+		push(out, view(base, base.id, "agent", "tool", "", raw), void 0, {
+			callId,
+			result: data.output ?? data,
+			error: isError
+		});
 		return;
 	}
 	if (dataType === "file-edit") {
@@ -324,18 +417,59 @@ function normalizeSessionEnvelope(base, content, raw, out) {
 	const ev = isRecord$3(envelope.ev) ? envelope.ev : null;
 	const id = asString(envelope.id) ?? base.id;
 	const time = typeof envelope.time === "number" ? envelope.time : base.createdAt;
+	const subagentId = asString(envelope.subagent) ?? void 0;
 	if (!ev) return;
 	if (ev.t === "text" && typeof ev.text === "string") {
-		if (envelope.role === "user") push(out, view(base, id, "user", "text", ev.text, raw, time));
-		else if (envelope.role === "agent") push(out, view(base, id, "agent", ev.thinking === true ? "thinking" : "text", ev.text, raw, time));
+		if (envelope.role === "user") push(out, view(base, id, "user", "text", ev.text, raw, time, void 0, subagentId));
+		else if (envelope.role === "agent") push(out, view(base, id, "agent", ev.thinking === true ? "thinking" : "text", ev.text, raw, time, void 0, subagentId));
 		return;
 	}
 	if (ev.t === "service" && typeof ev.text === "string" && envelope.role === "agent") {
-		push(out, view(base, id, "agent", "text", ev.text, raw, time));
+		push(out, view(base, id, "agent", "text", ev.text, raw, time, void 0, subagentId));
 		return;
 	}
 	if (ev.t === "tool-call-start") {
-		push(out, view(base, id, "agent", "tool", summarizeToolCall(asString(ev.name) ?? "unknown", ev.args), raw, time));
+		const name = asString(ev.name) ?? "unknown";
+		const callId = asString(ev.call);
+		const toolData = {
+			name,
+			input: ev.args
+		};
+		if (callId) toolData.callId = callId;
+		push(out, view(base, id, "agent", "tool", summarizeToolCall(name, ev.args), raw, time, toolData, subagentId));
+		return;
+	}
+	if (ev.t === "tool-call-end" || ev.t === "tool-call-result") {
+		const callId = asString(ev.call);
+		if (!callId) return;
+		const isError = ev.is_error === true || ev.error === true;
+		push(out, view(base, id, "agent", "tool", "", raw, time, void 0, subagentId), void 0, {
+			callId,
+			result: ev.output ?? ev,
+			error: isError
+		});
+		return;
+	}
+	if (ev.t === "turn-end" && subagentId) {
+		push(out, view(base, id, "system", "event", "", raw, time, {
+			name: "__lifecycle__",
+			input: { status: ev.status === "failed" ? "failed" : ev.status === "cancelled" ? "aborted" : "completed" }
+		}, subagentId));
+		return;
+	}
+	if (ev.t === "start" && subagentId) {
+		push(out, view(base, `${subagentId}:start`, "system", "event", "", raw, time, {
+			name: "__lifecycle__",
+			input: { status: "running" }
+		}, subagentId));
+		return;
+	}
+	if (ev.t === "stop" && subagentId) {
+		const isError = ev.exit_code !== void 0 && ev.exit_code !== 0 || ev.error === true;
+		push(out, view(base, `${subagentId}:stop`, "system", "event", "", raw, time, {
+			name: "__lifecycle__",
+			input: { status: isError ? "failed" : "completed" }
+		}, subagentId));
 		return;
 	}
 }
@@ -344,13 +478,11 @@ function normalizeSessionEnvelope(base, content, raw, out) {
 /**
 * Message encryption for the happy-desktop sync core.
 *
-* Ported VERBATIM (algorithm and wire format) from
-* packages/happy-cli/src/api/encryption.ts — the only change is that the
-* legacy NaCl secretbox path uses libsodium-wrappers (already a declared
-* dependency of this package) instead of tweetnacl. Both implement
-* XSalsa20-Poly1305 with an identical wire format
-* ([nonce (24)] [MAC (16) || ciphertext]), so ciphertext is interchangeable;
-* encryption.test.ts proves both directions against the happy-cli code path.
+* Message algorithms and wire formats are ported from
+* packages/happy-cli/src/api/encryption.ts. The legacy NaCl secretbox path
+* uses libsodium-wrappers instead of tweetnacl; both implement compatible
+* XSalsa20-Poly1305 ciphertext. Account content-key derivation and wrapped-key
+* opening match packages/happy-app and packages/happy-agent.
 *
 * dataKey variant: AES-256-GCM via node:crypto, bundle layout
 * [version=0 (1)] [nonce (12)] [ciphertext] [auth tag (16)].
@@ -373,6 +505,49 @@ function decodeBase64(base64, variant = "base64") {
 }
 function getRandomBytes(size) {
 	return new Uint8Array(randomBytes(size));
+}
+/**
+* Derive the account content-box private key used by Happy app/agent.
+*
+* This is the private counterpart to access.key's content publicKey:
+* deriveKey(accountSecret, 'Happy EnCoder', ['content']) followed by
+* libsodium's deterministic crypto_box seed keypair.
+*/
+async function deriveContentSecretKey(accountSecret) {
+	const encoder = new TextEncoder();
+	let derived = new Uint8Array(createHmac("sha512", encoder.encode("Happy EnCoder Master Seed")).update(accountSecret).digest());
+	const childName = encoder.encode("content");
+	const childData = new Uint8Array(childName.length + 1);
+	childData.set(childName, 1);
+	derived = new Uint8Array(createHmac("sha512", derived.subarray(32)).update(childData).digest());
+	await ensureSodium();
+	return new Uint8Array(sodium.crypto_box_seed_keypair(derived.subarray(0, 32)).privateKey);
+}
+/**
+* Open a server record's wrapped dataEncryptionKey.
+*
+* Wire format: version(0) + ephemeral public key(32) + nonce(24) +
+* NaCl box ciphertext(32-byte data key + 16-byte MAC). Invalid, foreign, or
+* unsupported bundles return null so one inaccessible record cannot fail sync.
+*/
+async function unwrapDataEncryptionKey(encoded, contentSecretKey) {
+	try {
+		await ensureSodium();
+		const wrapped = decodeBase64(encoded);
+		const publicKeyBytes = sodium.crypto_box_PUBLICKEYBYTES;
+		const nonceBytes = sodium.crypto_box_NONCEBYTES;
+		const macBytes = sodium.crypto_box_MACBYTES;
+		const dataKeyBytes = 32;
+		const expectedBytes = 1 + publicKeyBytes + nonceBytes + dataKeyBytes + macBytes;
+		if (wrapped.length !== expectedBytes || wrapped[0] !== 0 || contentSecretKey.length !== sodium.crypto_box_SECRETKEYBYTES) return null;
+		const bundleOffset = 1;
+		const nonceOffset = bundleOffset + publicKeyBytes;
+		const ciphertextOffset = nonceOffset + nonceBytes;
+		const decrypted = sodium.crypto_box_open_easy(wrapped.subarray(ciphertextOffset), wrapped.subarray(nonceOffset, ciphertextOffset), wrapped.subarray(bundleOffset, nonceOffset), contentSecretKey);
+		return decrypted.length === dataKeyBytes ? new Uint8Array(decrypted) : null;
+	} catch {
+		return null;
+	}
 }
 /**
 * Encrypt data using the secret key (NaCl secretbox, XSalsa20-Poly1305).
@@ -569,10 +744,10 @@ async function resolveSessionKeys(homeDir, port, now = Date.now()) {
 //#endregion
 //#region src/sync/credentials.ts
 /**
-* Credential loading for the desktop sync core.
 * Reads the local Happy CLI credentials ($HAPPY_HOME_DIR/access.key,
-* default ~/.omp-happy) — same files parsed by packages/happy-cli/src/persistence.ts
-* readCredentials(). The `token` authenticates user-scoped REST + socket.
+* default ~/.omp-happy) and the optional Happy Agent account credential
+* ($HAPPY_HOME_DIR/agent.key). These are the same files parsed by Happy CLI's
+* persistence and resume credential loaders. Key material stays in sync core.
 */
 function defaultHappyHomeDir() {
 	return process.env.HAPPY_HOME_DIR || join(homedir(), ".omp-happy");
@@ -609,6 +784,25 @@ async function loadCredentials$1(homeDir = defaultHappyHomeDir()) {
 		homeDir,
 		encryption
 	};
+}
+/**
+* Read the account master secret stored by Happy Agent authentication.
+*
+* Modern access.key credentials intentionally contain only the content public
+* key, so agent.key is the co-located source capable of opening server-wrapped
+* per-session keys. Missing and malformed files are expected and nonfatal.
+*/
+async function loadAccountSecret(homeDir = defaultHappyHomeDir()) {
+	try {
+		const value = JSON.parse(await readFile(join(homeDir, "agent.key"), "utf8"));
+		if (!value || typeof value !== "object") return null;
+		const parsed = value;
+		if (typeof parsed.token !== "string" || parsed.token.length === 0 || typeof parsed.secret !== "string" || parsed.secret.length === 0) return null;
+		const secret = new Uint8Array(Buffer.from(parsed.secret, "base64"));
+		return secret.length === 32 ? secret : null;
+	} catch {
+		return null;
+	}
 }
 /** The machine RPC key: machineKey (dataKey creds) or master secret (legacy creds). */
 function machineRpcKey(credentials) {
@@ -785,6 +979,21 @@ var ServerClient = class {
 		this.setStatus("offline");
 	}
 	/**
+	* sessionRPC: params and results are encrypted with the session-specific key.
+	* This is the same rpc-call transport used by happy-app's apiSocket.sessionRPC.
+	*/
+	async sessionRPC(sessionId, method, params, key, variant) {
+		if (!this.socket) throw new Error("Socket not connected");
+		const encryptedParams = encodeBase64(await encrypt(key, variant, params));
+		const result = await this.socket.timeout(3e4).emitWithAck("rpc-call", {
+			method: `${sessionId}:${method}`,
+			params: encryptedParams
+		});
+		if (isRecord$1(result) && result.ok === true && typeof result.result === "string") return await decrypt(key, variant, decodeBase64(result.result));
+		const message = isRecord$1(result) && typeof result.error === "string" ? result.error : "RPC call failed";
+		throw new Error(message);
+	}
+	/**
 	* machineRPC: params encrypted with the machine's encryption key exactly as
 	* happy-app's apiSocket.machineRPC does — the daemon's RpcHandlerManager
 	* decrypts with the same key (access.key machineKey for dataKey creds).
@@ -812,7 +1021,8 @@ var ServerClient = class {
 * - fetchSessions / fetchMessages v3 paging / outbox POST / socket update
 *   handling: packages/happy-app/sources/sync/sync.ts
 * - user-scoped socket + machineRPC encryption: happy-app apiSocket.ts
-* - key resolution: daemon /list encryption merged with sessions.json
+* - key resolution: daemon /list + sessions.json first, then client-side
+*   recovery from server-wrapped keys using the co-located agent credential
 */
 /** Mirrors SEQ_BACKWARD_INITIAL_SENTINEL in happy-app sync.ts (int4 max). */
 var SEQ_BACKWARD_INITIAL_SENTINEL = 2147483647;
@@ -991,15 +1201,56 @@ var SyncEngine = class extends EventEmitter {
 			errorMessage: "Unexpected spawn result"
 		};
 	}
+	/**
+	* Stop an active session through its encrypted session RPC channel.
+	* This deliberately does not use the localhost daemon stop endpoint: remote
+	* sessions must travel through the server-backed killSession handler.
+	*/
+	async killSession(sessionId) {
+		const session = this.getState().sessions.find((candidate) => candidate.id === sessionId);
+		if (!session) throw new Error(`Unknown session ${sessionId}`);
+		if (!session.active) throw new Error("Session is already stopped");
+		const keyInfo = this.keys.get(sessionId);
+		if (!keyInfo) throw new Error(`No encryption key available for session ${sessionId}`);
+		const result = await this.server.sessionRPC(sessionId, "killSession", {}, keyInfo.key, keyInfo.variant);
+		if (!isRecord(result) || typeof result.success !== "boolean") throw new Error("Unexpected stop-session response");
+		const message = typeof result.message === "string" ? result.message : result.success ? "Session stopped" : "Session could not be stopped";
+		if (result.success) this.refreshSessions().catch(() => void 0);
+		return {
+			success: result.success,
+			message
+		};
+	}
 	async resolveKeys() {
 		const port = this.daemonPortOption ?? await readDaemonPort$1(this.credentials.homeDir);
 		const resolved = await resolveSessionKeys(this.credentials.homeDir, port);
-		this.keys = new Map([...resolved.keys.entries()].map(([id, info]) => [id, {
+		const localKeys = new Map([...resolved.keys.entries()].map(([id, info]) => [id, {
 			key: decodeBase64(info.encryptionKey),
 			variant: info.encryptionVariant
 		}]));
+		for (const [id, key] of localKeys) this.keys.set(id, key);
 		this.localIds = resolved.local;
-		return resolved;
+		return localKeys;
+	}
+	async recoverServerKeys(records, target) {
+		if (!records.some((record) => !target.has(record.id) && record.dataEncryptionKey)) return;
+		const accountSecret = await loadAccountSecret(this.credentials.homeDir);
+		if (!accountSecret) return;
+		let contentSecretKey = null;
+		try {
+			contentSecretKey = await deriveContentSecretKey(accountSecret);
+			for (const record of records) {
+				if (target.has(record.id) || !record.dataEncryptionKey) continue;
+				const key = await unwrapDataEncryptionKey(record.dataEncryptionKey, contentSecretKey);
+				if (key) target.set(record.id, {
+					key,
+					variant: "dataKey"
+				});
+			}
+		} catch {} finally {
+			accountSecret.fill(0);
+			contentSecretKey?.fill(0);
+		}
 	}
 	refreshSessions() {
 		if (this.refreshPromise) {
@@ -1010,8 +1261,10 @@ var SyncEngine = class extends EventEmitter {
 			try {
 				do {
 					this.refreshQueued = false;
-					await this.resolveKeys();
+					const localKeys = await this.resolveKeys();
 					const records = await this.server.listSessions();
+					await this.recoverServerKeys(records, localKeys);
+					this.keys = localKeys;
 					const views = [];
 					for (const record of records) views.push(await this.buildSessionView(record));
 					this.store.upsertSessions(views, { prune: true });
@@ -1215,12 +1468,57 @@ var SyncEngine = class extends EventEmitter {
 };
 //#endregion
 //#region src/main/index.ts
-var SERVER_URL = process.env.HAPPY_SERVER_URL || "http://192.168.0.252:30003";
+function readServerConfiguration() {
+	const value = process.env.HAPPY_SERVER_URL?.trim();
+	if (!value) return {
+		url: null,
+		error: "HAPPY_SERVER_URL is required. Set it to the HTTP(S) origin of your Happy server before starting Electron."
+	};
+	try {
+		const parsed = new URL(value);
+		if (parsed.protocol !== "http:" && parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) throw new Error("expected an HTTP(S) origin with no credentials, path, query, or fragment");
+		return {
+			url: parsed.origin,
+			error: null
+		};
+	} catch (error) {
+		return {
+			url: null,
+			error: `Invalid HAPPY_SERVER_URL: ${error instanceof Error ? error.message : "invalid URL"}`
+		};
+	}
+}
+var SERVER_CONFIGURATION = readServerConfiguration();
 var mainDir = fileURLToPath(new URL(".", import.meta.url));
 var mainWindow = null;
 var engine = null;
 var engineError = null;
 var quitting = false;
+var SUPPORTED_SPAWN_AGENTS = {
+	omp: true,
+	claude: true,
+	codex: true,
+	gemini: true,
+	openclaw: true
+};
+function isSpawnSessionAgent(value) {
+	return Object.hasOwn(SUPPORTED_SPAWN_AGENTS, value);
+}
+function parseSpawnSessionInput(value) {
+	if (typeof value !== "object" || value === null) throw new Error("New session details are required");
+	const input = value;
+	const machineId = typeof input.machineId === "string" ? input.machineId.trim() : "";
+	const directory = typeof input.directory === "string" ? input.directory.trim() : "";
+	const agent = typeof input.agent === "string" ? input.agent.trim() : "";
+	if (!machineId) throw new Error("Choose a machine before starting a session");
+	if (!directory) throw new Error("Enter a directory before starting a session");
+	if (!isSpawnSessionAgent(agent)) throw new Error("Choose a supported agent before starting a session");
+	return {
+		machineId,
+		directory,
+		agent
+	};
+}
 async function loadCredentials(homeDir) {
 	try {
 		const raw = await readFile(join(homeDir, "access.key"), "utf8");
@@ -1259,6 +1557,13 @@ function errorMessage(err) {
 	return err instanceof Error ? err.message : String(err);
 }
 async function bootEngine() {
+	if (SERVER_CONFIGURATION.url === null) {
+		const configurationError = SERVER_CONFIGURATION.error;
+		engineError = configurationError;
+		console.error("[happy-desktop]", configurationError);
+		pushState(fallbackState(configurationError));
+		return;
+	}
 	const homeDir = defaultHappyHomeDir();
 	const credentials = await loadCredentials(homeDir);
 	if (!credentials) {
@@ -1269,7 +1574,7 @@ async function bootEngine() {
 	}
 	const port = await readDaemonPort(homeDir);
 	engine = new SyncEngine({
-		serverUrl: SERVER_URL,
+		serverUrl: SERVER_CONFIGURATION.url,
 		credentials,
 		...port !== null ? { daemon: { port } } : {}
 	});
@@ -1322,6 +1627,16 @@ function registerIpc() {
 	ipcMain.handle("hd:open", (_event, sessionId) => {
 		if (typeof sessionId !== "string") throw new Error("hd:open expects (sessionId: string)");
 		return requireEngine().openSession(sessionId);
+	});
+	ipcMain.handle("hd:spawn", (_event, input) => {
+		const request = parseSpawnSessionInput(input);
+		const syncEngine = requireEngine();
+		if (!syncEngine.getState().sessions.some((session) => session.machineId === request.machineId)) throw new Error("The selected machine is no longer available in synced session metadata");
+		return syncEngine.spawnSession(request.machineId, request.directory, request.agent);
+	});
+	ipcMain.handle("hd:stopSession", (_event, sessionId) => {
+		if (typeof sessionId !== "string" || !sessionId.trim()) throw new Error("Choose an active session before stopping it");
+		return requireEngine().killSession(sessionId.trim());
 	});
 }
 app.whenReady().then(async () => {

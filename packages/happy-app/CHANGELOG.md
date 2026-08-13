@@ -1,3 +1,7 @@
+# August 12 — Inline terminal authentication
+
+- Interactive OMP commands now surface sudo password requests inside the running tool card and forward the hidden response directly to the PTY.
+
 # August 7 — Cleaner equations
 
 - Display equations now render as formatted LaTeX, including fractions, instead of exposing delimiters and commands.

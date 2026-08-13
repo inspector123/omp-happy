@@ -402,7 +402,8 @@ const rawAgentRecordSchema = z.discriminatedUnion('type', [z.object({
             permissionId: z.string(),
             toolName: z.string(),
             description: z.string(),
-            options: z.any().optional()
+            options: z.any().optional(),
+            parentToolCallId: z.string().optional()
         }),
         // Usage/metrics
         z.object({ type: z.literal('token_count') }).passthrough()
@@ -518,6 +519,7 @@ type NormalizedAgentContent =
         description: string | null;
         uuid: string;
         parentUUID: string | null;
+        parentToolCallId?: string;
     } | {
         type: 'tool-result'
         tool_use_id: string;
@@ -1270,7 +1272,8 @@ export function normalizeRawMessage(id: string, localId: string | null, createdA
                         input: raw.content.data.options ?? {},
                         description: raw.content.data.description,
                         uuid: id,
-                        parentUUID: null
+                        parentUUID: null,
+                        parentToolCallId: raw.content.data.parentToolCallId
                     }],
                     meta: raw.meta
                 } satisfies NormalizedMessage;

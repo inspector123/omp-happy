@@ -1866,6 +1866,71 @@ describe('runOmp', () => {
     await runPromise;
   });
 
+  it('forwards sudo prompts that reach the PTY before the bash lifecycle event', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials, startedBy: 'daemon' });
+    await settleMicrotasks();
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-sudo' });
+    await vi.advanceTimersByTimeAsync(1);
+
+    child.emitData('\u001b[2K│ [sudo] password for zarathustra: \u001b[0m│\r\n│ esc force-kill · input forwarded to PTY │');
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_start',
+        toolCallId: 'sudo-call',
+        toolName: 'bash',
+        args: { command: 'sudo true' },
+      },
+    });
+    expect(mocks.mockSession.sendAgentMessage).toHaveBeenCalledWith('omp', expect.objectContaining({
+      type: 'permission-request',
+      parentToolCallId: 'sudo-call',
+    }));
+    child.emitData('\r\n│ still repainting the active PTY overlay │');
+    await vi.advanceTimersByTimeAsync(150);
+
+    const promptCall = mocks.mockSession.sendAgentMessage.mock.calls.find(([, message]) =>
+      isRecord(message) && message.type === 'permission-request' && message.description === '[sudo] password for zarathustra:'
+    );
+    expect(promptCall).toBeDefined();
+    const promptMessage = promptCall?.[1];
+    if (!isRecord(promptMessage) || typeof promptMessage.permissionId !== 'string') {
+      throw new Error('Expected an inline PTY password prompt');
+    }
+    expect(promptMessage.options).toMatchObject({
+      inputKind: 'password',
+      questions: [{ id: 'password', secret: true }],
+    });
+    expect(promptMessage.parentToolCallId).toBe('sudo-call');
+
+    const permissionHandler = mocks.mockSession.rpcHandlerManager.registerHandler.mock.calls
+      .find((call) => call[0] === 'permission')?.[1];
+    await permissionHandler?.({
+      id: promptMessage.permissionId,
+      approved: true,
+      updatedInput: { answers: { password: 'not-a-real-password' } },
+    });
+    expect(child.write).toHaveBeenCalledWith('not-a-real-password\r');
+    expect(mocks.mockBridgeSocket.write).not.toHaveBeenCalledWith(
+      expect.stringContaining('"type":"ask_response"'),
+    );
+
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'tool_execution_end',
+        toolCallId: 'sudo-call',
+        toolName: 'bash',
+        result: { content: [{ type: 'text', text: 'done' }] },
+        isError: false,
+      },
+    });
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
   it('routes remote OMP ask requests and answers through the permission RPC', async () => {
     vi.useFakeTimers();
     const runPromise = runOmp({ credentials, startedBy: 'daemon' });

@@ -9,6 +9,7 @@ export interface AskQuestion {
     header: string;
     options: AskQuestionOption[];
     multiSelect?: boolean;
+    secret?: boolean;
 }
 
 export type AskAnswer = string | string[];
