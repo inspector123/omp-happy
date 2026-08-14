@@ -31,27 +31,12 @@ import { isMutableTool } from "@/components/tools/knownTools";
 import { DecryptedArtifact } from "./artifactTypes";
 import { FeedItem } from "./feedTypes";
 import { isFolderPathHidden, resolveSessionHomeDir } from '@/utils/hiddenFolders';
+import { isSessionActive, resolveSessionActivity } from './sessionPresence';
 
 // Debounce timer for realtimeMode changes
 let realtimeModeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 const REALTIME_MODE_DEBOUNCE_MS = 150;
 
-/**
- * Centralized session online state resolver
- * Returns either "online" (string) or a timestamp (number) for last seen
- */
-function resolveSessionOnlineState(session: { active: boolean; activeAt: number }): "online" | number {
-    // Session is online if the active flag is true
-    return session.active ? "online" : session.activeAt;
-}
-
-/**
- * Checks if a session should be shown in the active sessions group
- */
-function isSessionActive(session: { active: boolean; activeAt: number }): boolean {
-    // Use the active flag directly, no timeout checks
-    return session.active;
-}
 
 // Known entitlement IDs
 export type KnownEntitlements = 'pro';
@@ -482,10 +467,10 @@ export const storage = create<StorageState>()((set, get) => {
             // Merge new sessions with existing ones
             const mergedSessions: Record<string, Session> = { ...state.sessions };
 
-            // Update sessions with calculated presence using centralized resolver
+            // Normalize persisted server state while hydrating. A server restart
+            // can leave `active=true` in storage after heartbeats have stopped.
             sessions.forEach(session => {
-                // Use centralized resolver for consistent state management
-                const presence = resolveSessionOnlineState(session);
+                const { active, presence } = resolveSessionActivity(session);
 
                 // Preserve explicit local overrides if they exist, or load from
                 // saved data. Missing/null means "no user override"; the UI and
@@ -512,6 +497,7 @@ export const storage = create<StorageState>()((set, get) => {
 
                 mergedSessions[session.id] = {
                     ...session,
+                    active,
                     presence,
                     draft: existingDraft || savedDraft || session.draft || null,
                     permissionMode: resolvedPermissionMode,

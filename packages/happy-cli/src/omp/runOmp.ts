@@ -11,8 +11,8 @@ import { createEnvelope, type SessionEvent } from '@slopus/happy-wire';
 
 import { ApiClient } from '@/api/api';
 import type { ApiSessionClient } from '@/api/apiSession';
-import type { UserMessage } from '@/api/types';
-import { encodeBase64 } from '@/api/encryption';
+import type { Session as ApiSession, UserMessage } from '@/api/types';
+import { decodeBase64, encodeBase64 } from '@/api/encryption';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
 import { initialMachineMetadata } from '@/daemon/run';
@@ -563,8 +563,26 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     startedBy: opts.startedBy,
     sandbox: settings.sandboxConfig,
   });
-  const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+  const reconnectSessionId = process.env.HAPPY_RECONNECT_SESSION_ID;
+  const reconnectKeyBase64 = process.env.HAPPY_RECONNECT_ENCRYPTION_KEY;
+  const reconnectVariant = process.env.HAPPY_RECONNECT_ENCRYPTION_VARIANT as 'legacy' | 'dataKey' | undefined;
 
+  let response: ApiSession | null;
+  if (reconnectSessionId && reconnectKeyBase64 && reconnectVariant) {
+    logger.debug(`[happy-omp] Reconnecting to existing session ${reconnectSessionId}`);
+    response = {
+      id: reconnectSessionId,
+      seq: Number.parseInt(process.env.HAPPY_RECONNECT_SEQ || '0', 10),
+      encryptionKey: decodeBase64(reconnectKeyBase64),
+      encryptionVariant: reconnectVariant,
+      metadata,
+      metadataVersion: Number.parseInt(process.env.HAPPY_RECONNECT_METADATA_VERSION || '0', 10),
+      agentState: state,
+      agentStateVersion: Number.parseInt(process.env.HAPPY_RECONNECT_AGENT_STATE_VERSION || '0', 10),
+    };
+  } else {
+    response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+  }
   let session: ApiSessionClient;
   const { session: initialSession, reconnectionHandle } = setupOfflineReconnection({
     api,
@@ -625,8 +643,10 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   let stdinRawModeEnabled = false;
   let stdinResumed = false;
   let resizeHandler: (() => void) | null = null;
-  const installedOmpBinary = join(homedir(), '.local', 'bin', 'omp');
-  const ompBinary = process.env.OMP_HAPPY_REAL_BIN || (existsSync(installedOmpBinary) ? installedOmpBinary : 'omp');
+  const bunOmpBinary = join(homedir(), '.bun', 'bin', 'omp');
+  const localOmpBinary = join(homedir(), '.local', 'bin', 'omp');
+  const ompBinary = process.env.OMP_HAPPY_REAL_BIN
+    || (existsSync(bunOmpBinary) ? bunOmpBinary : existsSync(localOmpBinary) ? localOmpBinary : 'omp');
   const runOmpConfigCommand = createOmpConfigCommandRunner(ompBinary);
   let lastPersistedModel: string | undefined;
   let modelPersistenceQueue = Promise.resolve();

@@ -256,6 +256,7 @@ describe('runOmp', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useRealTimers();
+    vi.unstubAllEnvs();
 
     child = new FakePty();
     mocks.resetHandlers();
@@ -277,6 +278,49 @@ describe('runOmp', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it('reconnects the native OMP bridge to the existing Happy session', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('HAPPY_RECONNECT_SESSION_ID', 'happy-session-existing');
+    vi.stubEnv('HAPPY_RECONNECT_ENCRYPTION_KEY', Buffer.from([1, 2, 3, 4]).toString('base64'));
+    vi.stubEnv('HAPPY_RECONNECT_ENCRYPTION_VARIANT', 'legacy');
+    vi.stubEnv('HAPPY_RECONNECT_SEQ', '7');
+    vi.stubEnv('HAPPY_RECONNECT_METADATA_VERSION', '8');
+    vi.stubEnv('HAPPY_RECONNECT_AGENT_STATE_VERSION', '9');
+
+    const runPromise = runOmp({
+      credentials,
+      extraArgs: ['--resume', 'omp-session-existing'],
+    });
+    await settleMicrotasks();
+
+    expect(mocks.mockGetOrCreateSession).not.toHaveBeenCalled();
+    expect(mocks.mockSetupOfflineReconnection).toHaveBeenCalledWith(expect.objectContaining({
+      response: expect.objectContaining({
+        id: 'happy-session-existing',
+        seq: 7,
+        metadataVersion: 8,
+        agentStateVersion: 9,
+      }),
+    }));
+    expect(mocks.mockSpawnPty).toHaveBeenCalledWith(
+      expect.stringMatching(/(?:^|[/\\])omp(?:\.exe)?$/),
+      expect.arrayContaining(['--resume', 'omp-session-existing']),
+      expect.objectContaining({ cwd: process.cwd() }),
+    );
+
+    mocks.emitBridgeFrame({
+      type: 'ready',
+      protocolVersion: 1,
+      sessionId: 'omp-session-existing',
+    });
+    await vi.advanceTimersByTimeAsync(1);
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
   });
 
   it('launches native omp through node-pty with the bundled extension bridge', async () => {

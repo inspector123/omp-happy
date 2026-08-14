@@ -3,6 +3,7 @@ import { delay } from "@/utils/delay";
 import { forever } from "@/utils/forever";
 import { shutdownSignal } from "@/utils/shutdown";
 import { buildMachineActivityEphemeral, buildSessionActivityEphemeral, eventRouter } from "@/app/events/eventRouter";
+import { PRESENCE_TIMEOUT_MS } from "@/app/presence/sessionActivity";
 
 export function startTimeout() {
     forever('session-timeout', async () => {
@@ -12,7 +13,7 @@ export function startTimeout() {
                 where: {
                     active: true,
                     lastActiveAt: {
-                        lte: new Date(Date.now() - 1000 * 60 * 10) // 10 minutes
+                        lte: new Date(Date.now() - PRESENCE_TIMEOUT_MS)
                     }
                 }
             });
@@ -36,7 +37,7 @@ export function startTimeout() {
                 where: {
                     active: true,
                     lastActiveAt: {
-                        lte: new Date(Date.now() - 1000 * 60 * 10) // 10 minutes
+                        lte: new Date(Date.now() - PRESENCE_TIMEOUT_MS)
                     }
                 }
             });

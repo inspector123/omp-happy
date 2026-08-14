@@ -7,6 +7,7 @@ import { log } from "@/utils/log";
 import { randomKeyNaked } from "@/utils/randomKeyNaked";
 import { allocateUserSeq } from "@/storage/seq";
 import { sessionDelete } from "@/app/session/sessionDelete";
+import { isSessionActivityCurrent, PRESENCE_TIMEOUT_MS } from "@/app/presence/sessionActivity";
 
 export function sessionRoutes(app: Fastify) {
 
@@ -57,7 +58,7 @@ export function sessionRoutes(app: Fastify) {
                     seq: v.seq,
                     createdAt: v.createdAt.getTime(),
                     updatedAt: sessionUpdatedAt,
-                    active: v.active,
+                    active: isSessionActivityCurrent(v),
                     activeAt: v.lastActiveAt.getTime(),
                     metadata: v.metadata,
                     metadataVersion: v.metadataVersion,
@@ -86,7 +87,7 @@ export function sessionRoutes(app: Fastify) {
             where: {
                 accountId: userId,
                 active: true,
-                lastActiveAt: { gt: new Date(Date.now() - 1000 * 60 * 15) /* 15 minutes */ }
+                lastActiveAt: { gt: new Date(Date.now() - PRESENCE_TIMEOUT_MS) }
             },
             orderBy: { lastActiveAt: 'desc' },
             take: limit,
@@ -111,7 +112,7 @@ export function sessionRoutes(app: Fastify) {
                 seq: v.seq,
                 createdAt: v.createdAt.getTime(),
                 updatedAt: v.updatedAt.getTime(),
-                active: v.active,
+                active: isSessionActivityCurrent(v),
                 activeAt: v.lastActiveAt.getTime(),
                 metadata: v.metadata,
                 metadataVersion: v.metadataVersion,
@@ -202,7 +203,7 @@ export function sessionRoutes(app: Fastify) {
                 seq: v.seq,
                 createdAt: v.createdAt.getTime(),
                 updatedAt: v.updatedAt.getTime(),
-                active: v.active,
+                active: isSessionActivityCurrent(v),
                 activeAt: v.lastActiveAt.getTime(),
                 metadata: v.metadata,
                 metadataVersion: v.metadataVersion,
@@ -247,7 +248,7 @@ export function sessionRoutes(app: Fastify) {
                     agentState: session.agentState,
                     agentStateVersion: session.agentStateVersion,
                     dataEncryptionKey: session.dataEncryptionKey ? Buffer.from(session.dataEncryptionKey).toString('base64') : null,
-                    active: session.active,
+                    active: isSessionActivityCurrent(session),
                     activeAt: session.lastActiveAt.getTime(),
                     createdAt: session.createdAt.getTime(),
                     updatedAt: session.updatedAt.getTime(),
@@ -295,7 +296,7 @@ export function sessionRoutes(app: Fastify) {
                     agentState: session.agentState,
                     agentStateVersion: session.agentStateVersion,
                     dataEncryptionKey: session.dataEncryptionKey ? Buffer.from(session.dataEncryptionKey).toString('base64') : null,
-                    active: session.active,
+                    active: isSessionActivityCurrent(session),
                     activeAt: session.lastActiveAt.getTime(),
                     createdAt: session.createdAt.getTime(),
                     updatedAt: session.updatedAt.getTime(),

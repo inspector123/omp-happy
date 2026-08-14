@@ -65,6 +65,28 @@ describe('buildResumeLaunch', () => {
         });
     });
 
+    it('builds a native OMP resume command in the saved working directory', () => {
+        expect(buildResumeLaunch({
+            id: 'session-omp',
+            active: false,
+            metadata: {
+                path: '/tmp/omp-project',
+                flavor: 'omp',
+                ompSessionId: 'omp-session-id',
+                host: 'localhost',
+                homeDir: '/tmp',
+                happyHomeDir: '/tmp/.omp-happy',
+                happyLibDir: '/tmp/happy',
+                happyToolsDir: '/tmp/happy/tools',
+            },
+        }, {
+            startedBy: 'daemon',
+        })).toEqual({
+            cwd: '/tmp/omp-project',
+            args: ['omp', '--yolo', '--started-by', 'daemon', '--', '--resume', 'omp-session-id'],
+        });
+    });
+
     it('rejects unsupported flavors', () => {
         expect(() => buildResumeLaunch({
             id: 'session-3',

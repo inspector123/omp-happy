@@ -1,3 +1,9 @@
+# August 14 — Accurate session status
+
+- Sessions whose heartbeat expired no longer reappear as active after restarting the app.
+- Resuming an OMP session now launches the native OMP transcript from its saved project directory.
+- Checking the local CLI version no longer creates an empty, non-resumable session.
+
 # August 12 — Inline terminal authentication
 
 - Interactive OMP commands now surface sudo password requests inside the running tool card and forward the hidden response directly to the PTY.

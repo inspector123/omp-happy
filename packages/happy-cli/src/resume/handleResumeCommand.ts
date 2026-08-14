@@ -89,11 +89,13 @@ export function buildResumeLaunch(session: ResumableHappySession, options: Resum
         if (!metadata.ompSessionId) {
             throw new Error(`Happy session ${session.id} is missing its omp session ID.`);
         }
-        // happy acp omp --resume-omp <id> → runAcp resumes via ACP session/load.
-        const args = ['acp', 'omp', '--resume-omp', metadata.ompSessionId, '--yolo'];
+        // Resume through the native OMP bridge, not the legacy ACP adapter.
+        // Arguments after `--` are forwarded unchanged to the real OMP binary.
+        const args = ['omp', '--yolo'];
         if (options.startedBy) {
             args.push('--started-by', options.startedBy);
         }
+        args.push('--', '--resume', metadata.ompSessionId);
         return {
             cwd: metadata.path,
             args,
