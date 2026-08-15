@@ -6,12 +6,18 @@ import { MessageMetaSchema, MessageMeta } from './typesMessageMeta';
 // Raw types
 //
 
-// Usage data type from Claude API
+// Usage data type from Claude API and ACP telemetry
+const tokenMetricSchema = z.number().nonnegative();
+
 const usageDataSchema = z.object({
     input_tokens: z.number(),
     cache_creation_input_tokens: z.number().optional(),
     cache_read_input_tokens: z.number().optional(),
     output_tokens: z.number(),
+    context_tokens: tokenMetricSchema.optional(),
+    context_window: tokenMetricSchema.optional(),
+    context_percent: tokenMetricSchema.optional(),
+    tokens_per_second: tokenMetricSchema.optional(),
     service_tier: z.string().optional(),
 });
 
@@ -406,7 +412,18 @@ const rawAgentRecordSchema = z.discriminatedUnion('type', [z.object({
             parentToolCallId: z.string().optional()
         }),
         // Usage/metrics
-        z.object({ type: z.literal('token_count') }).passthrough()
+        z.object({
+            type: z.literal('token_count'),
+            input_tokens: tokenMetricSchema.optional(),
+            output_tokens: tokenMetricSchema.optional(),
+            cache_creation_input_tokens: tokenMetricSchema.optional(),
+            cache_read_input_tokens: tokenMetricSchema.optional(),
+            context_tokens: tokenMetricSchema.optional(),
+            context_window: tokenMetricSchema.optional(),
+            context_percent: tokenMetricSchema.optional(),
+            tokens_per_second: tokenMetricSchema.optional(),
+            id: z.string().optional(),
+        }).passthrough()
     ])
 })]);
 
@@ -1090,6 +1107,40 @@ export function normalizeRawMessage(id: string, localId: string | null, createdA
         }
         // ACP (Agent Communication Protocol) - unified format for all agent providers
         if (raw.content.type === 'acp') {
+            if (raw.content.data.type === 'token_count') {
+                const telemetry = raw.content.data;
+                if (
+                    telemetry.input_tokens === undefined
+                    || telemetry.output_tokens === undefined
+                    || telemetry.cache_creation_input_tokens === undefined
+                    || telemetry.cache_read_input_tokens === undefined
+                    || telemetry.context_tokens === undefined
+                    || telemetry.context_window === undefined
+                    || telemetry.context_percent === undefined
+                    || telemetry.tokens_per_second === undefined
+                ) {
+                    return null;
+                }
+                return {
+                    id,
+                    localId,
+                    createdAt,
+                    role: 'agent',
+                    isSidechain: false,
+                    content: [],
+                    usage: {
+                        input_tokens: telemetry.input_tokens,
+                        output_tokens: telemetry.output_tokens,
+                        cache_creation_input_tokens: telemetry.cache_creation_input_tokens,
+                        cache_read_input_tokens: telemetry.cache_read_input_tokens,
+                        context_tokens: telemetry.context_tokens,
+                        context_window: telemetry.context_window,
+                        context_percent: telemetry.context_percent,
+                        tokens_per_second: telemetry.tokens_per_second,
+                    },
+                    meta: raw.meta,
+                } satisfies NormalizedMessage;
+            }
             if (raw.content.data.type === 'advisor') {
                 return {
                     id,
@@ -1278,8 +1329,7 @@ export function normalizeRawMessage(id: string, localId: string | null, createdA
                     meta: raw.meta
                 } satisfies NormalizedMessage;
             }
-            // Task lifecycle events (task_started, task_complete, turn_aborted) and token_count
-            // are status/metrics - skip normalization, they don't need UI rendering
+            // Task lifecycle events are status-only and do not need UI rendering.
         }
     }
     return null;

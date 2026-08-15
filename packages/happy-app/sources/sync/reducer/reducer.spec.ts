@@ -3565,4 +3565,112 @@ describe('reducer', () => {
             expect(result.todos).toBeUndefined();
         });
     });
+    describe('usage telemetry', () => {
+        it('updates telemetry from an empty agent message without creating a chat item', () => {
+            const state = createReducer();
+            const result = reducer(state, [{
+                id: 'telemetry-1',
+                localId: null,
+                createdAt: 2_000,
+                role: 'agent',
+                isSidechain: false,
+                content: [],
+                usage: {
+                    input_tokens: 120,
+                    output_tokens: 40,
+                    cache_creation_input_tokens: 10,
+                    cache_read_input_tokens: 30,
+                    context_tokens: 64_912,
+                    context_window: 200_000,
+                    context_percent: 32.456,
+                    tokens_per_second: 18.25,
+                },
+            }]);
+
+            expect(result.messages).toHaveLength(0);
+            expect(result.usage).toEqual({
+                inputTokens: 120,
+                outputTokens: 40,
+                cacheCreation: 10,
+                cacheRead: 30,
+                contextSize: 64_912,
+                contextWindow: 200_000,
+                contextPercent: 32.456,
+                tokensPerSecond: 18.25,
+            });
+            expect(state.latestUsage).toEqual({
+                ...result.usage,
+                timestamp: 2_000,
+            });
+        });
+
+        it('lets the later telemetry message clear live speed when timestamps tie', () => {
+            const state = createReducer();
+            const usage = {
+                input_tokens: 120,
+                output_tokens: 40,
+                cache_creation_input_tokens: 10,
+                cache_read_input_tokens: 30,
+                context_tokens: 64_912,
+                context_window: 200_000,
+                context_percent: 32.456,
+            };
+            const result = reducer(state, [{
+                id: 'live-telemetry',
+                localId: null,
+                createdAt: 2_000,
+                role: 'agent',
+                isSidechain: false,
+                content: [],
+                usage: { ...usage, tokens_per_second: 18.25 },
+            }, {
+                id: 'idle-telemetry',
+                localId: null,
+                createdAt: 2_000,
+                role: 'agent',
+                isSidechain: false,
+                content: [],
+                usage: { ...usage, tokens_per_second: 0 },
+            }]);
+
+            expect(result.usage?.tokensPerSecond).toBe(0);
+            expect(state.latestUsage?.tokensPerSecond).toBe(0);
+        });
+
+        it('retains the legacy computed prompt sum when context telemetry is absent', () => {
+            const state = createReducer();
+            const result = reducer(state, [{
+                id: 'legacy-usage',
+                localId: null,
+                createdAt: 3_000,
+                role: 'agent',
+                isSidechain: false,
+                content: [],
+                usage: {
+                    input_tokens: 100,
+                    output_tokens: 5,
+                    cache_creation_input_tokens: 20,
+                    cache_read_input_tokens: 30,
+                },
+            }]);
+
+            expect(result.messages).toHaveLength(0);
+            expect(result.usage).toEqual({
+                inputTokens: 100,
+                outputTokens: 5,
+                cacheCreation: 20,
+                cacheRead: 30,
+                contextSize: 150,
+            });
+            expect(state.latestUsage).toEqual({
+                inputTokens: 100,
+                outputTokens: 5,
+                cacheCreation: 20,
+                cacheRead: 30,
+                contextSize: 150,
+                timestamp: 3_000,
+            });
+        });
+    });
+
 });

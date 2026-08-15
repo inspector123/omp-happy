@@ -5,6 +5,8 @@ const CONTROL_MODE_ENV = 'OMP_HAPPY_CONTROL_MODE';
 const LOCAL_ASK_TOOL = 'ask';
 const REMOTE_ASK_TOOL = 'happy_ask';
 const PROTOCOL_VERSION = 1;
+const USAGE_PUBLISH_INTERVAL_MS = 500;
+const OMP_MIN_TOKEN_RATE_DURATION_MS = 100;
 
 function safeStringify(value) {
   const seen = new WeakSet();
@@ -17,6 +19,120 @@ function safeStringify(value) {
     }
     return item;
   });
+}
+
+function finiteNonnegative(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function getMessageUsage(message) {
+  if (!message || message.role !== 'assistant' || !message.usage || typeof message.usage !== 'object') {
+    return undefined;
+  }
+  const usage = message.usage;
+  return {
+    inputTokens: finiteNonnegative(usage.input),
+    outputTokens: finiteNonnegative(usage.output),
+    cacheCreationInputTokens: finiteNonnegative(usage.cacheWrite),
+    cacheReadInputTokens: finiteNonnegative(usage.cacheRead),
+  };
+}
+
+export function calculateOmpTokensPerSecond(message, isStreaming, now = Date.now()) {
+  const usage = getMessageUsage(message);
+  if (!usage || usage.outputTokens <= 0) return 0;
+
+  const duration = typeof message.duration === 'number'
+    && Number.isFinite(message.duration)
+    && message.duration > 0
+    ? message.duration
+    : isStreaming
+      && typeof message.timestamp === 'number'
+      && Number.isFinite(message.timestamp)
+      ? now - message.timestamp
+      : undefined;
+  if (duration === undefined || duration < OMP_MIN_TOKEN_RATE_DURATION_MS) return 0;
+
+  const tokensPerSecond = (usage.outputTokens * 1_000) / duration;
+  return Number.isFinite(tokensPerSecond) && tokensPerSecond > 0 ? tokensPerSecond : 0;
+}
+
+export function createUsageTelemetry() {
+  let latestUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+  };
+  let tokensPerSecond = 0;
+  let lastPublishedAt = Number.NEGATIVE_INFINITY;
+
+  const captureUsage = (message) => {
+    const usage = getMessageUsage(message);
+    if (!usage) return undefined;
+    latestUsage = {
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cacheCreationInputTokens: usage.cacheCreationInputTokens,
+      cacheReadInputTokens: usage.cacheReadInputTokens,
+    };
+    return usage;
+  };
+  const captureSpeed = (message, isStreaming, now) => {
+    const speed = calculateOmpTokensPerSecond(message, isStreaming, now);
+    if (speed > 0) tokensPerSecond = speed;
+    return speed;
+  };
+  const resetSpeed = () => {
+    tokensPerSecond = 0;
+  };
+
+  return {
+    startMessage(message, now = Date.now()) {
+      const usage = captureUsage(message);
+      if (!usage) return false;
+      tokensPerSecond = calculateOmpTokensPerSecond(message, true, now);
+      return true;
+    },
+    updateMessage(message, now = Date.now()) {
+      const usage = captureUsage(message);
+      if (!usage) return false;
+      captureSpeed(message, true, now);
+      return true;
+    },
+    endMessage(message, now = Date.now()) {
+      const usage = captureUsage(message);
+      if (!usage) return false;
+      captureSpeed(message, false, now);
+      return true;
+    },
+    resetSpeed,
+    reset() {
+      latestUsage = {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      };
+      resetSpeed();
+      lastPublishedAt = Number.NEGATIVE_INFINITY;
+    },
+    takeFrame(ctx, { force = false, now = performance.now() } = {}) {
+      if (!force && now - lastPublishedAt < USAGE_PUBLISH_INTERVAL_MS) return undefined;
+      lastPublishedAt = now;
+      const contextUsage = typeof ctx?.getContextUsage === 'function'
+        ? ctx.getContextUsage()
+        : undefined;
+      return {
+        type: 'usage',
+        ...latestUsage,
+        contextTokens: finiteNonnegative(contextUsage?.tokens),
+        contextWindow: finiteNonnegative(contextUsage?.contextWindow),
+        contextPercent: finiteNonnegative(contextUsage?.percent),
+        tokensPerSecond,
+      };
+    },
+  };
 }
 
 export function getModelSnapshot(ctx) {
@@ -215,6 +331,8 @@ export default function happyBridgeExtension(pi) {
   let pendingEditorRestore;
   let controlMode = process.env[CONTROL_MODE_ENV] === 'remote' ? 'remote' : 'local';
   const pendingAskRequests = new Map();
+  const usageTelemetry = createUsageTelemetry();
+
 
 
   const send = (frame) => {
@@ -227,6 +345,17 @@ export default function happyBridgeExtension(pi) {
     if (connected && socket?.writable) socket.write(line);
     else pendingFrames.push(line);
   };
+  const publishUsage = (ctx, options) => {
+    if (!ctx) return false;
+    const frame = usageTelemetry.takeFrame(ctx, options);
+    if (!frame) return false;
+    send(frame);
+    return true;
+  };
+  const resetLiveSpeed = () => {
+    usageTelemetry.resetSpeed();
+  };
+
   const setControlMode = (mode) => {
     if (mode !== 'local' && mode !== 'remote') return false;
     controlMode = mode;
@@ -321,6 +450,7 @@ export default function happyBridgeExtension(pi) {
         ? pi.getSessionName()
         : ctx.sessionManager.getSessionName?.(),
     });
+    publishUsage(ctx, { force: true });
   };
 
   const handleCommand = async (command) => {
@@ -439,10 +569,12 @@ export default function happyBridgeExtension(pi) {
   });
 
   pi.on('session_start', async (_event, ctx) => {
+    usageTelemetry.reset();
     setControlMode(controlMode);
     publishReady(ctx);
   });
   pi.on('session_switch', async (event, ctx) => {
+    usageTelemetry.reset();
     publishReady(ctx);
     send({ type: 'agent_event', event });
   });
@@ -479,13 +611,50 @@ export default function happyBridgeExtension(pi) {
   ]) {
     pi.on(eventName, async (event, ctx) => {
       latestContext = ctx;
+      const now = performance.now();
+      const wallNow = Date.now();
+      let forceUsage = false;
+      switch (eventName) {
+        case 'agent_start':
+        case 'turn_start':
+        case 'turn_end':
+          forceUsage = true;
+          break;
+        case 'message_start':
+          if (usageTelemetry.startMessage(event.message, wallNow)) forceUsage = true;
+          break;
+        case 'message_update':
+          usageTelemetry.updateMessage(event.message, wallNow);
+          break;
+        case 'message_end':
+          usageTelemetry.endMessage(event.message, wallNow);
+          forceUsage = true;
+          break;
+        case 'agent_end':
+          forceUsage = true;
+          break;
+        case 'session.compacting':
+        case 'session_compact':
+        case 'session_branch':
+        case 'session_tree':
+          resetLiveSpeed();
+          forceUsage = true;
+          break;
+      }
       send({ type: 'agent_event', event });
+      if (eventName === 'message_update') {
+        publishUsage(ctx, { now });
+      } else if (forceUsage) {
+        publishUsage(ctx, { force: true, now });
+      }
     });
   }
 
   pi.on('session_shutdown', async (event, ctx) => {
     latestContext = ctx;
+    resetLiveSpeed();
     send({ type: 'agent_event', event });
+    publishUsage(ctx, { force: true });
     shuttingDown = true;
     clearTimeout(reconnectTimer);
     socket?.end();

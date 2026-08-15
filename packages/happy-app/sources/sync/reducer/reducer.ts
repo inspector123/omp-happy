@@ -167,6 +167,9 @@ export type ReducerState = {
         cacheCreation: number;
         cacheRead: number;
         contextSize: number;
+        contextWindow?: number;
+        contextPercent?: number;
+        tokensPerSecond?: number;
         timestamp: number;
     };
 };
@@ -279,6 +282,9 @@ export type ReducerResult = {
         cacheCreation: number;
         cacheRead: number;
         contextSize: number;
+        contextWindow?: number;
+        contextPercent?: number;
+        tokensPerSecond?: number;
     };
     hasReadyEvent?: boolean;
 };
@@ -1280,7 +1286,10 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
             outputTokens: state.latestUsage.outputTokens,
             cacheCreation: state.latestUsage.cacheCreation,
             cacheRead: state.latestUsage.cacheRead,
-            contextSize: state.latestUsage.contextSize
+            contextSize: state.latestUsage.contextSize,
+            ...(state.latestUsage.contextWindow !== undefined && { contextWindow: state.latestUsage.contextWindow }),
+            ...(state.latestUsage.contextPercent !== undefined && { contextPercent: state.latestUsage.contextPercent }),
+            ...(state.latestUsage.tokensPerSecond !== undefined && { tokensPerSecond: state.latestUsage.tokensPerSecond }),
         } : undefined,
         hasReadyEvent: hasReadyEvent || undefined
     };
@@ -1295,14 +1304,18 @@ function allocateId() {
 }
 
 function processUsageData(state: ReducerState, usage: UsageData, timestamp: number) {
-    // Only update if this is newer than the current latest usage
-    if (!state.latestUsage || timestamp > state.latestUsage.timestamp) {
+    // Messages are reduced in server sequence order, so later telemetry wins timestamp ties.
+    if (!state.latestUsage || timestamp >= state.latestUsage.timestamp) {
         state.latestUsage = {
             inputTokens: usage.input_tokens,
             outputTokens: usage.output_tokens,
             cacheCreation: usage.cache_creation_input_tokens || 0,
             cacheRead: usage.cache_read_input_tokens || 0,
-            contextSize: (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0) + usage.input_tokens,
+            contextSize: usage.context_tokens
+                ?? (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0) + usage.input_tokens,
+            ...(usage.context_window !== undefined && { contextWindow: usage.context_window }),
+            ...(usage.context_percent !== undefined && { contextPercent: usage.context_percent }),
+            ...(usage.tokens_per_second !== undefined && { tokensPerSecond: usage.tokens_per_second }),
             timestamp: timestamp
         };
     }

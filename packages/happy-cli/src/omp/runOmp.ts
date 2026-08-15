@@ -48,7 +48,7 @@ const ROOT_BRIDGE_KEY = '$root';
 
 type RunMode = 'local' | 'remote';
 
-type BridgeFrame = BridgeReadyFrame | BridgeAgentEventFrame | BridgeSubagentLifecycleFrame | BridgeInputFrame | BridgeErrorFrame | BridgeAbortedFrame | BridgeAskRequestFrame | BridgeChangeTitleFrame | BridgeTuiCommandReadyFrame;
+type BridgeFrame = BridgeReadyFrame | BridgeUsageFrame | BridgeAgentEventFrame | BridgeSubagentLifecycleFrame | BridgeInputFrame | BridgeErrorFrame | BridgeAbortedFrame | BridgeAskRequestFrame | BridgeChangeTitleFrame | BridgeTuiCommandReadyFrame;
 
 type BridgeReadyFrame = {
   type: 'ready';
@@ -61,6 +61,18 @@ type BridgeReadyFrame = {
   thoughtLevels?: Array<{ code: string; value: string; description?: string }>;
   currentThoughtLevel?: string;
   title?: string;
+};
+
+type BridgeUsageFrame = {
+  type: 'usage';
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  contextTokens: number;
+  contextWindow: number;
+  contextPercent: number;
+  tokensPerSecond: number;
 };
 
 type BridgeAgentEventFrame = {
@@ -1486,6 +1498,21 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       }
       settleBridgeReady();
       bridgeServer?.send({ type: 'set_control_mode', mode: runMode });
+      return;
+    }
+    if (frame.type === 'usage') {
+      session.sendAgentMessage('omp', {
+        type: 'token_count',
+        input_tokens: frame.inputTokens,
+        output_tokens: frame.outputTokens,
+        cache_creation_input_tokens: frame.cacheCreationInputTokens,
+        cache_read_input_tokens: frame.cacheReadInputTokens,
+        context_tokens: frame.contextTokens,
+        context_window: frame.contextWindow,
+        context_percent: frame.contextPercent,
+        tokens_per_second: frame.tokensPerSecond,
+        id: randomUUID(),
+      });
       return;
     }
     if (frame.type === 'ask_request') {

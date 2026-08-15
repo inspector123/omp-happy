@@ -2,7 +2,19 @@ import { describe, expect, it, vi } from 'vitest';
 
 // The bridge is intentionally plain ESM because native OMP loads it directly.
 // @ts-expect-error TypeScript has no declaration for the runtime extension module.
-import { formatAskResult, getModelSnapshot, getThinkingSnapshot, resolveModel, resolveRequestedModel, resolveTuiCommand, selectAskTools, sendPromptCommand, setOmpSessionTitle } from './omp-happy-bridge.mjs';
+import {
+  calculateOmpTokensPerSecond,
+  createUsageTelemetry,
+  formatAskResult,
+  getModelSnapshot,
+  getThinkingSnapshot,
+  resolveModel,
+  resolveRequestedModel,
+  resolveTuiCommand,
+  selectAskTools,
+  sendPromptCommand,
+  setOmpSessionTitle,
+} from './omp-happy-bridge.mjs';
 
 describe('OMP Happy bridge models', () => {
   const models = [
@@ -223,4 +235,103 @@ describe('OMP Happy bridge models', () => {
     })).toBeUndefined();
   });
 
+});
+
+describe('OMP Happy bridge usage telemetry', () => {
+  const assistantMessage = (
+    usage: Record<string, number>,
+    timing: Record<string, number> = {},
+  ) => ({
+    role: 'assistant',
+    ...timing,
+    usage,
+  });
+
+  it('publishes authoritative OMP context values without reading context inside the cadence bound', () => {
+    const telemetry = createUsageTelemetry();
+    telemetry.startMessage(assistantMessage({
+      input: 11,
+      output: 23,
+      cacheWrite: 5,
+      cacheRead: 7,
+      reasoningTokens: 13,
+    }), 0);
+    const getContextUsage = vi.fn(() => ({
+      tokens: 97_654,
+      contextWindow: 262_144,
+      percent: 37.25,
+    }));
+    const ctx = { getContextUsage };
+
+    expect(telemetry.takeFrame(ctx, { force: true, now: 0 })).toEqual({
+      type: 'usage',
+      inputTokens: 11,
+      outputTokens: 23,
+      cacheCreationInputTokens: 5,
+      cacheReadInputTokens: 7,
+      contextTokens: 97_654,
+      contextWindow: 262_144,
+      contextPercent: 37.25,
+      tokensPerSecond: 0,
+    });
+    expect(telemetry.takeFrame(ctx, { now: 499 })).toBeUndefined();
+    expect(getContextUsage).toHaveBeenCalledTimes(1);
+    expect(telemetry.takeFrame(ctx, { now: 500 })).toEqual(expect.objectContaining({
+      contextTokens: 97_654,
+      contextWindow: 262_144,
+      contextPercent: 37.25,
+    }));
+    expect(getContextUsage).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses OMP message timing for live and completed throughput', () => {
+    const telemetry = createUsageTelemetry();
+    const ctx = {
+      getContextUsage: () => ({ tokens: 12_000, contextWindow: 131_072, percent: 9.16 }),
+    };
+    const streamingMessage = assistantMessage(
+      { input: 10, output: 120 },
+      { timestamp: 1_000 },
+    );
+
+    expect(calculateOmpTokensPerSecond(streamingMessage, true, 1_050)).toBe(0);
+    expect(calculateOmpTokensPerSecond(streamingMessage, true, 2_000)).toBe(120);
+    expect(telemetry.startMessage(streamingMessage, 1_050)).toBe(true);
+    expect(telemetry.takeFrame(ctx, { force: true, now: 0 })?.tokensPerSecond).toBe(0);
+    expect(telemetry.updateMessage(streamingMessage, 2_000)).toBe(true);
+    expect(telemetry.takeFrame(ctx, { force: true, now: 500 })?.tokensPerSecond).toBe(120);
+
+    const completedMessage = assistantMessage(
+      { input: 10, output: 120 },
+      { timestamp: 1_000, duration: 1_500 },
+    );
+    expect(calculateOmpTokensPerSecond(completedMessage, false, 10_000)).toBe(80);
+    expect(telemetry.endMessage(completedMessage, 10_000)).toBe(true);
+    expect(telemetry.takeFrame(ctx, { force: true, now: 10_000 })?.tokensPerSecond).toBe(80);
+  });
+
+  it('preserves OMP completion throughput across tools and clears it for the next response', () => {
+    const telemetry = createUsageTelemetry();
+    const ctx = {
+      getContextUsage: () => ({ tokens: 26_214, contextWindow: 262_144, percent: 10 }),
+    };
+    const completedMessage = assistantMessage(
+      { input: 10, output: 120 },
+      { timestamp: 1_000, duration: 2_000 },
+    );
+
+    expect(telemetry.startMessage(completedMessage, 3_000)).toBe(true);
+    expect(telemetry.endMessage(completedMessage, 3_000)).toBe(true);
+    expect(telemetry.takeFrame(ctx, { force: true, now: 3_000 })?.tokensPerSecond).toBe(60);
+
+    expect(telemetry.startMessage({ role: 'toolResult' }, 4_000)).toBe(false);
+    expect(telemetry.endMessage({ role: 'toolResult' }, 4_500)).toBe(false);
+    expect(telemetry.takeFrame(ctx, { force: true, now: 4_500 })?.tokensPerSecond).toBe(60);
+
+    expect(telemetry.startMessage(
+      assistantMessage({ input: 10, output: 0 }, { timestamp: 5_000 }),
+      5_000,
+    )).toBe(true);
+    expect(telemetry.takeFrame(ctx, { force: true, now: 5_000 })?.tokensPerSecond).toBe(0);
+  });
 });

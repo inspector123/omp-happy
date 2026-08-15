@@ -2058,6 +2058,115 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
 
             expect(normalized).toBeNull();
         });
+        it('normalizes structured ACP token metrics into an invisible usage message', () => {
+            const message = {
+                role: 'agent',
+                content: {
+                    type: 'acp',
+                    provider: 'omp',
+                    data: {
+                        type: 'token_count',
+                        input_tokens: 120,
+                        output_tokens: 40,
+                        cache_creation_input_tokens: 10,
+                        cache_read_input_tokens: 30,
+                        context_tokens: 64_912,
+                        context_window: 200_000,
+                        context_percent: 32.456,
+                        tokens_per_second: 18.25,
+                        id: 'telemetry-1',
+                    },
+                },
+                meta: { sentFrom: 'cli' },
+            };
+
+            const parsed = RawRecordSchema.safeParse(message);
+            expect(parsed.success).toBe(true);
+            if (!parsed.success) {
+                throw parsed.error;
+            }
+
+            expect(normalizeRawMessage('persisted-token-count', null, 42, parsed.data)).toEqual({
+                id: 'persisted-token-count',
+                localId: null,
+                createdAt: 42,
+                role: 'agent',
+                isSidechain: false,
+                content: [],
+                usage: {
+                    input_tokens: 120,
+                    output_tokens: 40,
+                    cache_creation_input_tokens: 10,
+                    cache_read_input_tokens: 30,
+                    context_tokens: 64_912,
+                    context_window: 200_000,
+                    context_percent: 32.456,
+                    tokens_per_second: 18.25,
+                },
+                meta: { sentFrom: 'cli' },
+            });
+        });
+
+        it('keeps legacy Codex token metrics parseable but invisible', () => {
+            const parsed = RawRecordSchema.safeParse({
+                role: 'agent',
+                content: {
+                    type: 'acp',
+                    provider: 'codex',
+                    data: {
+                        type: 'token_count',
+                        total: {
+                            inputTokens: 120,
+                            outputTokens: 40,
+                            totalTokens: 160,
+                        },
+                    },
+                },
+            });
+
+            expect(parsed.success).toBe(true);
+            if (!parsed.success) {
+                throw parsed.error;
+            }
+            expect(normalizeRawMessage('legacy-token-count', null, 43, parsed.data)).toBeNull();
+        });
+
+        it.each([
+            'input_tokens',
+            'output_tokens',
+            'cache_creation_input_tokens',
+            'cache_read_input_tokens',
+            'context_tokens',
+            'context_window',
+            'context_percent',
+            'tokens_per_second',
+        ] as const)('rejects non-finite or negative ACP token metric %s', (field) => {
+            const data = {
+                type: 'token_count',
+                input_tokens: 120,
+                output_tokens: 40,
+                cache_creation_input_tokens: 10,
+                cache_read_input_tokens: 30,
+                context_tokens: 64_912,
+                context_window: 200_000,
+                context_percent: 32.456,
+                tokens_per_second: 18.25,
+                id: 'telemetry-1',
+            };
+
+            for (const invalidValue of [-1, Number.POSITIVE_INFINITY, Number.NaN]) {
+                const parsed = RawRecordSchema.safeParse({
+                    role: 'agent',
+                    content: {
+                        type: 'acp',
+                        provider: 'omp',
+                        data: { ...data, [field]: invalidValue },
+                    },
+                });
+                expect(parsed.success).toBe(false);
+            }
+        });
+
         it('accepts and normalizes structured ACP advisor notes', () => {
             const message = {
                 role: 'agent',

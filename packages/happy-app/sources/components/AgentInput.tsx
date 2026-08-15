@@ -28,6 +28,7 @@ import { hackMode, hackModes } from '@/sync/modeHacks';
 import { Theme } from '@/theme';
 import { t } from '@/text';
 import { Metadata } from '@/sync/storageTypes';
+import { formatOmpContextStatus, resolveContextPercent, type ContextTelemetry } from './agentInputContextStatus';
 
 interface AgentInputProps {
     // `initialValue` seeds the uncontrolled textarea once; keystrokes never
@@ -75,12 +76,11 @@ interface AgentInputProps {
     };
     autocompletePrefixes: string[];
     autocompleteSuggestions: (query: string) => Promise<{ key: string, text: string, component: React.ElementType }[]>;
-    usageData?: {
+    usageData?: ContextTelemetry & {
         inputTokens: number;
         outputTokens: number;
         cacheCreation: number;
         cacheRead: number;
-        contextSize: number;
     };
     alwaysShowContextSize?: boolean;
     onFileViewerPress?: () => void;
@@ -102,7 +102,7 @@ interface AgentInputProps {
     onAddImages?: (images: AttachmentPreview[]) => void;
 }
 
-const MAX_CONTEXT_SIZE = 190000;
+const LEGACY_MAX_CONTEXT_SIZE = 190000;
 
 const stylesheet = StyleSheet.create((theme, runtime) => ({
     container: {
@@ -309,8 +309,8 @@ const stylesheet = StyleSheet.create((theme, runtime) => ({
     },
 }));
 
-const getContextWarning = (contextSize: number, alwaysShow: boolean = false, theme: Theme) => {
-    const percentageUsed = (contextSize / MAX_CONTEXT_SIZE) * 100;
+const getContextWarning = (usageData: ContextTelemetry, alwaysShow: boolean = false, theme: Theme) => {
+    const percentageUsed = resolveContextPercent(usageData, LEGACY_MAX_CONTEXT_SIZE) ?? 0;
     const percentageRemaining = Math.max(0, Math.min(100, 100 - percentageUsed));
 
     if (percentageRemaining <= 5) {
@@ -322,6 +322,15 @@ const getContextWarning = (contextSize: number, alwaysShow: boolean = false, the
         return { text: t('agentInput.context.remaining', { percent: Math.round(percentageRemaining) }), color: theme.colors.warning };
     }
     return null; // No display needed
+};
+
+const getOmpContextStatus = (usageData: ContextTelemetry, theme: Theme) => {
+    const percentageUsed = resolveContextPercent(usageData) ?? 0;
+    const percentageRemaining = Math.max(0, Math.min(100, 100 - percentageUsed));
+    const color = percentageRemaining <= 5
+        ? theme.colors.warningCritical
+        : percentageRemaining <= 10 ? theme.colors.warning : theme.colors.textSecondary;
+    return { text: formatOmpContextStatus(usageData), color };
 };
 
 // Stable sub-trees extracted from AgentInput so they don't reconcile when
@@ -572,6 +581,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     const isCodex = props.metadata?.flavor === 'codex' || props.agentType === 'codex';
     const isGemini = props.metadata?.flavor === 'gemini' || props.agentType === 'gemini';
     const isOpenClaw = props.metadata?.flavor === 'openclaw' || props.agentType === 'openclaw';
+    const isOmp = props.metadata?.flavor === 'omp';
     const displayPermissionMode = React.useMemo(() => (
         props.permissionMode ? hackMode(props.permissionMode) : null
     ), [props.permissionMode]);
@@ -583,7 +593,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     const router = useRouter();
     const [modelShortlist] = useSettingMutable('modelShortlist');
     const [modelQuery, setModelQuery] = React.useState('');
-    const hasDynamicOmpModels = props.metadata?.flavor === 'omp';
+    const hasDynamicOmpModels = isOmp;
     // OMP publishes a live catalog, so keep it fully searchable. Static agent
     // catalogs still honor the user's shortlist.
     const shownModels = React.useMemo(() => {
@@ -626,9 +636,14 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         return label;
     }, [isSandboxEnabled]);
 
-    // Calculate context warning
-    const contextWarning = props.usageData?.contextSize
-        ? getContextWarning(props.usageData.contextSize, props.alwaysShowContextSize ?? false, theme)
+    // OMP always exposes its native used-percent/window status. Other agents
+    // retain the existing visibility setting and remaining-percent wording.
+    const contextWarning = props.usageData
+        ? isOmp
+            ? getOmpContextStatus(props.usageData, theme)
+            : props.usageData.contextSize > 0
+                ? getContextWarning(props.usageData, props.alwaysShowContextSize ?? false, theme)
+                : null
         : null;
 
     const agentInputEnterToSend = useSetting('agentInputEnterToSend');

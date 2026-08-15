@@ -399,6 +399,46 @@ describe('runOmp', () => {
     await runPromise;
   });
 
+  it('forwards OMP bridge usage as the exact shared token_count payload', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-usage' });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.mockSession.sendAgentMessage.mockClear();
+
+    mocks.emitBridgeFrame({
+      type: 'usage',
+      inputTokens: 11,
+      outputTokens: 23,
+      cacheCreationInputTokens: 5,
+      cacheReadInputTokens: 7,
+      contextTokens: 97_654,
+      contextWindow: 262_144,
+      contextPercent: 37.25,
+      tokensPerSecond: 18.5,
+    });
+
+    expect(mocks.mockSession.sendAgentMessage).toHaveBeenCalledOnce();
+    expect(mocks.mockSession.sendAgentMessage).toHaveBeenCalledWith('omp', {
+      type: 'token_count',
+      input_tokens: 11,
+      output_tokens: 23,
+      cache_creation_input_tokens: 5,
+      cache_read_input_tokens: 7,
+      context_tokens: 97_654,
+      context_window: 262_144,
+      context_percent: 37.25,
+      tokens_per_second: 18.5,
+      id: expect.any(String),
+    });
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
   it('keeps a normally exited OMP session visible and resumable', async () => {
     vi.useFakeTimers();
     const runPromise = runOmp({ credentials });
