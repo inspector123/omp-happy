@@ -33,6 +33,7 @@ export interface ListedDaemonSession {
   pid: number;
   agent?: string;
   tmuxSessionId?: string;
+  herdrPaneId?: string;
   path?: string;
   encryption?: ListedSessionEncryption;
 }
@@ -53,4 +54,6 @@ export interface TrackedSession {
   message?: string;
   /** tmux session identifier (format: session:window) */
   tmuxSessionId?: string;
+  /** herdr pane identifier (format: workspace:pane, e.g. w2:p1) */
+  herdrPaneId?: string;
 }

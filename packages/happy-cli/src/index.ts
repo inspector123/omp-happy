@@ -23,6 +23,7 @@ import { uninstall } from './daemon/uninstall'
 import { ApiClient } from './api/api'
 import { runDoctorCommand, runDoctorDaemon } from './ui/doctor'
 import { listDaemonSessions, stopDaemonSession } from './daemon/controlClient'
+import { attachHerdrPane } from './utils/herdr'
 import { handleAuthCommand } from './commands/auth'
 import { handleConnectCommand } from './commands/connect'
 import { handleSandboxCommand } from './commands/sandbox'
@@ -367,12 +368,13 @@ Conversation history is preserved on the server, but in-flight tool calls are in
       try {
       const selector = args[2];
       let sessions = (await listDaemonSessions()).filter(
-        (session) => session.agent === 'omp' && session.tmuxSessionId,
+        (session) => session.agent === 'omp' && (session.tmuxSessionId || session.herdrPaneId),
       );
       if (selector) {
         sessions = sessions.filter(
           (session) => session.happySessionId.startsWith(selector)
-            || session.tmuxSessionId === selector,
+            || session.tmuxSessionId === selector
+            || session.herdrPaneId === selector,
         );
       }
       if (sessions.length === 0) {
@@ -383,13 +385,18 @@ Conversation history is preserved on the server, but in-flight tool calls are in
       if (sessions.length > 1) {
         console.log('Multiple phone-started OMP sessions are active:');
         for (const session of sessions) {
-          console.log(`  ${session.happySessionId}  ${session.path ?? ''}  ${session.tmuxSessionId}`);
+          console.log(`  ${session.happySessionId}  ${session.path ?? ''}  ${session.herdrPaneId ?? session.tmuxSessionId}`);
         }
         throw new Error('Run `omp attach <session-id>` to choose one.');
       }
-      execFileSync('tmux', ['attach-session', '-t', sessions[0].tmuxSessionId!], {
-        stdio: 'inherit',
-      });
+      const target = sessions[0];
+      if (target.herdrPaneId) {
+        attachHerdrPane(target.herdrPaneId);
+      } else if (target.tmuxSessionId) {
+        execFileSync('tmux', ['attach-session', '-t', target.tmuxSessionId], {
+          stdio: 'inherit',
+        });
+      }
         return;
       } catch (error) {
         console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');

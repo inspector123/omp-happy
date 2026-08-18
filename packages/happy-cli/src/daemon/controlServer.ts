@@ -88,6 +88,7 @@ export function startDaemonControlServer({
               pid: z.number(),
               agent: z.string().optional(),
               tmuxSessionId: z.string().optional(),
+              herdrPaneId: z.string().optional(),
               path: z.string().optional(),
               encryption: z.object({
                 key: z.string(),
@@ -121,6 +122,7 @@ export function startDaemonControlServer({
               pid: child.pid,
               agent: child.agent,
               tmuxSessionId: child.tmuxSessionId,
+              herdrPaneId: child.herdrPaneId,
               path: child.happySessionMetadataFromLocalWebhook?.path,
               ...(encryption ? { encryption } : {}),
             };

@@ -23,6 +23,7 @@ import { statSync } from 'fs';
 import { join } from 'path';
 import { projectPath } from '@/projectPath';
 import { getTmuxUtilities, isTmuxAvailable, parseTmuxSessionIdentifier, formatTmuxSessionIdentifier } from '@/utils/tmux';
+import { buildHerdrPaneEnv, ensureHerdrOmpShim, ensureHerdrServerRunning, isHerdrAvailable, spawnInHerdr } from '@/utils/herdr';
 import { expandEnvironmentVariables } from '@/utils/expandEnvVars';
 import { detectCLIAvailability } from '@/utils/detectCLI';
 import { buildResumeLaunch } from '@/resume/handleResumeCommand';
@@ -396,6 +397,78 @@ export async function startDaemon(): Promise<void> {
           useTmux = false;
           if (tmuxSessionName !== undefined) {
             logger.debug(`[DAEMON RUN] tmux session name specified but tmux not available, falling back to regular spawning`);
+          }
+        }
+
+        // Phone-created OMP sessions prefer herdr: a persistent pane the
+        // desktop can attach to the exact live terminal later. When herdr
+        // is unavailable or the spawn fails, the tmux path below remains
+        // the fallback (then regular spawning).
+        if (options.agent === 'omp') {
+          const herdrAvailable = await isHerdrAvailable();
+          if (herdrAvailable) {
+            try {
+              await ensureHerdrServerRunning();
+              const shimPath = await ensureHerdrOmpShim();
+              const cliPath = join(projectPath(), 'dist', 'index.mjs');
+              const resumeFragment = options.resumeOmpSessionId
+                ? ` --resume ${shellescape(options.resumeOmpSessionId)}`
+                : '';
+              const fullCommand = `${shimPath} --no-warnings --no-deprecation ${cliPath} omp --yolo --started-by daemon${resumeFragment}`;
+              const herdrLabel = `happy-${Date.now()}-omp`;
+              logger.debug(`[DAEMON RUN] Attempting to spawn OMP session in herdr: ${herdrLabel}`);
+
+              const herdrResult = await spawnInHerdr({
+                command: fullCommand,
+                cwd: directory,
+                env: buildHerdrPaneEnv(extraEnv),
+                label: herdrLabel,
+              });
+
+              if (herdrResult.success && herdrResult.pid && herdrResult.paneId) {
+                logger.debug(`[DAEMON RUN] Successfully spawned in herdr pane: ${herdrResult.paneId}, PID: ${herdrResult.pid}`);
+
+                const trackedSession: TrackedSession = {
+                  startedBy: 'daemon',
+                  agent: 'omp',
+                  pid: herdrResult.pid,
+                  herdrPaneId: herdrResult.paneId,
+                  directoryCreated,
+                  message: directoryCreated
+                    ? `The path '${directory}' did not exist. We created a new folder and spawned a new session in herdr pane '${herdrResult.paneId}'. Use 'herdr agent attach ${herdrResult.paneId}' to view the session.`
+                    : `Spawned new session in herdr pane '${herdrResult.paneId}'. Use 'herdr agent attach ${herdrResult.paneId}' to view the session.`
+                };
+
+                pidToTrackedSession.set(herdrResult.pid, trackedSession);
+
+                logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${herdrResult.pid} (herdr)`);
+                return new Promise((resolve) => {
+                  const timeout = setTimeout(() => {
+                    pidToAwaiter.delete(herdrResult.pid!);
+                    logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${herdrResult.pid} (herdr)`);
+                    resolve({
+                      type: 'error',
+                      errorMessage: `Session webhook timeout for PID ${herdrResult.pid} (herdr)`
+                    });
+                  }, 15_000);
+
+                  pidToAwaiter.set(herdrResult.pid!, (completedSession) => {
+                    clearTimeout(timeout);
+                    logger.debug(`[DAEMON RUN] Session ${completedSession.happySessionId} fully spawned with webhook (herdr)`);
+                    resolve({
+                      type: 'success',
+                      sessionId: completedSession.happySessionId!
+                    });
+                  });
+                });
+              }
+
+              logger.debug(`[DAEMON RUN] Failed to spawn in herdr: ${herdrResult.error}, falling back to tmux/regular spawning`);
+            } catch (error) {
+              logger.debug(`[DAEMON RUN] Herdr spawn failed: ${error instanceof Error ? error.message : String(error)}, falling back to tmux/regular spawning`);
+            }
+          } else {
+            logger.debug('[DAEMON RUN] herdr not available, OMP session will use tmux/regular spawning');
           }
         }
 

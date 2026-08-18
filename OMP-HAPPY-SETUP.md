@@ -15,7 +15,7 @@ OMP computer
 |-- native OMP
 |-- forked CLI and Pi extension bridge
 |-- background daemon
-`-- tmux (recommended)
+`-- herdr (recommended, or tmux)
 
 Phone, web browser, or desktop
 `-- OMP companion app
@@ -59,7 +59,7 @@ On every OMP computer:
 
 - native `omp`
 - valid OMP model-provider credentials
-- tmux, strongly recommended for phone-started desktop attachment
+- herdr (recommended) or tmux, for phone-started desktop attachment
 
 Optional mobile build requirements:
 
@@ -74,7 +74,7 @@ pnpm --version
 git --version
 curl --version
 omp --version
-tmux -V
+herdr --version
 ```
 
 Native OMP must work before adding the companion bridge. Start `omp` normally and verify it can submit a prompt to the configured provider. OMP provider authentication is separate from companion login.
@@ -376,7 +376,7 @@ sudo loginctl enable-linger "$USER"
 
 ## 7. Run the first native mirrored OMP session
 
-First test from a terminal. This isolates the native bridge from remote-spawn and tmux concerns.
+First test from a terminal. This isolates the native bridge from remote-spawn and herdr/tmux concerns.
 
 ```bash
 cd /path/to/a/project
@@ -453,7 +453,15 @@ With the daemon online:
 7. Enter the first prompt.
 8. Submit.
 
-The daemon starts the internal native OMP command with auto-approval. If tmux is available, it creates:
+The daemon starts the internal native OMP command with auto-approval. If herdr is
+available, it creates a herdr workspace and pane:
+
+```text
+workspace: happy-<timestamp>-omp
+pane:      e.g. w2:p1
+```
+
+If herdr is not available but tmux is, it falls back to a tmux session and window:
 
 ```text
 session: happy-omp
@@ -470,7 +478,7 @@ Attach to the only active phone-started OMP session:
 node "$OMP_HAPPY_REPO/packages/happy-cli/bin/happy.mjs" omp attach
 ```
 
-If several sessions are active, the command lists their companion session IDs and tmux targets. Select one by ID prefix:
+If several sessions are active, the command lists their companion session IDs and herdr pane ids (or tmux targets for legacy sessions). Select one by ID prefix:
 
 ```bash
 node "$OMP_HAPPY_REPO/packages/happy-cli/bin/happy.mjs" \
@@ -484,13 +492,12 @@ omp attach
 omp attach <session-id-prefix>
 ```
 
-This opens the exact live OMP terminal. It does not start a second conversation. Detach without stopping OMP using tmux's default binding:
+This opens the exact live OMP terminal. It does not start a second conversation.
+Detach without stopping OMP using herdr's detach keybinding (or tmux's default
+`Ctrl-b d` binding for legacy tmux sessions).
 
-```text
-Ctrl-b d
-```
-
-Without tmux, phone-started sessions remain controllable from the companion but cannot be attached to as native desktop terminals.
+Without herdr or tmux, phone-started sessions remain controllable from the
+companion but cannot be attached to as native desktop terminals.
 
 ## 11. End-to-end acceptance check
 
@@ -545,13 +552,13 @@ Expected: active/connected, and the computer appears online in the companion.
 4. Submit a follow-up from the companion.
 5. Confirm the same native OMP process receives it.
 
-### Companion-to-tmux bridge
+### Companion-to-terminal bridge
 
 1. Create an OMP session from the companion.
 2. Confirm the session starts and produces output.
 3. Run `omp attach` locally.
-4. Confirm the existing terminal opens.
-5. Detach with `Ctrl-b d`.
+4. Confirm the existing terminal opens (a herdr pane or tmux window).
+5. Detach (herdr's detach keybinding, or `Ctrl-b d` for tmux).
 6. Send another companion prompt and confirm the session continues.
 
 ## Troubleshooting
@@ -618,14 +625,14 @@ Phone-started sessions use auto-approval. Manually started sessions do not unles
 
 ### `omp attach` reports no session
 
-Attach only works for active daemon-started OMP sessions tracked with tmux. Check:
+Attach only works for active daemon-started OMP sessions tracked with a herdr pane id or tmux target. Check:
 
 ```bash
-tmux list-sessions
+herdr workspace list
 node "$OMP_HAPPY_REPO/packages/happy-cli/bin/happy.mjs" daemon list
 ```
 
-A terminal-started session is already local. A daemon-started process without tmux has no attach target.
+A terminal-started session is already local. A daemon-started process without herdr or tmux has no attach target.
 
 ### Do not use the legacy OMP path by accident
 

@@ -58,7 +58,7 @@ In a development checkout, `pnpm cli X` and `node packages/happy-cli/bin/happy.m
 | `happy auth ...` | Works outside OMP. It manages the companion/relay login used by OMP sessions. It does not manage OMP's model-provider credentials. |
 | `happy daemon ...` | Works outside OMP. The daemon can start native OMP sessions from the companion. |
 | `happy omp` | The native extension-bridge entry point documented here. |
-| `happy omp attach [id]` | Attaches to an active, daemon-started OMP tmux window. |
+| `happy omp attach [id]` | Attaches to an active, daemon-started OMP session (herdr pane or tmux window). |
 | `happy doctor` | Runs inherited CLI/daemon diagnostics. It is not an OMP self-test, so some checks and wording may concern upstream Happy behavior. |
 | `happy notify` | Sends a companion notification independently of OMP. |
 | `happy server` | Runs the self-hosted relay/server independently of OMP. |
@@ -93,8 +93,9 @@ The relevant paths are:
 | `packages/happy-cli/scripts/omp-happy-bridge.mjs` | Pi extension loaded inside native OMP. |
 | `packages/happy-cli/scripts/omp-happy-config.overlay.yml` | Forces a fresh OMP transcript unless an explicit resume is requested. |
 | `scripts/omp-daemon.sh` | Convenience script for phone-initiated sessions. |
-| `packages/happy-cli/src/daemon/run.ts` | Remote process creation and tmux integration. |
-| `packages/happy-cli/src/utils/tmux.ts` | Tmux session/window creation and target formatting. |
+| `packages/happy-cli/src/daemon/run.ts` | Remote process creation and herdr/tmux integration. |
+| `packages/happy-cli/src/utils/herdr.ts` | Herdr server/pane management, agent shim, and attach. |
+| `packages/happy-cli/src/utils/tmux.ts` | Tmux session/window creation and target formatting (fallback). |
 | `packages/happy-app/sources/sync/reducer/reducer.ts` | Reduces synchronized events into app state. |
 | `packages/happy-app/sources/components/tools/knownTools.tsx` | Renders known OMP tool payloads in the app. |
 
@@ -528,32 +529,42 @@ User creates an OMP session in the companion
 |-- relay delivers a spawn request to the local daemon
 |-- daemon validates and expands requested environment variables
 |-- daemon selects the requested project directory
-|-- daemon checks whether tmux is available
+|-- daemon checks whether herdr is available
 |
-|-- with tmux
+|-- with herdr (preferred)
+|   |-- ensures the herdr server is running
+|   |-- creates a workspace labeled "happy-<timestamp>-omp"
+|   |-- runs the internal CLI omp --yolo --started-by daemon in a new pane
+|   |   (through a node binary named "omp" so herdr detects the agent)
+|   |-- records PID and the pane id (e.g. "w2:p1")
+|
+|-- without herdr, with tmux
 |   |-- creates/uses session "happy-omp"
 |   |-- creates window "happy-<timestamp>-omp"
-|   |-- starts: internal CLI omp --yolo --started-by daemon
 |   `-- records PID and exact session:window target
 |
-`-- without tmux
+`-- without herdr or tmux
     `-- starts the same internal CLI as a regular child process
 ```
 
-The daemon waits up to 15 seconds for the new wrapper to report its encrypted companion session ID. This correlates the process/tmux window with the chat visible in the app.
+The daemon waits up to 15 seconds for the new wrapper to report its encrypted companion session ID. This correlates the process/terminal (herdr pane or tmux window) with the chat visible in the app.
 
-## Tmux and desktop attach
+## Herdr and desktop attach
 
-Tmux is a process/terminal container around the bridge, not part of its protocol:
+Herdr (herdr.dev) is a terminal multiplexer for AI coding agents. It hosts the
+bridge in a persistent pane, not as part of its protocol:
 
 ```text
-tmux session: happy-omp
-`-- window: happy-<timestamp>-omp
-    `-- forked CLI wrapper
+herdr workspace: happy-<timestamp>-omp
+`-- pane: e.g. "w2:p1"
+    `-- forked CLI wrapper (node binary named "omp")
         |-- native OMP PTY
         |   `-- Pi extension
         `-- private Unix socket
 ```
+
+Herdr also detects the OMP agent in the pane (via the `herdr integration install omp`
+extension) and reports its live state (working / blocked / idle) in its UI.
 
 Attach to the only active phone-started OMP session:
 
@@ -561,21 +572,27 @@ Attach to the only active phone-started OMP session:
 node packages/happy-cli/bin/happy.mjs omp attach
 ```
 
-If more than one is active, use the beginning of the companion session ID:
+If more than one is active, use the beginning of the companion session ID (or the
+pane id for herdr sessions):
 
 ```bash
 node packages/happy-cli/bin/happy.mjs omp attach <session-id-prefix>
 ```
 
-The launcher also routes `omp attach ...` to this internal attach command. Internally, attach resolves the daemon-recorded exact `session:window` target and calls:
+The launcher also routes `omp attach ...` to this internal attach command. Internally,
+attach resolves the daemon-recorded target and calls:
 
 ```bash
-tmux attach-session -t <session:window>
+herdr agent attach <pane-id>      # herdr sessions
+tmux attach-session -t <session:window>   # legacy tmux sessions
 ```
 
-This opens the same native OMP process. It does not create or resume a second conversation. Detach without stopping it with tmux's default `Ctrl-b d` binding.
+This opens the same native OMP process. It does not create or resume a second
+conversation. Detach without stopping it using herdr's detach keybinding or tmux's
+default `Ctrl-b d` binding.
 
-Without tmux, phone-started OMP still runs and remains controllable from the app, but native desktop attach is unavailable.
+Without herdr or tmux, phone-started OMP still runs and remains controllable from
+the app, but native desktop attach is unavailable.
 
 ## Relay session and encryption boundary
 
@@ -586,7 +603,7 @@ The practical trust boundaries are:
 - **Native OMP and wrapper:** can access the selected project and local tools according to the user's OS permissions.
 - **Companion client:** holds account/session key material needed to display and control sessions.
 - **Relay:** routes and stores encrypted synchronization records but does not connect to OMP's local socket.
-- **Tmux:** retains the local terminal process; it does not handle relay encryption or structured event conversion.
+- **Herdr / tmux:** retains the local terminal process; it does not handle relay encryption or structured event conversion.
 
 Do not share `$HAPPY_HOME_DIR/access.key`, `$HAPPY_HOME_DIR/agent.key`, model-provider credentials, or relay server secrets.
 
@@ -686,15 +703,15 @@ Only enable automatic approval when the machine and relay account are trusted, b
 
 ### Desktop attach finds no session
 
-Attach only applies to active OMP sessions started by the daemon and tracked with a tmux target. Check:
+Attach only applies to active OMP sessions started by the daemon and tracked with a herdr pane id or tmux target. Check:
 
 ```bash
 scripts/omp-daemon.sh status
 node packages/happy-cli/bin/happy.mjs daemon list
-tmux list-sessions
+herdr workspace list
 ```
 
-A locally started bridged terminal is already attached, and a daemon session started without tmux has no attach target.
+A locally started bridged terminal is already attached, and a daemon session started without herdr or tmux has no attach target.
 
 ### The wrong OMP session resumes
 
@@ -718,7 +735,7 @@ Use the launcher/native internal `omp` command for the behavior documented here.
 
 ## Current limitations
 
-- Desktop attach requires tmux and only covers active daemon-started sessions recorded by the running daemon.
+- Desktop attach requires herdr (or tmux as a fallback) and only covers active daemon-started sessions recorded by the running daemon.
 - Phone-started sessions use automatic tool approval.
 - Some app actions use TUI slash-command injection because Pi does not expose the required operation directly through the extension API used here.
 - Password prompt forwarding depends on bounded PTY prompt detection and only runs while a native interactive bash tool is active.
@@ -743,7 +760,7 @@ pnpm -C packages/happy-cli exec vitest run \
   scripts/omp-happy-bridge.test.ts
 ```
 
-A full end-to-end check additionally requires a configured relay, companion client, native OMP provider credentials, and—when desktop attach is being tested—tmux.
+A full end-to-end check additionally requires a configured relay, companion client, native OMP provider credentials, and—when desktop attach is being tested—herdr (or tmux).
 
 ## Upstream
 
