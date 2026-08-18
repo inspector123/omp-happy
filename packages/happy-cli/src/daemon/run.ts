@@ -997,15 +997,17 @@ export async function startDaemon(): Promise<void> {
         }
       }
       if (bundleReplaced) {
-        // TODO: We probably do not want to keep this in-process self-restart logic long-term.
-        // A native service manager would make startup and upgrades much simpler: the CLI would
-        // ask the OS to start the latest daemon instead of hand-rolling respawn/kill behavior here.
+        // Hand off to a new daemon running the latest bundle. Under a service
+        // manager (systemd injects INVOCATION_ID into every process it starts)
+        // we exit non-zero so the unit's Restart=on-failure policy restarts us
+        // with the new bundle — the service manager owns the respawn. Without
+        // a service manager we spawn a detached daemon instead.
         logger.debug('[DAEMON RUN] Daemon bundle replaced on disk, handing off to new daemon');
 
         clearInterval(restartOnStaleVersionAndHeartbeat);
 
-        // Release ownership BEFORE spawning the new daemon. Otherwise the spawned
-        // `happy daemon start` reads our still-present daemon.state.json, sees
+        // Release ownership BEFORE handing off. Otherwise the replacement
+        // daemon reads our still-present daemon.state.json, sees
         // isDaemonRunningCurrentlyInstalledHappyVersion() === true, and exits —
         // leaving nothing running once we also exit.
         apiMachine.shutdown();
@@ -1013,6 +1015,11 @@ export async function startDaemon(): Promise<void> {
         await cleanupDaemonState();
         await releaseDaemonLock(daemonLockHandle);
         await stopCaffeinate();
+
+        if (process.env.INVOCATION_ID) {
+          logger.debug('[DAEMON RUN] Running under systemd, exiting non-zero for service-manager restart');
+          process.exit(1);
+        }
 
         try {
           spawnHappyCLI(['daemon', 'start'], {
