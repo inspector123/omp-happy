@@ -37,19 +37,20 @@ From the monorepo root:
 pnpm install
 export HAPPY_HOME_DIR="$HOME/.happy-self-host"
 pnpm run self-host:dev
-curl --fail http://127.0.0.1:3005/health
+curl --fail http://YOUR-LAN-IP:3005/health
 ```
 
 The root script builds the local CLI and invokes `happy server`, which generates
 a persistent 32-byte master secret, migrates embedded PGlite, uses local file
 storage, and keeps all server data under
-`$HAPPY_HOME_DIR/server-data`. No external services are required.
+`$HAPPY_HOME_DIR/server-data`. It binds to the LAN by default and detects a
+private IPv4 address for the phone-reachable URL. No external services are
+required.
 
-For a trusted LAN, use an explicit client-reachable origin:
+If automatic address detection picks the wrong interface, set the URL explicitly:
 
 ```bash
 pnpm run self-host:dev -- \
-  --host 0.0.0.0 \
   --public-url http://192.168.1.20:3005
 ```
 

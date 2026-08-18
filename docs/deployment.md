@@ -95,9 +95,9 @@ one is not a complete server restore.
 | Variable | Requirement | Meaning |
 |----------|-------------|---------|
 | `HANDY_MASTER_SECRET` | **Required** | Persistent high-entropy server secret. `happy server` generates it; other launch methods should use at least `openssl rand -hex 32`. |
-| `HOST` | Optional, default `0.0.0.0` in the standalone entrypoint | Listen address. The interactive `happy server` wrapper safely defaults to `127.0.0.1`. |
+| `HOST` | Optional, default `0.0.0.0` | Listen address. The interactive `happy server` wrapper also defaults to LAN access so mobile clients can connect. |
 | `PORT` | Optional, default `3005` | HTTP and Socket.IO port. |
-| `PUBLIC_URL` | Recommended outside loopback | Client-reachable HTTP(S) origin used when a request host is unavailable and for local file URLs. |
+| `PUBLIC_URL` | Recommended outside loopback | Canonical client-reachable HTTP(S) origin used for local attachment URLs. `happy server` detects a private LAN address when omitted. |
 | `DATA_DIR` | Optional, default `./data` (`/data` in Docker) | Base directory for PGlite and local attachments. |
 | `PGLITE_DIR` | Optional, default `$DATA_DIR/pglite` | Embedded database directory. |
 | `DB_PROVIDER` | Optional, default `pglite` in standalone | Database adapter selection. |
@@ -128,11 +128,11 @@ Local filesystem storage writes to `$DATA_DIR/files`. S3 is not required unless
 
 | Variable(s) | Meaning |
 |-------------|---------|
-| `METRICS_ENABLED`, `METRICS_PORT` | The external-service entrypoint starts a separate Prometheus server by default on port `9090`; set `METRICS_ENABLED=false` to disable it. |
+| `METRICS_ENABLED`, `METRICS_PORT`, `METRICS_HOST` | Metrics are disabled by default. Set `METRICS_ENABLED=true` to enable the separate Prometheus server; it binds to `127.0.0.1:9090` unless explicitly changed. |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URL` | Optional GitHub OAuth. |
 | `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_REDIRECT_URI`, `GITHUB_WEBHOOK_SECRET` | Additional values required for GitHub App/webhook support. |
 | `ELEVENLABS_API_KEY`, `REVENUECAT_API_KEY` | Optional voice and subscription integration. Voice routes report configuration errors when required keys are absent. |
-| `DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING` | Enables plaintext client debug-log ingestion and local log files when set to any non-empty value. Leave it **unset** in normal and production deployments; the string `false` is still non-empty. |
+| `DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING` | Enables bounded client debug-log ingestion only when exactly `true` in a non-production process. Leave it unset normally. |
 
 Secrets must come from a secret manager or a root-readable file outside the
 repository. Never commit generated secrets, `.env`, access tokens, or client

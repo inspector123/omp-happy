@@ -55,6 +55,12 @@ export function getLocalFilesDir() {
     return localFilesDir;
 }
 
+export function isPublicFilePath(filePath: string): boolean {
+    return filePath.startsWith('public/') &&
+        !filePath.includes('..') &&
+        !path.isAbsolute(filePath);
+}
+
 export async function putLocalFile(filePath: string, data: Buffer) {
     const fullPath = path.join(localFilesDir, filePath);
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });

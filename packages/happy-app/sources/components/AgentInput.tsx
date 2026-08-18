@@ -100,6 +100,9 @@ interface AgentInputProps {
     onPickImages?: () => void;
     onRemoveImage?: (id: string) => void;
     onAddImages?: (images: AttachmentPreview[]) => void;
+    /** Copies arbitrary files directly into the computer's session workspace. */
+    onPickFiles?: () => void;
+    isUploadingFile?: boolean;
 }
 
 const LEGACY_MAX_CONTEXT_SIZE = 190000;
@@ -1530,6 +1533,38 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                                 ? theme.colors.radio.active
                                                 : theme.colors.button.secondary.tint}
                                         />
+                                    </Pressable>
+                                )}
+
+                                {/* Workspace file upload button */}
+                                {props.onPickFiles && (
+                                    <Pressable
+                                        onPress={props.onPickFiles}
+                                        disabled={props.isUploadingFile}
+                                        hitSlop={{ top: 5, bottom: 10, left: 0, right: 0 }}
+                                        style={(p) => ({
+                                            flexDirection: 'row',
+                                            alignItems: 'center',
+                                            borderRadius: Platform.select({ default: 16, android: 20 }),
+                                            paddingHorizontal: 8,
+                                            paddingVertical: 6,
+                                            justifyContent: 'center',
+                                            height: 32,
+                                            opacity: p.pressed ? 0.7 : 1,
+                                        })}
+                                    >
+                                        {props.isUploadingFile ? (
+                                            <ActivityIndicator
+                                                size={16}
+                                                color={theme.colors.radio.active}
+                                            />
+                                        ) : (
+                                            <Ionicons
+                                                name="document-outline"
+                                                size={16}
+                                                color={theme.colors.button.secondary.tint}
+                                            />
+                                        )}
                                     </Pressable>
                                 )}
                                 </View>}

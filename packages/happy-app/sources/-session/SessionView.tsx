@@ -22,6 +22,7 @@ import { Avatar } from '@/components/Avatar';
 import { VoiceAssistantStatusBar } from '@/components/VoiceAssistantStatusBar';
 import { useDraft } from '@/hooks/useDraft';
 import { useImagePicker } from '@/hooks/useImagePicker';
+import { useFileUpload } from '@/hooks/useFileUpload';
 import { Modal } from '@/modal';
 import { voiceHooks } from '@/realtime/hooks/voiceHooks';
 import { getCurrentVoiceConversationId, getCurrentVoiceSessionDurationSeconds, startRealtimeSession, stopRealtimeSession } from '@/realtime/RealtimeSession';
@@ -522,6 +523,7 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
     // Image attachments are a standard composer capability. Agent-specific
     // support is checked by Sync.sendMessage before upload.
     const { selectedImages, pickImages, removeImage, clearImages, addImages } = useImagePicker(sessionId);
+    const { pickAndUploadFiles, isUploadingFile } = useFileUpload(sessionId);
     const selectedImagesRef = React.useRef(selectedImages);
     selectedImagesRef.current = selectedImages;
     const sendInFlightRef = React.useRef(false);
@@ -921,6 +923,8 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
             onPickImages={pickImages}
             onRemoveImage={removeImage}
             onAddImages={addImages}
+            onPickFiles={isDisconnected ? undefined : pickAndUploadFiles}
+            isUploadingFile={isUploadingFile}
             autocompletePrefixes={AGENT_INPUT_AUTOCOMPLETE_PREFIXES}
             autocompleteSuggestions={handleAutocompleteSuggestions}
             usageData={usageData}

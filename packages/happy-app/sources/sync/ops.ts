@@ -69,6 +69,15 @@ interface SessionWriteFileResponse {
     error?: string;
 }
 
+export interface SessionFileUploadResponse {
+    success: boolean;
+    uploadId?: string;
+    received?: number;
+    path?: string;
+    hash?: string;
+    error?: string;
+}
+
 // List directory operation types
 interface SessionListDirectoryRequest {
     path: string;
@@ -730,6 +739,37 @@ export async function sessionWriteFile(
             error: error instanceof Error ? error.message : 'Unknown error'
         };
     }
+}
+
+async function sessionFileUploadRpc<TRequest>(
+    sessionId: string,
+    method: string,
+    request: TRequest,
+): Promise<SessionFileUploadResponse> {
+    try {
+        return await apiSocket.sessionRPC<SessionFileUploadResponse, TRequest>(sessionId, method, request);
+    } catch (error) {
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error',
+        };
+    }
+}
+
+export function sessionStartFileUpload(sessionId: string, name: string, size: number) {
+    return sessionFileUploadRpc(sessionId, 'startFileUpload', { name, size });
+}
+
+export function sessionAppendFileUpload(sessionId: string, uploadId: string, offset: number, content: string) {
+    return sessionFileUploadRpc(sessionId, 'appendFileUpload', { uploadId, offset, content });
+}
+
+export function sessionFinishFileUpload(sessionId: string, uploadId: string) {
+    return sessionFileUploadRpc(sessionId, 'finishFileUpload', { uploadId });
+}
+
+export function sessionCancelFileUpload(sessionId: string, uploadId: string) {
+    return sessionFileUploadRpc(sessionId, 'cancelFileUpload', { uploadId });
 }
 
 /**

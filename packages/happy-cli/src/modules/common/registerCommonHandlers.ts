@@ -8,6 +8,7 @@ import { run as runRipgrep } from '@/modules/ripgrep/index';
 import { run as runDifftastic } from '@/modules/difftastic/index';
 import { RpcHandlerManager } from '../../api/rpc/RpcHandlerManager';
 import { validatePath } from './pathSecurity';
+import { registerFileUploadHandlers } from './registerFileUploadHandlers';
 
 const execAsync = promisify(exec);
 
@@ -156,6 +157,8 @@ export type SpawnSessionResult =
  * Register all RPC handlers with the session
  */
 export function registerCommonHandlers(rpcHandlerManager: RpcHandlerManager, workingDirectory: string) {
+    registerFileUploadHandlers(rpcHandlerManager, workingDirectory);
+
 
     // Shell command handler - executes commands in the default shell
     rpcHandlerManager.registerHandler<BashRequest, BashResponse>('bash', async (data) => {

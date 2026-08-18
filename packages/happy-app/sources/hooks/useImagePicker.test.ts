@@ -34,7 +34,18 @@ vi.mock('@/utils/thumbhash', () => ({
     generateThumbhash: mocks.generateThumbhash,
 }));
 
-import { normalizePickedAssetForUpload } from './useImagePicker';
+import {
+    normalizePickedAssetForUpload,
+    requiresMediaLibraryPermission,
+} from './useImagePicker';
+
+describe('requiresMediaLibraryPermission', () => {
+    it('only requires permission before opening the iOS picker', () => {
+        expect(requiresMediaLibraryPermission('ios')).toBe(true);
+        expect(requiresMediaLibraryPermission('android')).toBe(false);
+        expect(requiresMediaLibraryPermission('web')).toBe(false);
+    });
+});
 
 describe('normalizePickedAssetForUpload', () => {
     beforeEach(() => {

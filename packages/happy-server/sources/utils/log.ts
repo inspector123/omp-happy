@@ -6,7 +6,7 @@ import { join } from 'path';
 // Single log file name created once at startup
 let consolidatedLogFile: string | undefined;
 
-if (process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING) {
+if (process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING === 'true' && process.env.NODE_ENV !== 'production') {
     const logsDir = join(process.cwd(), '.logs');
     try {
         mkdirSync(logsDir, { recursive: true });
@@ -55,7 +55,7 @@ const prettyStream = pretty({
 
 const loggerStreams: pino.StreamEntry[] = [{ level: 'debug', stream: prettyStream }];
 
-if (process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING && consolidatedLogFile) {
+if (process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING === 'true' && process.env.NODE_ENV !== 'production' && consolidatedLogFile) {
     loggerStreams.push({
         level: 'debug',
         stream: pino.destination({ dest: consolidatedLogFile, mkdir: true }),
@@ -82,7 +82,7 @@ const baseOptions = {
 export const logger = pino(baseOptions, pino.multistream(loggerStreams));
 
 // Optional file-only logger for remote logs from CLI/mobile
-export const fileConsolidatedLogger = process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING && consolidatedLogFile ?
+export const fileConsolidatedLogger = process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING === 'true' && process.env.NODE_ENV !== 'production' && consolidatedLogFile ?
     pino(baseOptions, pino.destination({ dest: consolidatedLogFile, mkdir: true })) : undefined;
 
 export function log(src: any, ...args: any[]) {

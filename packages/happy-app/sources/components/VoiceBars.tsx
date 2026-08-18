@@ -18,41 +18,47 @@ export const VoiceBars: React.FC<VoiceBarsProps> = ({
 
     useEffect(() => {
         if (isActive) {
-            // Start animations with different timings for each bar
-            const animate = (bar: Animated.Value, duration: number, delay: number = 0) => {
-                Animated.loop(
+            const configurations = [
+                { bar: bar1, duration: 300, delay: 0 },
+                { bar: bar2, duration: 350, delay: 100 },
+                { bar: bar3, duration: 400, delay: 200 },
+            ];
+            const animations: Animated.CompositeAnimation[] = [];
+
+            for (const { bar, duration, delay } of configurations) {
+                const animation = Animated.loop(
                     Animated.sequence([
                         Animated.delay(delay),
                         Animated.timing(bar, {
                             toValue: 1,
-                            duration: duration,
+                            duration,
                             useNativeDriver: true,
                         }),
                         Animated.timing(bar, {
                             toValue: 0.3,
-                            duration: duration,
+                            duration,
                             useNativeDriver: true,
                         }),
                     ])
-                ).start();
-            };
+                );
+                animations.push(animation);
+                animation.start();
+            }
 
-            animate(bar1, 300, 0);
-            animate(bar2, 350, 100);
-            animate(bar3, 400, 200);
-        } else {
-            // Stop all animations
-            bar1.stopAnimation();
-            bar2.stopAnimation();
-            bar3.stopAnimation();
-            
-            // Reset to static state
-            Animated.parallel([
-                Animated.timing(bar1, { toValue: 0.3, duration: 200, useNativeDriver: true }),
-                Animated.timing(bar2, { toValue: 0.3, duration: 200, useNativeDriver: true }),
-                Animated.timing(bar3, { toValue: 0.3, duration: 200, useNativeDriver: true }),
-            ]).start();
+            return () => {
+                for (const animation of animations) {
+                    animation.stop();
+                }
+            };
         }
+
+        const resetAnimation = Animated.parallel([
+            Animated.timing(bar1, { toValue: 0.3, duration: 200, useNativeDriver: true }),
+            Animated.timing(bar2, { toValue: 0.3, duration: 200, useNativeDriver: true }),
+            Animated.timing(bar3, { toValue: 0.3, duration: 200, useNativeDriver: true }),
+        ]);
+        resetAnimation.start();
+        return () => resetAnimation.stop();
     }, [isActive, bar1, bar2, bar3]);
 
     const barWidth = size === 'small' ? 2 : 3;

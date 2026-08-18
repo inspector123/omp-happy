@@ -1,5 +1,5 @@
 import Constants from 'expo-constants';
-import { apiSocket, getCurrentAppState, getHappyClientId } from '@/sync/apiSocket';
+import { apiSocket, getCurrentAppState, getHappyClientId, shouldConnectSyncSocket } from '@/sync/apiSocket';
 import { notifyUnreadMessage } from '@/sync/webTabTitle';
 import { AuthCredentials } from '@/auth/tokenStorage';
 import { Encryption } from '@/sync/encryption/encryption';
@@ -182,16 +182,19 @@ class Sync {
         this.pushTokenSync = new InvalidateSync(registerPushToken);
         this.activityAccumulator = new ActivityUpdateAccumulator(this.flushActivityUpdates.bind(this), 2000);
 
-        // Listen for app state changes to refresh purchases
+        // Suspend realtime updates while the mobile app is not visible. Push notifications
+        // provide background delivery, and message POSTs do not depend on the socket.
         AppState.addEventListener('change', (nextAppState) => {
             this.appState = nextAppState;
 
-            // Notify server of focus state for push notification routing.
-            // Mobile: AppState.currentState reflects fg/bg directly.
-            // Web/desktop: visibilitychange/focus listeners below drive this same path
-            // by updating this.appState too — re-derive via getCurrentAppState() so
-            // the wire value matches what the server uses for suppression.
-            apiSocket.sendAppState(getCurrentAppState());
+            let startedSocketConnection = false;
+            if (shouldConnectSyncSocket(nextAppState)) {
+                startedSocketConnection = apiSocket.connect();
+                apiSocket.sendAppState(getCurrentAppState());
+            } else {
+                apiSocket.sendAppState('background');
+                apiSocket.disconnect();
+            }
 
             if (nextAppState === 'active') {
                 const shouldFailAfterResume = this.backgroundSendStartedAt !== null
@@ -206,15 +209,20 @@ class Sync {
                 log.log('📱 App became active');
                 this.purchasesSync.invalidate();
                 this.profileSync.invalidate();
-                this.machinesSync.invalidate();
                 this.pushTokenSync.invalidate();
-                this.sessionsSync.invalidate();
                 this.nativeUpdateSync.invalidate();
-                log.log('📱 App became active: Invalidating artifacts sync');
-                this.artifactsSync.invalidate();
-                this.friendsSync.invalidate();
-                this.friendRequestsSync.invalidate();
-                this.feedSync.invalidate();
+
+                // A newly-created socket runs the remaining catch-up work from the
+                // reconnect handler. If the socket was already live, refresh here.
+                if (Platform.OS === 'web' || !startedSocketConnection) {
+                    this.machinesSync.invalidate();
+                    this.sessionsSync.invalidate();
+                    log.log('📱 App became active: Invalidating artifacts sync');
+                    this.artifactsSync.invalidate();
+                    this.friendsSync.invalidate();
+                    this.friendRequestsSync.invalidate();
+                    this.feedSync.invalidate();
+                }
             } else {
                 log.log(`📱 App state changed to: ${nextAppState}`);
                 this.maybeStartBackgroundSendWatchdog();

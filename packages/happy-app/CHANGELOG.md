@@ -1,3 +1,10 @@
+# August 17 — Lower background battery use
+
+- The mobile app now closes its live sync connection while backgrounded and reconnects on return, while desktop and web clients keep their existing connection behavior.
+- Failed network requests now retry on randomized exponential delays instead of synchronized fixed intervals.
+- File previews stop checking for external changes while the app is backgrounded, and repeating animations release their native loops when removed.
+- An unused duplicate camera runtime, the unused location runtime and permissions, and unnecessary iOS remote-notification background mode were removed.
+
 # August 14 — Accurate session status
 
 - Sessions whose heartbeat expired no longer reappear as active after restarting the app.

@@ -7,6 +7,7 @@ import Animated, {
     withTiming,
     interpolate,
     Easing,
+    cancelAnimation,
     useAnimatedRef,
     measure,
 } from 'react-native-reanimated';
@@ -42,6 +43,8 @@ export const ShimmerView = React.memo<ShimmerViewProps>(({
             -1,
             false
         );
+
+        return () => cancelAnimation(shimmerTranslate);
     }, [duration]);
 
     const animatedStyle = useAnimatedStyle(() => {

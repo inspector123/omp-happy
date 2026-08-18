@@ -4,16 +4,16 @@ import { Fastify } from '../types';
 export function devRoutes(app: Fastify) {
 
     // Combined logging endpoint (only when explicitly enabled)
-    if (process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING) {
+    if (process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING === 'true' && process.env.NODE_ENV !== 'production') {
         app.post('/logs-combined-from-cli-and-mobile-for-simple-ai-debugging', {
             schema: {
                 body: z.object({
-                    timestamp: z.string(),
-                    level: z.string(),
-                    message: z.string(),
-                    messageRawObject: z.any().optional(),
+                    timestamp: z.string().max(100),
+                    level: z.string().max(20),
+                    message: z.string().max(64 * 1024),
+                    messageRawObject: z.unknown().optional(),
                     source: z.enum(['mobile', 'cli']),
-                    platform: z.string().optional()
+                    platform: z.string().max(100).optional()
                 })
             }
         }, async (request, reply) => {

@@ -3,8 +3,9 @@ export async function delay(ms: number) {
 }
 
 export function exponentialBackoffDelay(currentFailureCount: number, minDelay: number, maxDelay: number, maxFailureCount: number) {
-    let maxDelayRet = minDelay + ((maxDelay - minDelay) / maxFailureCount) * Math.max(currentFailureCount, maxFailureCount);
-    return Math.round(Math.random() * maxDelayRet);
+    const boundedFailureCount = Math.min(Math.max(currentFailureCount, 0), maxFailureCount);
+    const delayCeiling = Math.min(maxDelay, minDelay * (2 ** boundedFailureCount));
+    return Math.round(minDelay + Math.random() * (delayCeiling - minDelay));
 }
 
 export type BackoffFunc = <T>(callback: () => Promise<T>) => Promise<T>;
@@ -38,4 +39,7 @@ export function createBackoff(
     };
 }
 
-export let backoff = createBackoff({ onError: (e) => { console.warn(e); } });
+export let backoff = createBackoff({
+    onError: (e) => { console.warn(e); },
+    maxDelay: 30_000,
+});

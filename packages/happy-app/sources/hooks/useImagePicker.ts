@@ -31,6 +31,9 @@ type UseImagePickerResult = {
     clearImages: () => void;
     addImages: (images: AttachmentPreview[]) => void;
 };
+export function requiresMediaLibraryPermission(platform: typeof Platform.OS): boolean {
+    return platform === 'ios';
+}
 
 function withJpegExtension(fileName: string | null | undefined): string {
     const fallback = `image_${Date.now()}.jpg`;
@@ -84,7 +87,7 @@ export function useImagePicker(composerId: string): UseImagePickerResult {
     }, [selectedImages]);
 
     const requestPermission = useCallback(async (): Promise<boolean> => {
-        if (Platform.OS === 'web') return true;
+        if (!requiresMediaLibraryPermission(Platform.OS)) return true;
 
         const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (status !== 'granted') {
@@ -99,8 +102,10 @@ export function useImagePicker(composerId: string): UseImagePickerResult {
     }, []);
 
     const pickImages = useCallback(async () => {
-        const hasPermission = await requestPermission();
-        if (!hasPermission) return;
+        if (requiresMediaLibraryPermission(Platform.OS)) {
+            const hasPermission = await requestPermission();
+            if (!hasPermission) return;
+        }
 
         const remaining = MAX_IMAGES_PER_MESSAGE - selectedCountRef.current;
         if (remaining <= 0) {

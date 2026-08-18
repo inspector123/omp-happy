@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { networkInterfaces } from 'node:os';
 import { createInterface } from 'node:readline/promises';
 import { configuration } from '@/configuration';
 import { updateSettings } from '@/persistence';
@@ -183,7 +184,7 @@ export async function handleServerCommand(args: string[]): Promise<void> {
 
 function parseArgs(args: string[]): ServerOptions | null {
     let port = 3005;
-    let host = '127.0.0.1';
+    let host = '0.0.0.0';
     let publicUrl: string | undefined;
     let reset = false;
     let persistServerUrl = true;
@@ -221,10 +222,14 @@ function parseArgs(args: string[]): ServerOptions | null {
         }
     }
 
-    if ((host === '0.0.0.0' || host === '::' || host === '[::]') && !publicUrl) {
-        console.error(chalk.red(`--public-url is required when --host is ${host}.`));
-        console.error(chalk.gray(`Use the URL clients can reach, for example --public-url http://192.168.1.20:${port}`));
-        process.exit(1);
+    if (!publicUrl && isWildcardHost(host)) {
+        const lanAddress = selectLanAddress();
+        if (!lanAddress) {
+            console.error(chalk.red('Could not detect a LAN address for mobile access.'));
+            console.error(chalk.gray('Pass --public-url with the HTTP(S) origin your phone can reach.'));
+            process.exit(1);
+        }
+        publicUrl = `http://${lanAddress}:${port}`;
     }
 
     return { port, host, publicUrl, reset, persistServerUrl, allowSettingsWrite, masterSecret };
@@ -258,6 +263,30 @@ function normalizePublicUrl(value: string): string {
     return parsed.origin;
 }
 
+function isWildcardHost(host: string): boolean {
+    return host === '0.0.0.0' || host === '::' || host === '[::]';
+}
+
+export function selectLanAddress(interfaces = networkInterfaces()): string | undefined {
+    const candidates = Object.entries(interfaces)
+        .flatMap(([name, addresses]) => (addresses ?? []).map(address => ({ name, address })))
+        .filter(({ address }) => address.family === 'IPv4' && !address.internal)
+        .sort((left, right) => {
+            const leftPrivate = isPrivateIpv4(left.address.address) ? 0 : 1;
+            const rightPrivate = isPrivateIpv4(right.address.address) ? 0 : 1;
+            return leftPrivate - rightPrivate || left.name.localeCompare(right.name);
+        });
+    return candidates[0]?.address.address;
+}
+
+function isPrivateIpv4(address: string): boolean {
+    const octets = address.split('.').map(Number);
+    return octets.length === 4 && (
+        octets[0] === 10 ||
+        (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+        (octets[0] === 192 && octets[1] === 168)
+    );
+}
 
 function formatHttpUrl(host: string, port: number): string {
     const urlHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
@@ -269,12 +298,12 @@ function showHelp() {
 ${chalk.bold('happy server')} - Run Happy sync server + web app locally (self-host)
 
 ${chalk.bold('Usage:')}
-  happy server [--port 3005] [--host 127.0.0.1] [--public-url <url>] [--reset] [--no-persist]
+  happy server [--port 3005] [--host 0.0.0.0] [--public-url <url>] [--reset] [--no-persist]
 
 ${chalk.bold('Options:')}
   --port, -p <n>        Port to listen on (default: 3005)
-  --host <ip>           Host to bind (default: 127.0.0.1)
-  --public-url <url>    HTTP(S) origin clients use; required for wildcard hosts
+  --host <ip>           Host to bind (default: 0.0.0.0 for mobile/LAN access)
+  --public-url <url>    HTTP(S) origin clients use (default: detected private LAN address)
   --reset               Wipe local server data before starting
   --no-persist          Don't write serverUrl into settings.json
   ${SETTINGS_WRITE_CONFIRM_FLAG}
@@ -287,7 +316,8 @@ ${chalk.bold('Notes:')}
   - By default, asks before writing ${chalk.cyan('settings.serverUrl')} and ${chalk.cyan('settings.webappUrl')}
   - Use ${chalk.cyan('--no-persist')} to run without modifying default Happy settings
   - ${chalk.cyan('--public-url')} may differ from the bind address (LAN IP or HTTPS reverse proxy)
-  - Open the printed client URL for the web app (if bundled)
+  - Public internet exposure requires an HTTPS reverse proxy; do not forward port 3005 directly
+  - Open the printed client URL on your phone or computer (if the web app is bundled)
 `);
 }
 

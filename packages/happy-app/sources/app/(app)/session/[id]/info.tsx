@@ -29,24 +29,27 @@ function StatusDot({ color, isPulsing, size = 8 }: { color: string; isPulsing?: 
     const pulseAnim = React.useRef(new Animated.Value(1)).current;
 
     React.useEffect(() => {
-        if (isPulsing) {
-            Animated.loop(
-                Animated.sequence([
-                    Animated.timing(pulseAnim, {
-                        toValue: 0.3,
-                        duration: 1000,
-                        useNativeDriver: true,
-                    }),
-                    Animated.timing(pulseAnim, {
-                        toValue: 1,
-                        duration: 1000,
-                        useNativeDriver: true,
-                    }),
-                ])
-            ).start();
-        } else {
+        if (!isPulsing) {
             pulseAnim.setValue(1);
+            return () => pulseAnim.stopAnimation();
         }
+
+        const animation = Animated.loop(
+            Animated.sequence([
+                Animated.timing(pulseAnim, {
+                    toValue: 0.3,
+                    duration: 1000,
+                    useNativeDriver: true,
+                }),
+                Animated.timing(pulseAnim, {
+                    toValue: 1,
+                    duration: 1000,
+                    useNativeDriver: true,
+                }),
+            ])
+        );
+        animation.start();
+        return () => animation.stop();
     }, [isPulsing, pulseAnim]);
 
     return (

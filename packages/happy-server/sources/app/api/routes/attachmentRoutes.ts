@@ -32,14 +32,7 @@ const uploadRateState = new Map<string, { count: number; windowStart: number }>(
  * attachment URLs must follow the same host the client used; PUBLIC_URL can
  * become stale when a self-hosted server's public address changes.
  */
-function resolveBaseUrl(request: { headers: Record<string, string | string[] | undefined> }): string {
-    const xfHost = request.headers['x-forwarded-host'];
-    const xfProto = request.headers['x-forwarded-proto'];
-    const host = (Array.isArray(xfHost) ? xfHost[0] : xfHost) ?? request.headers.host;
-    const proto = (Array.isArray(xfProto) ? xfProto[0] : xfProto) ?? 'http';
-    if (typeof host === 'string' && host.length > 0) {
-        return `${proto}://${host}`;
-    }
+function resolveBaseUrl(): string {
     return process.env.PUBLIC_URL ?? `http://localhost:${process.env.PORT || '3005'}`;
 }
 
@@ -122,7 +115,7 @@ export function attachmentRoutes(app: Fastify) {
             // Local mode: client uploads to our own PUT endpoint (the server
             // enforces the size limit by inspecting the request body before
             // it hits disk, so PUT is fine here).
-            const baseUrl = resolveBaseUrl(request);
+            const baseUrl = resolveBaseUrl();
             const uploadUrl = `${baseUrl}/v1/sessions/${sessionId}/attachments/${attachmentFile}`;
             return reply.send({ ref, uploadUrl, method: 'PUT' });
         } else {
@@ -150,6 +143,7 @@ export function attachmentRoutes(app: Fastify) {
      * Only active when S3 is not configured.
      */
     app.put('/v1/sessions/:sessionId/attachments/:attachmentFile', {
+        bodyLimit: MAX_FILE_SIZE,
         schema: {
             params: z.object({
                 sessionId: z.string(),
@@ -242,7 +236,7 @@ export function attachmentRoutes(app: Fastify) {
         }
 
         if (isLocalStorage()) {
-            const baseUrl = resolveBaseUrl(request);
+            const baseUrl = resolveBaseUrl();
             const downloadUrl = `${baseUrl}/v1/sessions/${sessionId}/attachments/${attachmentFile}`;
             return reply.send({ downloadUrl });
         }

@@ -14,6 +14,18 @@ import { sessionUpdateHandler } from "./socket/sessionUpdateHandler";
 import { machineUpdateHandler } from "./socket/machineUpdateHandler";
 import { artifactUpdateHandler } from "./socket/artifactUpdateHandler";
 import { accessKeyHandler } from "./socket/accessKeyHandler";
+import { z } from "zod";
+import { db } from "@/storage/db";
+import { createHash } from "node:crypto";
+
+const socketAuthSchema = z.object({
+    token: z.string().min(1).max(16 * 1024),
+    clientType: z.enum(['session-scoped', 'user-scoped', 'machine-scoped']).optional(),
+    sessionId: z.string().min(1).max(200).optional(),
+    machineId: z.string().min(1).max(200).optional(),
+    happyClient: z.string().max(200).optional(),
+    appState: z.string().max(30).optional(),
+});
 
 export function startSocket(app: Fastify) {
     const io = new Server(app.server, {
@@ -30,6 +42,7 @@ export function startSocket(app: Fastify) {
         allowUpgrades: true,
         upgradeTimeout: 10000,
         connectTimeout: 20000,
+        maxHttpBufferSize: 1024 * 1024,
         serveClient: false, // Don't serve the client files
         // Brief-disconnect event replay. Currently OFF to preserve parity with
         // pre-multi-process prod behavior — clients fall through to the full
@@ -80,43 +93,56 @@ export function startSocket(app: Fastify) {
     // callback creates a window where client events (rpc-register, rpc-call)
     // arrive before handlers are attached — and get silently dropped.
     io.use(async (socket, next) => {
-        const token = socket.handshake.auth.token as string;
-        const clientType = socket.handshake.auth.clientType as 'session-scoped' | 'user-scoped' | 'machine-scoped' | undefined;
-        const sessionId = socket.handshake.auth.sessionId as string | undefined;
-        const machineId = socket.handshake.auth.machineId as string | undefined;
-
-        if (!token) {
-            log({ module: 'websocket' }, `No token provided`);
-            next(new Error('Missing authentication token'));
+        const parsed = socketAuthSchema.safeParse(socket.handshake.auth);
+        if (!parsed.success) {
+            next(new Error('Invalid authentication data'));
             return;
         }
+        const { token, clientType, sessionId, machineId, happyClient } = parsed.data;
 
         if (clientType === 'session-scoped' && !sessionId) {
-            log({ module: 'websocket' }, `Session-scoped client missing sessionId`);
             next(new Error('Session ID required for session-scoped clients'));
             return;
         }
-
         if (clientType === 'machine-scoped' && !machineId) {
-            log({ module: 'websocket' }, `Machine-scoped client missing machineId`);
             next(new Error('Machine ID required for machine-scoped clients'));
             return;
         }
 
         const verified = await auth.verifyToken(token);
         if (!verified) {
-            log({ module: 'websocket' }, `Invalid token provided`);
+            const tokenFingerprint = createHash('sha256').update(token).digest('hex').slice(0, 12);
+            log({ module: 'websocket', tokenFingerprint }, 'Rejected invalid authentication token');
             next(new Error('Invalid authentication token'));
             return;
+        }
+
+        if (clientType === 'session-scoped') {
+            const session = await db.session.findFirst({
+                where: { id: sessionId, accountId: verified.userId },
+                select: { id: true },
+            });
+            if (!session) {
+                next(new Error('Session not found'));
+                return;
+            }
+        }
+        if (clientType === 'machine-scoped') {
+            const machine = await db.machine.findFirst({
+                where: { id: machineId, accountId: verified.userId },
+                select: { id: true },
+            });
+            if (!machine) {
+                next(new Error('Machine not found'));
+                return;
+            }
         }
 
         socket.data.userId = verified.userId;
         socket.data.clientType = clientType;
         socket.data.sessionId = sessionId;
         socket.data.machineId = machineId;
-        socket.data.happyClient = socket.handshake.auth.happyClient as string
-            || socket.handshake.headers['x-happy-client'] as string
-            || undefined;
+        socket.data.happyClient = happyClient ?? socket.handshake.headers['x-happy-client'];
         next();
     });
 

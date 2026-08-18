@@ -1,5 +1,5 @@
 import { io, Socket } from 'socket.io-client';
-import { AppState, Platform } from 'react-native';
+import { AppState, Platform, type AppStateStatus } from 'react-native';
 import Constants from 'expo-constants';
 import { TokenStorage } from '@/auth/tokenStorage';
 import { Encryption } from './encryption/encryption';
@@ -30,6 +30,10 @@ export function getCurrentAppState(): 'active' | 'background' {
         return visible && focused ? 'active' : 'background';
     }
     return AppState.currentState === 'active' ? 'active' : 'background';
+}
+
+export function shouldConnectSyncSocket(appState: AppStateStatus, platform = Platform.OS): boolean {
+    return platform === 'web' || appState === 'active';
 }
 
 //
@@ -71,16 +75,18 @@ class ApiSocket {
     initialize(config: SyncSocketConfig, encryption: Encryption) {
         this.config = config;
         this.encryption = encryption;
-        this.connect();
+        if (shouldConnectSyncSocket(AppState.currentState)) {
+            this.connect();
+        }
     }
 
     //
     // Connection Management
     //
 
-    connect() {
+    connect(): boolean {
         if (!this.config || this.socket) {
-            return;
+            return false;
         }
 
         this.updateStatus('connecting');
@@ -101,6 +107,7 @@ class ApiSocket {
         });
 
         this.setupEventHandlers();
+        return true;
     }
 
     disconnect() {

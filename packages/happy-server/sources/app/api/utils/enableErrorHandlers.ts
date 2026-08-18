@@ -51,7 +51,7 @@ export function enableErrorHandlers(app: Fastify, options: EnableErrorHandlersOp
     // its own (e.g. SPA fallback for self-hosted webapp).
     if (!options.skipNotFoundHandler) {
         app.setNotFoundHandler((request, reply) => {
-            log({ module: '404-handler' }, `404 - Method: ${request.method}, Path: ${request.url}, Headers: ${JSON.stringify(request.headers)}`);
+            log({ module: '404-handler' }, `404 - Method: ${request.method}, Path: ${request.url}`);
             reply.code(404).send({ error: 'Not found', path: request.url, method: request.method });
         });
     }

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { ViewStyle } from 'react-native';
-import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming } from 'react-native-reanimated';
+import Animated, { cancelAnimation, useSharedValue, useAnimatedStyle, withRepeat, withTiming } from 'react-native-reanimated';
 
 export interface StatusDotProps {
     color: string;
@@ -22,6 +22,8 @@ export const StatusDot = React.memo(({ color, isPulsing, size = 6, style }: Stat
         } else {
             opacity.value = withTiming(1, { duration: 200 });
         }
+
+        return () => cancelAnimation(opacity);
     }, [isPulsing]);
 
     const animatedStyle = useAnimatedStyle(() => {

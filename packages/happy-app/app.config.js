@@ -146,7 +146,6 @@ export default {
             "expo-mail-composer",
             "expo-secure-store",
             "expo-web-browser",
-            "react-native-vision-camera",
             "@more-tech/react-native-libsodium",
             "react-native-audio-api",
             "@livekit/react-native-expo-plugin",
@@ -155,14 +154,6 @@ export default {
                 "expo-audio",
                 {
                     microphonePermission: "Allow $(PRODUCT_NAME) to access your microphone for voice conversations."
-                }
-            ],
-            [
-                "expo-location",
-                {
-                    locationAlwaysAndWhenInUsePermission: "Allow $(PRODUCT_NAME) to improve AI quality by using your location.",
-                    locationAlwaysPermission: "Allow $(PRODUCT_NAME) to improve AI quality by using your location.",
-                    locationWhenInUsePermission: "Allow $(PRODUCT_NAME) to improve AI quality by using your location."
                 }
             ],
             [
@@ -182,7 +173,6 @@ export default {
             [
                 "expo-notifications",
                 {
-                    "enableBackgroundRemoteNotifications": true,
                     "icon": "./sources/assets/images/icon-notification.png"
                 }
             ],

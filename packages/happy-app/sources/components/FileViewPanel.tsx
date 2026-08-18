@@ -4,8 +4,9 @@
  * Uses Pierre for viewing file content, CodeMirror for editing (web only).
  */
 import * as React from 'react';
-import { View, ScrollView, ActivityIndicator, Pressable, Platform } from 'react-native';
+import { View, ScrollView, ActivityIndicator, Pressable, Platform, AppState } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useIsFocused } from '@react-navigation/native';
 import { Text } from '@/components/StyledText';
 import { Typography } from '@/constants/Typography';
 import { MarkdownView } from '@/components/markdown/MarkdownView';
@@ -135,6 +136,7 @@ export const FileViewPanel = React.memo(function FileViewPanel({
     const [editContent, setEditContent] = React.useState('');
     const [isSaving, setIsSaving] = React.useState(false);
     const [displayMode, setDisplayMode] = React.useState<'edit' | 'preview'>('edit');
+    const isFocused = useIsFocused();
 
     // External change detection
     const [externalChange, setExternalChange] = React.useState<string | null>(null); // new content from device
@@ -145,6 +147,7 @@ export const FileViewPanel = React.memo(function FileViewPanel({
     const isMarkdown = language === 'markdown';
 
     const hasChanges = fileState.kind === 'loaded' && editContent !== fileState.content;
+    const originalHash = fileState.kind === 'loaded' ? fileState.originalHash : null;
 
     // Load file content
     React.useEffect(() => {
@@ -202,22 +205,61 @@ export const FileViewPanel = React.memo(function FileViewPanel({
         return () => { cancelled = true; };
     }, [sessionId, filePath]);
 
-    // Poll for external changes every 5s
+    // Poll only while this screen and app are visible. Schedule the next read after
+    // the previous one finishes so a slow machine cannot accumulate overlapping work.
     React.useEffect(() => {
-        if (fileState.kind !== 'loaded' || !fileState.originalHash) return;
-        const originalHash = fileState.originalHash;
+        if (!isFocused || !originalHash) return;
 
-        const interval = setInterval(async () => {
-            const content = await readFileContent(sessionId, filePath);
-            if (!content) return;
-            const currentHash = await computeSHA256(content);
-            if (currentHash !== originalHash) {
-                setExternalChange(content);
+        let cancelled = false;
+        let polling = false;
+        let cancelScheduledPoll: (() => void) | null = null;
+
+        const clearScheduledPoll = () => {
+            cancelScheduledPoll?.();
+            cancelScheduledPoll = null;
+        };
+
+        const schedulePoll = () => {
+            clearScheduledPoll();
+            if (cancelled || polling || AppState.currentState !== 'active') return;
+            const timeout = setTimeout(() => {
+                cancelScheduledPoll = null;
+                void poll();
+            }, 5000);
+            cancelScheduledPoll = () => clearTimeout(timeout);
+        };
+
+        const poll = async () => {
+            if (cancelled || polling || AppState.currentState !== 'active') return;
+            polling = true;
+            try {
+                const content = await readFileContent(sessionId, filePath);
+                if (!content || cancelled) return;
+                const currentHash = await computeSHA256(content);
+                if (!cancelled && currentHash !== originalHash) {
+                    setExternalChange(content);
+                }
+            } finally {
+                polling = false;
+                schedulePoll();
             }
-        }, 5000);
+        };
 
-        return () => clearInterval(interval);
-    }, [sessionId, filePath, fileState]);
+        const subscription = AppState.addEventListener('change', (state) => {
+            if (state === 'active') {
+                schedulePoll();
+            } else {
+                clearScheduledPoll();
+            }
+        });
+        schedulePoll();
+
+        return () => {
+            cancelled = true;
+            clearScheduledPoll();
+            subscription.remove();
+        };
+    }, [sessionId, filePath, originalHash, isFocused]);
 
     const handleReload = React.useCallback(() => {
         if (!externalChange) return;

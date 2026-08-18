@@ -23,7 +23,7 @@ import { feedRoutes } from "./routes/feedRoutes";
 import { kvRoutes } from "./routes/kvRoutes";
 import { v3SessionRoutes } from "./routes/v3SessionRoutes";
 import { attachmentRoutes } from "./routes/attachmentRoutes";
-import { isLocalStorage, getLocalFilesDir } from "@/storage/files";
+import { isLocalStorage, getLocalFilesDir, isPublicFilePath } from "@/storage/files";
 import * as path from "path";
 import * as fs from "fs";
 
@@ -42,12 +42,21 @@ export async function startApi(opts: StartApiOptions = {}) {
     // Start API
     const app = fastify({
         loggerInstance: logger,
-        bodyLimit: 1024 * 1024 * 100, // 100MB
+        // JSON and form routes should remain small. The attachment PUT route
+        // opts into its own 10 MiB limit.
+        bodyLimit: 1024 * 1024,
     });
     app.register(import('@fastify/cors'), {
         origin: '*',
         allowedHeaders: '*',
         methods: ['GET', 'POST', 'PUT', 'DELETE']
+    });
+
+    app.addHook('onRequest', async (_request, reply) => {
+        reply.header('X-Content-Type-Options', 'nosniff');
+        reply.header('X-Frame-Options', 'DENY');
+        reply.header('Referrer-Policy', 'no-referrer');
+        reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     });
 
     // Required for local-mode attachment uploads (PUT /v1/sessions/:id/attachments/:file).
@@ -79,19 +88,20 @@ export async function startApi(opts: StartApiOptions = {}) {
     // Serve local files when using local storage
     if (isLocalStorage()) {
         app.get('/files/*', function (request, reply) {
-            const filePath = (request.params as any)['*'];
+            const params = request.params;
+            if (!params || typeof params !== 'object' || !('*' in params) || typeof params['*'] !== 'string') {
+                return reply.code(404).send('Not found');
+            }
+            const filePath = params['*'];
+            if (!isPublicFilePath(filePath)) {
+                return reply.code(404).send('Not found');
+            }
             const baseDir = path.resolve(getLocalFilesDir());
             const fullPath = path.resolve(baseDir, filePath);
-            if (!fullPath.startsWith(baseDir + path.sep)) {
-                reply.code(403).send('Forbidden');
-                return;
+            if (!fullPath.startsWith(baseDir + path.sep) || !fs.existsSync(fullPath)) {
+                return reply.code(404).send('Not found');
             }
-            if (!fs.existsSync(fullPath)) {
-                reply.code(404).send('Not found');
-                return;
-            }
-            const stream = fs.createReadStream(fullPath);
-            reply.send(stream);
+            return reply.send(fs.createReadStream(fullPath));
         });
     }
 

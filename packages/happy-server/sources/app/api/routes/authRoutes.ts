@@ -1,17 +1,43 @@
 import { z } from "zod";
 import { type Fastify } from "../types";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import * as privacyKit from "privacy-kit";
 import { db } from "@/storage/db";
 import { auth } from "@/app/auth/auth";
 import { log } from "@/utils/log";
 
+const AUTH_RATE_WINDOW_MS = 60_000;
+const AUTH_RATE_MAX = 120;
+const authRateState = new Map<string, { count: number; windowStart: number }>();
+
+async function rateLimitPublicAuth(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    const now = Date.now();
+    const key = request.ip;
+    const current = authRateState.get(key);
+    if (!current || now - current.windowStart >= AUTH_RATE_WINDOW_MS) {
+        authRateState.set(key, { count: 1, windowStart: now });
+        if (authRateState.size > 10_000) {
+            for (const [candidate, entry] of authRateState) {
+                if (now - entry.windowStart >= AUTH_RATE_WINDOW_MS) authRateState.delete(candidate);
+            }
+        }
+        return;
+    }
+    current.count++;
+    if (current.count > AUTH_RATE_MAX) {
+        reply.header('Retry-After', '60');
+        await reply.code(429).send({ error: 'Too many authentication requests' });
+    }
+}
+
 export function authRoutes(app: Fastify) {
     app.post('/v1/auth', {
+        preHandler: rateLimitPublicAuth,
         schema: {
             body: z.object({
-                publicKey: z.string(),
-                challenge: z.string(),
-                signature: z.string()
+                publicKey: z.string().max(256),
+                challenge: z.string().max(256),
+                signature: z.string().max(256)
             })
         }
     }, async (request, reply) => {
@@ -39,9 +65,10 @@ export function authRoutes(app: Fastify) {
     });
 
     app.post('/v1/auth/request', {
+        preHandler: rateLimitPublicAuth,
         schema: {
             body: z.object({
-                publicKey: z.string(),
+                publicKey: z.string().max(256),
                 supportsV2: z.boolean().nullish()
             }),
             response: {
@@ -66,8 +93,7 @@ export function authRoutes(app: Fastify) {
         }
 
         const publicKeyHex = privacyKit.encodeHex(publicKey);
-        log({ module: 'auth-request' }, `Terminal auth request - publicKey hex: ${publicKeyHex}`);
-
+        log({ module: 'auth-request', requestId: publicKeyHex.slice(0, 12) }, 'Terminal auth request');
         const answer = await db.terminalAuthRequest.upsert({
             where: { publicKey: publicKeyHex },
             update: {},
@@ -88,9 +114,10 @@ export function authRoutes(app: Fastify) {
 
     // Get auth request status
     app.get('/v1/auth/request/status', {
+        preHandler: rateLimitPublicAuth,
         schema: {
             querystring: z.object({
-                publicKey: z.string(),
+                publicKey: z.string().max(256),
             }),
             response: {
                 200: z.object({
@@ -128,12 +155,12 @@ export function authRoutes(app: Fastify) {
         preHandler: app.authenticate,
         schema: {
             body: z.object({
-                response: z.string(),
-                publicKey: z.string()
+                response: z.string().max(64 * 1024),
+                publicKey: z.string().max(256)
             })
         }
     }, async (request, reply) => {
-        log({ module: 'auth-response' }, `Auth response endpoint hit - user: ${request.userId}, publicKey: ${request.body.publicKey.substring(0, 20)}...`);
+        log({ module: 'auth-response', userId: request.userId }, 'Auth response received');
         const tweetnacl = (await import("tweetnacl")).default;
         const publicKey = privacyKit.decodeBase64(request.body.publicKey);
         const isValid = tweetnacl.box.publicKeyLength === publicKey.length;
@@ -142,18 +169,12 @@ export function authRoutes(app: Fastify) {
             return reply.code(401).send({ error: 'Invalid public key' });
         }
         const publicKeyHex = privacyKit.encodeHex(publicKey);
-        log({ module: 'auth-response' }, `Looking for auth request with publicKey hex: ${publicKeyHex}`);
+        log({ module: 'auth-response', requestId: publicKeyHex.slice(0, 12) }, 'Looking up auth request');
         const authRequest = await db.terminalAuthRequest.findUnique({
             where: { publicKey: publicKeyHex }
         });
         if (!authRequest) {
-            log({ module: 'auth-response' }, `Auth request not found for publicKey: ${publicKeyHex}`);
-            // Let's also check what auth requests exist
-            const allRequests = await db.terminalAuthRequest.findMany({
-                take: 5,
-                orderBy: { createdAt: 'desc' }
-            });
-            log({ module: 'auth-response' }, `Recent auth requests in DB: ${JSON.stringify(allRequests.map(r => ({ id: r.id, publicKey: r.publicKey.substring(0, 20) + '...', hasResponse: !!r.response })))}`);
+            log({ module: 'auth-response', requestId: publicKeyHex.slice(0, 12) }, 'Auth request not found');
             return reply.code(404).send({ error: 'Request not found' });
         }
         if (!authRequest.response) {
@@ -167,9 +188,10 @@ export function authRoutes(app: Fastify) {
 
     // Account auth request
     app.post('/v1/auth/account/request', {
+        preHandler: rateLimitPublicAuth,
         schema: {
             body: z.object({
-                publicKey: z.string(),
+                publicKey: z.string().max(256),
             }),
             response: {
                 200: z.union([z.object({
@@ -215,8 +237,8 @@ export function authRoutes(app: Fastify) {
         preHandler: app.authenticate,
         schema: {
             body: z.object({
-                response: z.string(),
-                publicKey: z.string()
+                response: z.string().max(64 * 1024),
+                publicKey: z.string().max(256)
             })
         }
     }, async (request, reply) => {
