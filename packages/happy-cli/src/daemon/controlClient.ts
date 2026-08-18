@@ -91,6 +91,16 @@ export async function notifyDaemonSessionStarted(
   }
 }
 
+/**
+ * Report a session title change (from the agent's change_title tool) to
+ * the daemon so it can rename the herdr workspace hosting the session.
+ * Fire-and-forget: harmless when the daemon is absent or the session is
+ * not herdr-hosted.
+ */
+export async function notifyDaemonSessionTitle(hostPid: number, title: string): Promise<{ error?: string } | any> {
+  return daemonPost('/session-title', { hostPid, title });
+}
+
 
 export async function listDaemonSessions(): Promise<ListedDaemonSession[]> {
   const result = await daemonPost('/list');

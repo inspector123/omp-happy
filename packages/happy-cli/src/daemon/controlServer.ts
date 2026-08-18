@@ -18,13 +18,15 @@ export function startDaemonControlServer({
   stopSession,
   spawnSession,
   requestShutdown,
-  onHappySessionWebhook
+  onHappySessionWebhook,
+  onSessionTitle
 }: {
   getChildren: () => TrackedSession[];
   stopSession: (sessionId: string) => boolean;
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
   requestShutdown: () => void;
   onHappySessionWebhook: (sessionId: string, metadata: Metadata, encryption?: SessionEncryptionData) => void;
+  onSessionTitle: (hostPid: number, title: string) => void;
 }): Promise<{ port: number; stop: () => Promise<void> }> {
   return new Promise((resolve) => {
     const app = fastify({
@@ -74,6 +76,28 @@ export function startDaemonControlServer({
 
       onHappySessionWebhook(sessionId, metadata, encryptionData);
 
+      return { status: 'ok' as const };
+    });
+
+    // The wrapper reports a session title change (from the agent's
+    // change_title tool). The daemon renames the herdr workspace hosting
+    // the session so the herdr TUI shows the real title.
+    typed.post('/session-title', {
+      schema: {
+        body: z.object({
+          hostPid: z.number(),
+          title: z.string(),
+        }),
+        response: {
+          200: z.object({
+            status: z.literal('ok')
+          })
+        }
+      }
+    }, async (request) => {
+      const { hostPid, title } = request.body;
+      logger.debug(`[CONTROL SERVER] Session title update for PID ${hostPid}: ${title}`);
+      onSessionTitle(hostPid, title);
       return { status: 'ok' as const };
     });
 

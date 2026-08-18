@@ -23,7 +23,7 @@ import { statSync } from 'fs';
 import { join } from 'path';
 import { projectPath } from '@/projectPath';
 import { getTmuxUtilities, isTmuxAvailable, parseTmuxSessionIdentifier, formatTmuxSessionIdentifier } from '@/utils/tmux';
-import { buildHerdrPaneEnv, ensureHerdrOmpShim, ensureHerdrServerRunning, isHerdrAvailable, spawnInHerdr } from '@/utils/herdr';
+import { buildHerdrPaneEnv, ensureHerdrOmpShim, ensureHerdrServerRunning, isHerdrAvailable, renameHerdrWorkspaceForPane, spawnInHerdr } from '@/utils/herdr';
 import { expandEnvironmentVariables } from '@/utils/expandEnvVars';
 import { detectCLIAvailability } from '@/utils/detectCLI';
 import { buildResumeLaunch } from '@/resume/handleResumeCommand';
@@ -187,6 +187,16 @@ export async function startDaemon(): Promise<void> {
     // Helper functions
     const getCurrentChildren = () => Array.from(pidToTrackedSession.values());
 
+    // Rename the herdr workspace hosting a daemon-spawned session so the
+    // herdr TUI shows the session's own title instead of the spawn label.
+    const renameHerdrWorkspaceForPid = (pid: number, title: string): void => {
+      const session = pidToTrackedSession.get(pid);
+      if (!session?.herdrPaneId) return;
+      renameHerdrWorkspaceForPane(session.herdrPaneId, title).catch((error) => {
+        logger.debug(`[DAEMON RUN] Failed to rename herdr workspace for PID ${pid}: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    };
+
     // Handle webhook from happy session reporting itself
     const onHappySessionWebhook = (sessionId: string, sessionMetadata: Metadata, encryption?: SessionEncryptionData) => {
       logger.debugLargeJson(`[DAEMON RUN] Session reported`, sessionMetadata);
@@ -223,6 +233,11 @@ export async function startDaemon(): Promise<void> {
         existingSession.encryption = encryption;
         logger.debug(`[DAEMON RUN] Updated daemon-spawned session ${sessionId} with metadata`);
 
+        // If the session already has a title, reflect it in the herdr label.
+        const initialTitle = sessionMetadata.summary?.text;
+        if (initialTitle) {
+          renameHerdrWorkspaceForPid(pid, initialTitle);
+        }
         // Resolve any awaiter for this PID
         const awaiter = pidToAwaiter.get(pid);
         if (awaiter) {
@@ -876,7 +891,8 @@ export async function startDaemon(): Promise<void> {
       stopSession,
       spawnSession,
       requestShutdown: () => requestShutdown('happy-cli'),
-      onHappySessionWebhook
+      onHappySessionWebhook,
+      onSessionTitle: renameHerdrWorkspaceForPid
     });
 
     // Write initial daemon state (no lock needed for state file)

@@ -562,9 +562,11 @@ herdr workspace: happy-<timestamp>-omp
         |   `-- Pi extension
         `-- private Unix socket
 ```
-
 Herdr also detects the OMP agent in the pane (via the `herdr integration install omp`
-extension) and reports its live state (working / blocked / idle) in its UI.
+extension) and reports its live state (working / blocked / idle) in its UI. When the
+agent sets the session title (the same `change_title` mechanism that names the chat
+in the companion app), the daemon renames the herdr workspace to match, so sessions
+appear in the herdr TUI under their real title instead of the spawn-time label.
 
 Attach to the only active phone-started OMP session:
 

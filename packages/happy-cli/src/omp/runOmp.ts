@@ -14,7 +14,7 @@ import type { ApiSessionClient } from '@/api/apiSession';
 import type { Session as ApiSession, UserMessage } from '@/api/types';
 import { decodeBase64, encodeBase64 } from '@/api/encryption';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
-import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
+import { notifyDaemonSessionStarted, notifyDaemonSessionTitle } from '@/daemon/controlClient';
 import { initialMachineMetadata } from '@/daemon/run';
 import { projectPath } from '@/projectPath';
 import type { Credentials } from '@/persistence';
@@ -1533,7 +1533,13 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
     if (frame.type === 'change_title') {
       const title = updateSessionTitle(frame.title);
-      if (title) log(`Changed Happy session title to "${title}"`);
+      if (title) {
+        log(`Changed Happy session title to "${title}"`);
+        // Ask the daemon to rename the herdr workspace hosting this
+        // session. Fire-and-forget: no-op when the daemon is absent or
+        // the session is not herdr-hosted.
+        void notifyDaemonSessionTitle(process.pid, title).catch(() => {});
+      }
       return;
     }
     if (frame.type === 'tui_command_ready') {

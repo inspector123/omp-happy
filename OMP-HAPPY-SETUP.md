@@ -468,6 +468,9 @@ session: happy-omp
 window:  happy-<timestamp>-omp
 ```
 
+When the agent sets the session title, the daemon renames the herdr workspace to
+match, so the pane shows the session's real title in the herdr TUI.
+
 The companion opens the newly reported encrypted session after the daemon correlates it with the local process.
 
 ## 10. Attach to a phone-started session

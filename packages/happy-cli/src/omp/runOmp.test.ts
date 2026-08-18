@@ -99,6 +99,7 @@ const mocks = vi.hoisted(() => {
     mockCreateSessionMetadata: vi.fn(() => ({ state: { started: true }, metadata: { path: '/repo' } })),
     mockSetupOfflineReconnection: vi.fn(),
     mockNotifyDaemonSessionStarted: vi.fn(async () => ({ error: null })),
+    mockNotifyDaemonSessionTitle: vi.fn(async () => ({ error: null })),
     mockRegisterKillSessionHandler: vi.fn((_manager: unknown, handler: () => Promise<void>) => {
       killSessionHandler = handler;
     }),
@@ -162,6 +163,7 @@ vi.mock('@/claude/registerKillSessionHandler', () => ({
 
 vi.mock('@/daemon/controlClient', () => ({
   notifyDaemonSessionStarted: mocks.mockNotifyDaemonSessionStarted,
+  notifyDaemonSessionTitle: mocks.mockNotifyDaemonSessionTitle,
 }));
 
 vi.mock('@/daemon/run', () => ({
@@ -499,6 +501,7 @@ describe('runOmp', () => {
         updatedAt: expect.any(Number),
       },
     });
+    expect(mocks.mockNotifyDaemonSessionTitle).toHaveBeenCalledWith(process.pid, 'Image upload repair');
 
     child.emitExit(0);
     await vi.advanceTimersByTimeAsync(200);

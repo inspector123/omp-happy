@@ -73,6 +73,7 @@ describe('controlServer POST /list encryption exposure', () => {
       spawnSession: async () => ({ type: 'error', errorMessage: 'not implemented in test' }),
       requestShutdown: () => {},
       onHappySessionWebhook: () => {},
+      onSessionTitle: () => {},
     });
     port = server.port;
     stop = server.stop;

@@ -316,3 +316,20 @@ export async function spawnInHerdr(options: HerdrSpawnOptions): Promise<HerdrSpa
 export function attachHerdrPane(paneId: string): void {
     execFileSync(HERDR_BIN, ['agent', 'attach', paneId], { stdio: 'inherit' });
 }
+
+/**
+ * Rename the herdr workspace hosting a pane so the herdr TUI shows the
+ * session's own title instead of the spawn-time label. The pane id is
+ * "workspace:pane" (e.g. "w2:p1"); the workspace id is the part before
+ * the colon.
+ */
+export async function renameHerdrWorkspaceForPane(paneId: string, label: string): Promise<void> {
+    const workspaceId = paneId.split(':')[0];
+    if (!workspaceId) return;
+    const cleanLabel = label.replace(/\s+/g, ' ').trim();
+    if (!cleanLabel) return;
+    await herdrRequest('workspace.rename', {
+        workspace_id: workspaceId,
+        label: cleanLabel,
+    });
+}
