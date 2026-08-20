@@ -207,6 +207,90 @@ omp() {
 
 Replace `$HOME/src/omp-happy` and the relay URL with the actual values. Do not overwrite the native OMP binary with this launcher: `omp update` owns that binary path.
 
+### Opt-in same-host cross-process `hub`
+
+The bundled extension can federate the normal OMP `hub` messaging operations
+between independent OMP processes on the same computer. It is disabled unless
+`OMP_CROSS_PROCESS_IRC=1` is present. The launcher inherits these variables, so
+enable it in the shell function above or for one invocation:
+
+```bash
+OMP_CROSS_PROCESS_IRC=1 \
+OMP_CROSS_PROCESS_IRC_ALIAS=review \
+omp
+```
+
+`OMP_CROSS_PROCESS_IRC_ALIAS` is optional. It supplies a stable, human-readable
+process namespace; aliases use letters, digits, `.`, `_`, or `-`. Start another
+OMP in the same project with a different alias, then use the qualified identities
+shown by `hub` with `op: "list"`. Remote targets use the exact
+`<process-alias>/<agent-id>` form:
+
+```json
+{"op":"list"}
+{"op":"send","to":"review/Main","message":"Please inspect the failing request."}
+{"op":"send","to":"review/Main","message":"Which route owns this?","await":true}
+{"op":"wait","from":"review/Main","timeoutMs":60000}
+{"op":"inbox"}
+```
+
+Remote model/thinking control is a separate opt-in on each target process. Enable
+it only where control should be accepted:
+
+```bash
+OMP_CROSS_PROCESS_IRC=1 \
+OMP_CROSS_PROCESS_IRC_REMOTE_CONTROL=1 \
+OMP_CROSS_PROCESS_IRC_ALIAS=review \
+omp
+```
+
+`hub` `list` announces each remote session UUID and whether that session accepts
+control. Address configuration only by the exact UUID; aliases, agent names,
+broadcasts, and chat-name discovery are not accepted:
+
+```json
+{"op":"configure","sessionId":"01234567-89ab-4def-8123-456789abcdef","model":"openai-codex/gpt-5.6-sol","effort":"high","timeoutMs":15000}
+```
+
+`model` and `effort` are individually optional, but at least one is required.
+The target resolves the model from its own authenticated model registry and
+validates effort against that model's supported thinking levels. The correlated
+success receipt contains the model and effort observed after applying both
+settings. Unknown or disconnected UUIDs, disabled control, unsupported values,
+protocol mismatches, and timeouts fail closed. Configuration is never broadcast
+or replayed; duplicate operation IDs are answered from the target's bounded
+deduplication cache. If applying both settings fails, the target attempts to
+restore both prior values and reports the final observed state with its failure.
+Only a process's main session advertises control; subagent model lifecycle remains
+owned by native OMP.
+
+Messaging forms of `list`, direct `send`, `await`/reply, `wait`, and `inbox`
+cross the process boundary. The UUID-only `configure` form crosses it only when
+the target also sets `OMP_CROSS_PROCESS_IRC_REMOTE_CONTROL=1`. Background-job
+operations, terminal process supervision, cancellation, kill, and revive remain
+local and are delegated to OMP's native `hub` exactly once. Broadcast
+`to: "all"` remains local and there is no broadcast configuration.
+
+Federation is restricted to the same OS user, canonical project directory, and
+OMP profile/state root. It uses a private Unix socket and authenticated token in
+a mode-`0700` runtime directory; the socket and token are mode `0600`. Different
+projects, profiles, or users cannot discover or message one another. Remote
+rosters contain agent identity/status, the opaque session UUID needed for exact
+routing, and the control-enabled bit only: transcripts, session files, candidate
+data, filesystem paths, model credentials, and tokens are never published.
+Messaging delivery timeouts are reported as unknown and are never replayed automatically.
+
+The same extension also works without Happy's companion socket:
+
+```bash
+OMP_CROSS_PROCESS_IRC=1 \
+OMP_CROSS_PROCESS_IRC_ALIAS=standalone \
+omp --extension "$HOME/src/omp-happy/packages/happy-cli/scripts/omp-happy-bridge.mjs"
+```
+
+Without `OMP_CROSS_PROCESS_IRC=1`, loading the extension preserves the existing
+Happy bridge behavior and does not create a federation socket or replace `hub`.
+
 ## Native launch sequence
 
 A direct or launcher-driven session follows this sequence:
