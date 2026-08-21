@@ -10,7 +10,6 @@ import {
     getDefaultPermissionModeKey,
     mapMetadataOptions,
     resolveCurrentOption,
-    resolveModelRoleOption,
 } from './modelModeOptions';
 
 const translate = (key: string) => `tr:${key}`;
@@ -129,22 +128,4 @@ describe('modelModeOptions', () => {
         expect(resolveCurrentOption(options, ['missing', 'b', 'a'])).toEqual({ key: 'b', name: 'B' });
         expect(resolveCurrentOption(options, ['missing'])).toBeNull();
     });
-
-    it('resolves a role model while preserving its thinking suffix', () => {
-        const options = [
-            { key: 'openrouter/qwen:free', name: 'Qwen Free' },
-            { key: 'openrouter/qwen', name: 'Qwen' },
-        ];
-
-        expect(resolveModelRoleOption(options, 'openrouter/qwen:free:low')).toEqual({
-            option: options[0],
-            suffix: ':low',
-        });
-        expect(resolveModelRoleOption(options, 'openrouter/qwen')).toEqual({
-            option: options[1],
-            suffix: '',
-        });
-        expect(resolveModelRoleOption(options, '@task')).toBeNull();
-    });
-
 });

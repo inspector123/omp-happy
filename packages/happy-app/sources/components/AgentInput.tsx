@@ -50,8 +50,6 @@ interface AgentInputProps {
     modelMode?: ModelMode | null;
     availableModels?: ModelMode[];
     onModelModeChange?: (mode: ModelMode) => void;
-    taskModelMode?: ModelMode | null;
-    onTaskModelModeChange?: (mode: ModelMode) => void;
     effortLevel?: EffortLevel | null;
     availableEffortLevels?: EffortLevel[];
     onEffortLevelChange?: (level: EffortLevel) => void;
@@ -598,7 +596,6 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     const router = useRouter();
     const [modelShortlist] = useSettingMutable('modelShortlist');
     const [modelQuery, setModelQuery] = React.useState('');
-    const [modelPickerTarget, setModelPickerTarget] = React.useState<'chat' | 'task'>('chat');
     const hasDynamicOmpModels = isOmp;
     // OMP publishes a live catalog, so keep it fully searchable. Static agent
     // catalogs still honor the user's shortlist.
@@ -617,13 +614,6 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
             || model.description?.toLowerCase().includes(query)
         ));
     }, [availableModels, modelQuery, shownModels]);
-    const canSelectTaskModel = isOmp && !!props.onTaskModelModeChange;
-    const selectedModelMode = modelPickerTarget === 'task' ? props.taskModelMode : props.modelMode;
-    React.useEffect(() => {
-        if (!canSelectTaskModel && modelPickerTarget === 'task') {
-            setModelPickerTarget('chat');
-        }
-    }, [canSelectTaskModel, modelPickerTarget]);
     const availableEffortLevels = props.availableEffortLevels ?? [];
     const isSandboxEnabled = React.useMemo(() => {
         const sandbox = props.metadata?.sandbox as unknown;
@@ -1072,50 +1062,6 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                         }}>
                                             {t('agentInput.model.title')}
                                         </Text>
-                                        {canSelectTaskModel && (
-                                            <View style={{
-                                                flexDirection: 'row',
-                                                marginHorizontal: 12,
-                                                marginBottom: 6,
-                                                padding: 2,
-                                                borderRadius: 8,
-                                                backgroundColor: theme.colors.surfacePressed,
-                                            }}>
-                                                {([
-                                                    ['chat', 'Chat'],
-                                                    ['task', 'Tasks'],
-                                                ] as const).map(([target, label]) => {
-                                                    const isActive = modelPickerTarget === target;
-                                                    return (
-                                                        <Pressable
-                                                            key={target}
-                                                            accessibilityRole="tab"
-                                                            accessibilityState={{ selected: isActive }}
-                                                            onPress={() => {
-                                                                hapticsLight();
-                                                                setModelPickerTarget(target);
-                                                                setModelQuery('');
-                                                            }}
-                                                            style={{
-                                                                flex: 1,
-                                                                alignItems: 'center',
-                                                                paddingVertical: 5,
-                                                                borderRadius: 6,
-                                                                backgroundColor: isActive ? theme.colors.surface : 'transparent',
-                                                            }}
-                                                        >
-                                                            <Text style={{
-                                                                fontSize: 12,
-                                                                color: isActive ? theme.colors.radio.active : theme.colors.textSecondary,
-                                                                ...Typography.default('semiBold'),
-                                                            }}>
-                                                                {label}
-                                                            </Text>
-                                                        </Pressable>
-                                                    );
-                                                })}
-                                            </View>
-                                        )}
                                         {availableModels.length > 0 ? (
                                             <>
                                                 {availableModels.length > 4 && (
@@ -1153,17 +1099,13 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                                     nestedScrollEnabled
                                                 >
                                                     {filteredModels.map((model) => {
-                                                        const isSelected = selectedModelMode?.key === model.key;
+                                                        const isSelected = props.modelMode?.key === model.key;
                                                         return (
                                                             <Pressable
                                                                 key={model.key}
                                                                 onPress={() => {
                                                                     hapticsLight();
-                                                                    if (modelPickerTarget === 'task') {
-                                                                        props.onTaskModelModeChange?.(model);
-                                                                    } else {
-                                                                        props.onModelModeChange?.(model);
-                                                                    }
+                                                                    props.onModelModeChange?.(model);
                                                                     setModelQuery('');
                                                                     setShowSettings(false);
                                                                 }}
@@ -1262,7 +1204,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                     </View>
 
                                     {/* Effort Level Section — second column */}
-                                    {modelPickerTarget === 'chat' && availableEffortLevels.length > 0 && props.onEffortLevelChange && (
+                                    {availableEffortLevels.length > 0 && props.onEffortLevelChange && (
                                         <>
                                             <View style={{
                                                 width: 1,

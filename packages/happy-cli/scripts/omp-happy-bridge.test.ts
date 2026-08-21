@@ -4,21 +4,16 @@ import { describe, expect, it, vi } from 'vitest';
 // @ts-expect-error TypeScript has no declaration for the runtime extension module.
 import {
   calculateOmpTokensPerSecond,
-  buildModelTaskArgs,
   createUsageTelemetry,
   formatAskResult,
-  executeModelTask,
   getModelSnapshot,
-  getModelRolesSnapshot,
   getThinkingSnapshot,
   resolveModel,
   resolveRequestedModel,
   resolveTuiCommand,
-  registerModelTaskTool,
   selectAskTools,
   sendPromptCommand,
   setOmpSessionTitle,
-  setOmpModelRole,
 } from './omp-happy-bridge.mjs';
 
 describe('OMP Happy bridge models', () => {
@@ -42,57 +37,6 @@ describe('OMP Happy bridge models', () => {
       ],
       currentModel: 'anthropic/claude-opus-4-6',
     });
-  });
-
-  it('publishes configured model roles for Happy metadata', () => {
-    expect(getModelRolesSnapshot({
-      pi: {
-        settings: {
-          getModelRoles: () => ({
-            default: 'openai/gpt-5.6-sol:high',
-            task: 'anthropic/claude-opus-4-6:low',
-            invalid: null,
-          }),
-        },
-      },
-    })).toEqual({
-      default: 'openai/gpt-5.6-sol:high',
-      task: 'anthropic/claude-opus-4-6:low',
-    });
-  });
-
-  it('updates the live task role in the configured persistence scope', () => {
-    const setProjectModelRole = vi.fn();
-    const setModelRole = vi.fn();
-    const pi = {
-      pi: {
-        settings: {
-          get: () => 'project',
-          setProjectModelRole,
-          setModelRole,
-        },
-      },
-    };
-
-    expect(setOmpModelRole(pi, 'task', 'anthropic/claude-opus-4-6:low')).toBe(true);
-    expect(setProjectModelRole).toHaveBeenCalledWith('task', 'anthropic/claude-opus-4-6:low');
-    expect(setModelRole).not.toHaveBeenCalled();
-  });
-
-  it('updates the global chat role without accepting unknown roles', () => {
-    const setModelRole = vi.fn();
-    const pi = {
-      pi: {
-        settings: {
-          get: () => 'global',
-          setModelRole,
-        },
-      },
-    };
-
-    expect(setOmpModelRole(pi, 'default', 'openai/gpt-5.6-sol')).toBe(true);
-    expect(setModelRole).toHaveBeenCalledWith('default', 'openai/gpt-5.6-sol');
-    expect(setOmpModelRole(pi, 'advisor', 'openai/gpt-5.6-sol')).toBe(false);
   });
 
   it('resolves canonical selections and rejects ambiguous short names', () => {
@@ -134,92 +78,6 @@ describe('OMP Happy bridge models', () => {
       { getThinkingLevel: () => 'high' },
       { models: { current: () => models[0] } },
     )).toEqual({ thoughtLevels: [], currentThoughtLevel: undefined });
-  });
-
-  it('registers an explicit-model subagent tool without changing parent model state', async () => {
-    const exec = vi.fn().mockResolvedValue({
-      stdout: 'SUBAGENT_OK\n',
-      stderr: '',
-      code: 0,
-      killed: false,
-    });
-    const registerTool = vi.fn();
-    const pi = {
-      exec,
-      registerTool,
-      zod: {
-        object: (shape: unknown) => shape,
-        string: () => ({ min: () => ({}) }),
-      },
-    };
-    expect(registerModelTaskTool(pi)).toBe(true);
-    const tool = registerTool.mock.calls[0]?.[0] as {
-      name: string;
-      description: string;
-      execute: (
-        toolCallId: string,
-        params: { model: string; task: string },
-        signal: AbortSignal | undefined,
-        onUpdate: undefined,
-        ctx: {
-          cwd: string;
-          models: { resolve: (spec: string) => { provider: string; id: string } | undefined };
-        },
-      ) => Promise<{
-        content: Array<{ type: string; text: string }>;
-        details: Record<string, unknown>;
-        isError?: boolean;
-      }>;
-    };
-    expect(tool.name).toBe('model_task');
-    expect(tool.description).toContain('does not change the parent chat model or persisted model roles');
-
-    const result = await tool.execute(
-      'call-1',
-      {
-        model: 'openai-codex/gpt-5.6-sol:high',
-        task: 'Reply exactly SUBAGENT_OK.',
-      },
-      undefined,
-      undefined,
-      {
-        cwd: '/repo',
-        models: {
-          resolve: () => ({ provider: 'openai-codex', id: 'gpt-5.6-sol' }),
-        },
-      },
-    );
-
-    expect(exec).toHaveBeenCalledWith(
-      process.env.OMP_HAPPY_REAL_BIN?.trim() || 'omp',
-      buildModelTaskArgs('openai-codex/gpt-5.6-sol:high', 'Reply exactly SUBAGENT_OK.'),
-      { cwd: '/repo', signal: undefined },
-    );
-    expect(result).toEqual({
-      content: [{ type: 'text', text: 'SUBAGENT_OK' }],
-      details: {
-        model: 'openai-codex/gpt-5.6-sol:high',
-        resolvedModel: 'openai-codex/gpt-5.6-sol',
-        cwd: '/repo',
-        exitCode: 0,
-      },
-    });
-  });
-
-  it('rejects an unavailable subagent model before launching a child process', async () => {
-    const exec = vi.fn();
-    const result = await executeModelTask(
-      { exec },
-      { model: 'missing/model', task: 'Do work.' },
-      undefined,
-      { cwd: '/repo', models: { resolve: () => undefined } },
-    );
-
-    expect(exec).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      content: [{ type: 'text', text: 'Unable to resolve OMP subagent model: missing/model' }],
-      isError: true,
-    });
   });
 
   it('formats remote ask answers as an OMP ask result', () => {

@@ -584,17 +584,14 @@ export async function sessionChangeTitle(
     >(sessionId, 'change-title', { title });
 }
 
-export type SessionModelRole = 'default' | 'task';
-
-export async function sessionSetModelRole(
+export async function sessionSetModel(
     sessionId: string,
-    role: SessionModelRole,
     model: string,
 ): Promise<{ success: boolean }> {
-    return apiSocket.sessionRPC<{ success: boolean }, { role: SessionModelRole; model: string }>(
+    return apiSocket.sessionRPC<{ success: boolean }, { model: string }>(
         sessionId,
-        'set-model-role',
-        { role, model },
+        'set-model',
+        { model },
     );
 }
 

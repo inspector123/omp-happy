@@ -106,6 +106,7 @@ const mocks = vi.hoisted(() => {
     mockSetBackend: vi.fn(),
     mockLoggerDebug: vi.fn(),
     mockCancel: vi.fn(),
+    mockPersistOmpDefaultModel: vi.fn(async () => {}),
     mockSession,
     getUserMessageHandler: () => userMessageHandler,
     getFileEventHandler: () => fileEventHandler,
@@ -200,6 +201,10 @@ vi.mock('@/utils/setupOfflineReconnection', () => ({
   setupOfflineReconnection: mocks.mockSetupOfflineReconnection,
 }));
 
+vi.mock('./ompModelConfig', () => ({
+  createOmpConfigCommandRunner: vi.fn(() => vi.fn()),
+  persistOmpDefaultModel: mocks.mockPersistOmpDefaultModel,
+}));
 
 import { runOmp } from './runOmp';
 
@@ -338,7 +343,6 @@ describe('runOmp', () => {
         env: expect.objectContaining({
           OMP_HAPPY_BRIDGE_SOCKET: '/tmp/happy-omp-test/bridge.sock',
           OMP_HAPPY_CONTROL_MODE: 'remote',
-          OMP_HAPPY_REAL_BIN: expect.stringMatching(/(?:^|[/\\])omp(?:\.exe)?$/),
         }),
         name: expect.any(String),
         cols: expect.any(Number),
@@ -357,10 +361,6 @@ describe('runOmp', () => {
         { code: 'anthropic/claude-opus-4-6', value: 'Claude Opus 4.6', description: 'Most capable' },
       ],
       currentModel: 'openai/gpt-5.6-sol',
-      modelRoles: {
-        default: 'openai/gpt-5.6-sol:high',
-        task: 'anthropic/claude-opus-4-6:low',
-      },
       thoughtLevels: [
         { code: 'off', value: 'Off' },
         { code: 'high', value: 'High' },
@@ -382,10 +382,6 @@ describe('runOmp', () => {
         { code: 'anthropic/claude-opus-4-6', value: 'Claude Opus 4.6', description: 'Most capable' },
       ],
       currentModelCode: 'openai/gpt-5.6-sol',
-      modelRoles: {
-        default: 'openai/gpt-5.6-sol:high',
-        task: 'anthropic/claude-opus-4-6:low',
-      },
       thoughtLevels: [
         { code: 'off', value: 'Off' },
         { code: 'high', value: 'High' },
@@ -1330,7 +1326,7 @@ describe('runOmp', () => {
     mocks.emitBridgeFrame({ type: 'aborted' });
     expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
       2,
-      '{"type":"set_model_role","role":"default","spec":"openai/gpt-5.6-sol"}\n',
+      '{"type":"set_model","spec":"openai/gpt-5.6-sol"}\n',
     );
     expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
       3,
@@ -1373,7 +1369,7 @@ describe('runOmp', () => {
 
     expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
       1,
-      '{"type":"set_model_role","role":"default","spec":"openai/gpt-5.6-sol"}\n',
+      '{"type":"set_model","spec":"openai/gpt-5.6-sol"}\n',
     );
     expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
       2,
@@ -1873,42 +1869,31 @@ describe('runOmp', () => {
     }
   });
 
-  it('waits for the OMP bridge before forwarding chat and task model roles', async () => {
+  it('waits for the OMP bridge before reporting model selection success', async () => {
     vi.useFakeTimers();
     const runPromise = runOmp({ credentials, startedBy: 'daemon' });
     await settleMicrotasks();
     mocks.mockBridgeSocket.write.mockClear();
 
     const modelHandler = mocks.mockSession.rpcHandlerManager.registerHandler.mock.calls.find(
-      ([name]) => name === 'set-model-role',
-    )?.[1] as ((request: {
-      role: 'default' | 'task';
-      model: string;
-    }) => Promise<{ success: boolean }>) | undefined;
-
-    const defaultRequest = modelHandler?.({
-      role: 'default',
-      model: 'openai-codex/gpt-5.6-sol',
-    });
-    const taskRequest = modelHandler?.({
-      role: 'task',
-      model: 'anthropic/claude-sonnet-4-6:low',
-    });
+      ([name]) => name === 'set-model',
+    )?.[1] as ((request: { model: string }) => Promise<{ success: boolean }>) | undefined;
+    const modelRequest = modelHandler?.({ model: 'openai-codex/gpt-5.6-sol' });
     await settleMicrotasks();
-    expect(mocks.mockBridgeSocket.write).not.toHaveBeenCalled();
+
+    expect(mocks.mockPersistOmpDefaultModel).toHaveBeenCalledWith(
+      'openai-codex/gpt-5.6-sol',
+      expect.any(Function),
+    );
+    expect(mocks.mockBridgeSocket.write).not.toHaveBeenCalledWith(
+      '{"type":"set_model","spec":"openai-codex/gpt-5.6-sol"}\n',
+    );
 
     mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-model-control' });
     await vi.advanceTimersByTimeAsync(1);
 
-    await expect(defaultRequest).resolves.toEqual({ success: true });
-    await expect(taskRequest).resolves.toEqual({ success: true });
+    await expect(modelRequest).resolves.toEqual({ success: true });
     expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
-      '{"type":"set_model_role","role":"default","spec":"openai-codex/gpt-5.6-sol"}\n',
-    );
-    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
-      '{"type":"set_model_role","role":"task","spec":"anthropic/claude-sonnet-4-6:low"}\n',
-    );
-    expect(mocks.mockBridgeSocket.write).not.toHaveBeenCalledWith(
       '{"type":"set_model","spec":"openai-codex/gpt-5.6-sol"}\n',
     );
 

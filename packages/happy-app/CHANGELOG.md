@@ -1,9 +1,3 @@
-# August 20 — Task-specific OMP models
-
-- OMP sessions can select a dedicated model for delegated tasks without changing the chat model.
-- The model picker now separates Chat and Tasks, and task selections preserve their configured thinking level.
-- OMP can launch a one-off subagent with an explicit model without changing the chat model or persisted model roles.
-
 # August 17 — Lower background battery use
 
 - The mobile app now closes its live sync connection while backgrounded and reconnects on return, while desktop and web clients keep their existing connection behavior.
