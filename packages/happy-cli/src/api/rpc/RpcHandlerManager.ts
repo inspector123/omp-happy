@@ -13,6 +13,9 @@ import {
 } from './types';
 import { Socket } from 'socket.io-client';
 
+const RPC_REGISTRATION_RETRY_MS = 1_000;
+const RPC_REGISTRATION_REFRESH_MS = 30_000;
+
 export class RpcHandlerManager {
     private handlers: RpcHandlerMap = new Map();
     private readonly scopePrefix: string;
@@ -20,6 +23,16 @@ export class RpcHandlerManager {
     private readonly encryptionVariant: 'legacy' | 'dataKey';
     private readonly logger: (message: string, data?: any) => void;
     private socket: Socket | null = null;
+    private acknowledgedMethods = new Set<string>();
+    private registrationTimer: NodeJS.Timeout | null = null;
+
+    private readonly onRpcRegistered = (data: { method?: unknown }): void => {
+        if (typeof data?.method !== 'string' || !this.handlers.has(data.method)) {
+            return;
+        }
+        this.acknowledgedMethods.add(data.method);
+        this.scheduleRegistration();
+    };
 
     constructor(config: RpcHandlerConfig) {
         this.scopePrefix = config.scopePrefix;
@@ -38,24 +51,25 @@ export class RpcHandlerManager {
         handler: RpcHandler<TRequest, TResponse>
     ): void {
         const prefixedMethod = this.getPrefixedMethod(method);
-
-        // Store the handler
         this.handlers.set(prefixedMethod, handler);
+        this.acknowledgedMethods.delete(prefixedMethod);
 
         if (this.socket) {
             this.socket.emit('rpc-register', { method: prefixedMethod });
+            this.scheduleRegistration();
         }
     }
 
     unregisterHandler(method: string): void {
         const prefixedMethod = this.getPrefixedMethod(method);
         this.handlers.delete(prefixedMethod);
+        this.acknowledgedMethods.delete(prefixedMethod);
 
         if (this.socket) {
             this.socket.emit('rpc-unregister', { method: prefixedMethod });
+            this.scheduleRegistration();
         }
     }
-
     /**
      * Handle an incoming RPC request
      * @param request - The RPC request data
@@ -96,14 +110,59 @@ export class RpcHandlerManager {
     }
 
     onSocketConnect(socket: Socket): void {
+        this.detachSocket();
         this.socket = socket;
-        for (const [prefixedMethod] of this.handlers) {
-            socket.emit('rpc-register', { method: prefixedMethod });
-        }
+        this.acknowledgedMethods.clear();
+        socket.on('rpc-registered', this.onRpcRegistered);
+        this.emitRegistrations();
+        this.scheduleRegistration();
     }
 
     onSocketDisconnect(): void {
-        this.socket = null;
+        this.detachSocket();
+    }
+
+    private emitRegistrations(): void {
+        if (!this.socket) {
+            return;
+        }
+        for (const [prefixedMethod] of this.handlers) {
+            this.socket.emit('rpc-register', { method: prefixedMethod });
+        }
+    }
+
+    private scheduleRegistration(): void {
+        if (this.registrationTimer) {
+            clearTimeout(this.registrationTimer);
+            this.registrationTimer = null;
+        }
+        if (!this.socket || this.handlers.size === 0) {
+            return;
+        }
+
+        const allAcknowledged = this.acknowledgedMethods.size === this.handlers.size;
+        const delay = allAcknowledged
+            ? RPC_REGISTRATION_REFRESH_MS
+            : RPC_REGISTRATION_RETRY_MS;
+        this.registrationTimer = setTimeout(() => {
+            this.registrationTimer = null;
+            this.acknowledgedMethods.clear();
+            this.emitRegistrations();
+            this.scheduleRegistration();
+        }, delay);
+        this.registrationTimer.unref();
+    }
+
+    private detachSocket(): void {
+        if (this.registrationTimer) {
+            clearTimeout(this.registrationTimer);
+            this.registrationTimer = null;
+        }
+        if (this.socket) {
+            this.socket.off('rpc-registered', this.onRpcRegistered);
+            this.socket = null;
+        }
+        this.acknowledgedMethods.clear();
     }
 
     /**
@@ -127,6 +186,8 @@ export class RpcHandlerManager {
      */
     clearHandlers(): void {
         this.handlers.clear();
+        this.acknowledgedMethods.clear();
+        this.scheduleRegistration();
         this.logger('Cleared all RPC handlers');
     }
 
