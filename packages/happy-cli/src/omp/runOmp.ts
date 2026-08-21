@@ -646,8 +646,11 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   const childMirrorsBySource = new Map<BridgeFrameSource, ChildMirrorState>();
   let bridgeServer: BridgeServer | null = null;
   let bridgeReadyResolved = false;
-  let resolveBridgeReady: (() => void) | null = null;
-  let rejectBridgeReady: ((error: Error) => void) | null = null;
+  let bridgeReadyError: Error | null = null;
+  const bridgeReadyWaiters: Array<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+  }> = [];
   const initialRunMode: RunMode = 'remote';
   let runMode: RunMode = initialRunMode;
   let advisorEnabled = opts.extraArgs?.includes('--advisor') ?? false;
@@ -760,22 +763,23 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       return;
     }
     bridgeReadyResolved = true;
-    if (error) {
-      rejectBridgeReady?.(error);
-    } else {
-      resolveBridgeReady?.();
+    bridgeReadyError = error ?? null;
+    for (const waiter of bridgeReadyWaiters) {
+      if (error) {
+        waiter.reject(error);
+      } else {
+        waiter.resolve();
+      }
     }
-    resolveBridgeReady = null;
-    rejectBridgeReady = null;
+    bridgeReadyWaiters.length = 0;
   };
 
   const waitForBridgeReady = (): Promise<void> => {
     if (bridgeReadyResolved) {
-      return Promise.resolve();
+      return bridgeReadyError ? Promise.reject(bridgeReadyError) : Promise.resolve();
     }
     return new Promise<void>((resolve, reject) => {
-      resolveBridgeReady = resolve;
-      rejectBridgeReady = reject;
+      bridgeReadyWaiters.push({ resolve, reject });
       setTimeout(() => {
         if (!bridgeReadyResolved) {
           settleBridgeReady(new Error('Timed out waiting for the bundled OMP Happy extension bridge'));
@@ -1748,8 +1752,10 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     if (!normalizedModel) {
       return { success: false };
     }
+    const persistedPromise = persistSelectedModel(normalizedModel);
+    await waitForBridgeReady();
     const sent = bridgeServer?.send({ type: 'set_model', spec: normalizedModel }) ?? false;
-    const persisted = await persistSelectedModel(normalizedModel);
+    const persisted = await persistedPromise;
     return { success: sent && persisted };
   });
   session.rpcHandlerManager.registerHandler<{

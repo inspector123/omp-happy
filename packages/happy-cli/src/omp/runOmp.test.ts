@@ -1869,25 +1869,32 @@ describe('runOmp', () => {
     }
   });
 
-  it('applies and persists model selections immediately through session RPC', async () => {
+  it('waits for the OMP bridge before reporting model selection success', async () => {
     vi.useFakeTimers();
     const runPromise = runOmp({ credentials, startedBy: 'daemon' });
     await settleMicrotasks();
-    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-model-control' });
-    await vi.advanceTimersByTimeAsync(1);
     mocks.mockBridgeSocket.write.mockClear();
 
     const modelHandler = mocks.mockSession.rpcHandlerManager.registerHandler.mock.calls.find(
       ([name]) => name === 'set-model',
     )?.[1] as ((request: { model: string }) => Promise<{ success: boolean }>) | undefined;
+    const modelRequest = modelHandler?.({ model: 'openai-codex/gpt-5.6-sol' });
+    await settleMicrotasks();
 
-    await expect(modelHandler?.({ model: 'openai-codex/gpt-5.6-sol' })).resolves.toEqual({ success: true });
-    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
-      '{"type":"set_model","spec":"openai-codex/gpt-5.6-sol"}\n',
-    );
     expect(mocks.mockPersistOmpDefaultModel).toHaveBeenCalledWith(
       'openai-codex/gpt-5.6-sol',
       expect.any(Function),
+    );
+    expect(mocks.mockBridgeSocket.write).not.toHaveBeenCalledWith(
+      '{"type":"set_model","spec":"openai-codex/gpt-5.6-sol"}\n',
+    );
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-model-control' });
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(modelRequest).resolves.toEqual({ success: true });
+    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
+      '{"type":"set_model","spec":"openai-codex/gpt-5.6-sol"}\n',
     );
 
     child.emitExit(0);
