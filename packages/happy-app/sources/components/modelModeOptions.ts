@@ -193,6 +193,31 @@ export function resolveCurrentOption<T extends ModeOption>(
     return null;
 }
 
+export type ResolvedModelRoleOption<T extends ModeOption> = {
+    option: T;
+    suffix: string;
+};
+
+export function resolveModelRoleOption<T extends ModeOption>(
+    options: T[],
+    modelSpec: string | null | undefined,
+): ResolvedModelRoleOption<T> | null {
+    if (!modelSpec) {
+        return null;
+    }
+    const exact = options.find((option) => option.key === modelSpec);
+    if (exact) {
+        return { option: exact, suffix: '' };
+    }
+    const prefixed = options
+        .filter((option) => modelSpec.startsWith(`${option.key}:`))
+        .sort((left, right) => right.key.length - left.key.length)[0];
+    return prefixed
+        ? { option: prefixed, suffix: modelSpec.slice(prefixed.key.length) }
+        : null;
+}
+
+
 export function getDefaultModelKey(flavor: AgentFlavor): string {
     return getCodeAgentDefaults(flavor).modelMode;
 }

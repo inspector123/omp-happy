@@ -11,6 +11,7 @@ import {
     getAvailablePermissionModes,
     getAvailableEffortLevels,
     resolveCurrentOption,
+    resolveModelRoleOption,
     EffortLevel,
 } from '@/components/modelModeOptions';
 import { getSuggestions } from '@/components/autocomplete/suggestions';
@@ -27,7 +28,7 @@ import { Modal } from '@/modal';
 import { voiceHooks } from '@/realtime/hooks/voiceHooks';
 import { getCurrentVoiceConversationId, getCurrentVoiceSessionDurationSeconds, startRealtimeSession, stopRealtimeSession } from '@/realtime/RealtimeSession';
 import { gitStatusSync } from '@/sync/gitStatusSync';
-import { sessionAbort, sessionCompactSnapcompact, sessionGoalAction, sessionGoalCommand, sessionSetAdvisor, sessionSetModel } from '@/sync/ops';
+import { sessionAbort, sessionCompactSnapcompact, sessionGoalAction, sessionGoalCommand, sessionSetAdvisor, sessionSetModelRole } from '@/sync/ops';
 import { editQueuedMessageWithDraftProtection, storage, useIsDataReady, useLocalSetting, useRealtimeStatus, useSessionMessages, useSessionUsage, useSetting } from '@/sync/storage';
 import { useSession } from '@/sync/storage';
 import { Session } from '@/sync/storageTypes';
@@ -497,6 +498,10 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
             session.metadata?.currentModelCode,
         ])
     ), [availableModels, session.modelMode, effectiveAgentDefaults.modelMode, session.metadata?.currentModelCode]);
+    const taskModelSelection = React.useMemo(() => (
+        resolveModelRoleOption(availableModels, session.metadata?.modelRoles?.task)
+    ), [availableModels, session.metadata?.modelRoles?.task]);
+    const taskModelMode = taskModelSelection?.option ?? null;
 
     // Effort level state
     const modelKey = modelMode?.key ?? 'default';
@@ -595,16 +600,29 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
         if (flavor !== 'omp') {
             return;
         }
-        void sessionSetModel(sessionId, mode.key)
+        void sessionSetModelRole(sessionId, 'default', mode.key)
             .then((result) => {
                 if (!result.success) {
-                    Modal.alert(t('common.error'), 'Could not persist the selected OMP model.');
+                    Modal.alert(t('common.error'), 'Could not persist the selected OMP chat model.');
                 }
             })
             .catch(() => {
-                Modal.alert(t('common.error'), 'Could not persist the selected OMP model.');
+                Modal.alert(t('common.error'), 'Could not persist the selected OMP chat model.');
             });
     }, [flavor, sessionId]);
+
+    const updateTaskModelMode = React.useCallback((mode: ModelMode) => {
+        const modelSpec = `${mode.key}${taskModelSelection?.suffix ?? ''}`;
+        void sessionSetModelRole(sessionId, 'task', modelSpec)
+            .then((result) => {
+                if (!result.success) {
+                    Modal.alert(t('common.error'), 'Could not persist the selected OMP task model.');
+                }
+            })
+            .catch(() => {
+                Modal.alert(t('common.error'), 'Could not persist the selected OMP task model.');
+            });
+    }, [sessionId, taskModelSelection?.suffix]);
 
     const updateEffortLevel = React.useCallback((level: EffortLevel) => {
         storage.getState().updateSessionEffortLevel(sessionId, level.key);
@@ -899,6 +917,8 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
             modelMode={modelMode}
             availableModels={availableModels}
             onModelModeChange={updateModelMode}
+            taskModelMode={taskModelMode}
+            onTaskModelModeChange={flavor === 'omp' ? updateTaskModelMode : undefined}
             effortLevel={effortLevel}
             availableEffortLevels={availableEffortLevels}
             onEffortLevelChange={updateEffortLevel}

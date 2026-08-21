@@ -23,7 +23,6 @@ import { logger } from '@/ui/logger';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
-import { createOmpConfigCommandRunner, persistOmpDefaultModel } from './ompModelConfig';
 
 const KEEPALIVE_INTERVAL_MS = 2_000;
 const MIRROR_FLUSH_DELAY_MS = 150;
@@ -36,6 +35,7 @@ const SESSION_CLOSE_TIMEOUT_MS = 5_000;
 const BRIDGE_EXIT_GRACE_MS = 300;
 const BRIDGE_SOCKET_ENV = 'OMP_HAPPY_BRIDGE_SOCKET';
 const BRIDGE_CONTROL_MODE_ENV = 'OMP_HAPPY_CONTROL_MODE';
+const OMP_BINARY_ENV = 'OMP_HAPPY_REAL_BIN';
 const BRIDGE_EXTENSION_FILE = 'omp-happy-bridge.mjs';
 // Overlay that pins autoResume off for Happy-managed spawns so every chat
 // mints a fresh OMP transcript (and thus a unique ompSessionId) regardless
@@ -58,6 +58,7 @@ type BridgeReadyFrame = {
   cwd?: string;
   models?: Array<{ code: string; value: string; description?: string }>;
   currentModel?: string;
+  modelRoles?: Record<string, string>;
   thoughtLevels?: Array<{ code: string; value: string; description?: string }>;
   currentThoughtLevel?: string;
   title?: string;
@@ -662,9 +663,6 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   const localOmpBinary = join(homedir(), '.local', 'bin', 'omp');
   const ompBinary = process.env.OMP_HAPPY_REAL_BIN
     || (existsSync(bunOmpBinary) ? bunOmpBinary : existsSync(localOmpBinary) ? localOmpBinary : 'omp');
-  const runOmpConfigCommand = createOmpConfigCommandRunner(ompBinary);
-  let lastPersistedModel: string | undefined;
-  let modelPersistenceQueue = Promise.resolve();
 
 
   const log = (message: string, data?: unknown) => {
@@ -672,27 +670,6 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     if (verbose) {
       console.log(`[happy-omp] ${message}`);
     }
-  };
-  const persistSelectedModel = (modelSpec: string): Promise<boolean> => {
-    if (lastPersistedModel === modelSpec) {
-      return Promise.resolve(true);
-    }
-    let succeeded = false;
-    const operation = modelPersistenceQueue.then(async () => {
-      if (lastPersistedModel === modelSpec) {
-        succeeded = true;
-        return;
-      }
-      try {
-        await persistOmpDefaultModel(modelSpec, runOmpConfigCommand);
-        lastPersistedModel = modelSpec;
-        succeeded = true;
-      } catch (error) {
-        log('Failed to persist OMP default model', error);
-      }
-    });
-    modelPersistenceQueue = operation;
-    return operation.then(() => succeeded);
   };
 
   const clearPendingPtyPrompt = (): void => {
@@ -1494,6 +1471,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         advisorEnabled,
         ...(Array.isArray(frame.models) ? { models: frame.models } : {}),
         ...(typeof frame.currentModel === 'string' ? { currentModelCode: frame.currentModel } : {}),
+        ...(frame.modelRoles ? { modelRoles: frame.modelRoles } : {}),
         ...(Array.isArray(frame.thoughtLevels) ? { thoughtLevels: frame.thoughtLevels } : {}),
         ...(typeof frame.currentThoughtLevel === 'string' ? { currentThoughtLevelCode: frame.currentThoughtLevel } : {}),
       }));
@@ -1591,6 +1569,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         ...process.env,
         [BRIDGE_SOCKET_ENV]: socketPath,
         [BRIDGE_CONTROL_MODE_ENV]: runMode,
+        [OMP_BINARY_ENV]: ompBinary,
       },
       name: process.env.TERM || 'xterm-256color',
       cols: process.stdout.columns || 80,
@@ -1657,8 +1636,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     // Both terminal and phone input share one control path. The app-backed
     // Ask tool remains active, so creating or typing locally cannot flip mode.
     if (!steering && typeof message.meta?.model === 'string') {
-      bridgeServer?.send({ type: 'set_model', spec: message.meta.model });
-      void persistSelectedModel(message.meta.model);
+      bridgeServer?.send({ type: 'set_model_role', role: 'default', spec: message.meta.model });
     }
     if (!steering && typeof message.meta?.effort === 'string') {
       bridgeServer?.send({ type: 'set_thinking_level', level: message.meta.effort });
@@ -1744,19 +1722,22 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     return { success: true };
   });
   session.rpcHandlerManager.registerHandler<{
+    role: 'default' | 'task';
     model: string;
   }, {
     success: boolean;
-  }>('set-model', async ({ model }) => {
+  }>('set-model-role', async ({ role, model }) => {
     const normalizedModel = model.trim();
-    if (!normalizedModel) {
+    if ((role !== 'default' && role !== 'task') || !normalizedModel) {
       return { success: false };
     }
-    const persistedPromise = persistSelectedModel(normalizedModel);
     await waitForBridgeReady();
-    const sent = bridgeServer?.send({ type: 'set_model', spec: normalizedModel }) ?? false;
-    const persisted = await persistedPromise;
-    return { success: sent && persisted };
+    const sent = bridgeServer?.send({
+      type: 'set_model_role',
+      role,
+      spec: normalizedModel,
+    }) ?? false;
+    return { success: sent };
   });
   session.rpcHandlerManager.registerHandler<{
     enabled: boolean;

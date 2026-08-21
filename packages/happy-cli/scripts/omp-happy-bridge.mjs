@@ -3,8 +3,10 @@ import { installCrossProcessIrc } from './omp-cross-process-irc.mjs';
 
 const SOCKET_ENV = 'OMP_HAPPY_BRIDGE_SOCKET';
 const CONTROL_MODE_ENV = 'OMP_HAPPY_CONTROL_MODE';
+const OMP_BINARY_ENV = 'OMP_HAPPY_REAL_BIN';
 const LOCAL_ASK_TOOL = 'ask';
 const REMOTE_ASK_TOOL = 'happy_ask';
+const MODEL_TASK_TOOL = 'model_task';
 const PROTOCOL_VERSION = 1;
 const USAGE_PUBLISH_INTERVAL_MS = 500;
 const OMP_MIN_TOKEN_RATE_DURATION_MS = 100;
@@ -165,6 +167,30 @@ export function getModelSnapshot(ctx) {
   return { models, currentModel };
 }
 
+export function getModelRolesSnapshot(pi) {
+  const roles = pi?.pi?.settings?.getModelRoles?.();
+  if (!roles || typeof roles !== 'object' || Array.isArray(roles)) return {};
+  return Object.fromEntries(
+    Object.entries(roles).filter(([role, spec]) => (
+      typeof role === 'string' && typeof spec === 'string' && spec.trim().length > 0
+    )),
+  );
+}
+
+export function setOmpModelRole(pi, role, spec) {
+  const normalizedSpec = typeof spec === 'string' ? spec.trim() : '';
+  if ((role !== 'default' && role !== 'task') || !normalizedSpec) return false;
+  const settings = pi?.pi?.settings;
+  if (!settings) return false;
+  if (settings.get?.('modelRoleStorage') === 'project' && typeof settings.setProjectModelRole === 'function') {
+    settings.setProjectModelRole(role, normalizedSpec);
+    return true;
+  }
+  if (typeof settings.setModelRole !== 'function') return false;
+  settings.setModelRole(role, normalizedSpec);
+  return true;
+}
+
 export function resolveModel(models, spec) {
   if (!Array.isArray(models)) return undefined;
   const canonicalMatches = models.filter((model) => `${model.provider}/${model.id}` === spec);
@@ -315,6 +341,104 @@ export function resolveTuiCommand(command) {
   return undefined;
 }
 
+export function buildModelTaskArgs(model, task) {
+  return [
+    '--allow-home',
+    '--print',
+    '--no-session',
+    '--no-title',
+    '--yolo',
+    '--model',
+    model,
+    '--',
+    task,
+  ];
+}
+
+export async function executeModelTask(pi, params, signal, ctx) {
+  const modelSpec = typeof params?.model === 'string' ? params.model.trim() : '';
+  const task = typeof params?.task === 'string' ? params.task.trim() : '';
+  if (!modelSpec || !task) {
+    return {
+      content: [{ type: 'text', text: 'Both model and task are required.' }],
+      isError: true,
+    };
+  }
+
+  const resolvedModel = typeof ctx?.models?.resolve === 'function'
+    ? ctx.models.resolve(modelSpec)
+    : undefined;
+  if (!resolvedModel) {
+    return {
+      content: [{ type: 'text', text: `Unable to resolve OMP subagent model: ${modelSpec}` }],
+      isError: true,
+    };
+  }
+
+  const ompBinary = process.env[OMP_BINARY_ENV]?.trim() || 'omp';
+  const cwd = typeof ctx?.cwd === 'string' && ctx.cwd.length > 0 ? ctx.cwd : process.cwd();
+  let result;
+  try {
+    result = await pi.exec(ompBinary, buildModelTaskArgs(modelSpec, task), { cwd, signal });
+  } catch (error) {
+    return {
+      content: [{
+        type: 'text',
+        text: `OMP subagent failed to start: ${error instanceof Error ? error.message : String(error)}`,
+      }],
+      isError: true,
+    };
+  }
+
+  const stdout = typeof result.stdout === 'string' ? result.stdout.trim() : '';
+  const stderr = typeof result.stderr === 'string' ? result.stderr.trim() : '';
+  if (result.killed) {
+    return {
+      content: [{ type: 'text', text: 'OMP subagent was aborted.' }],
+      details: { model: modelSpec, cwd, exitCode: result.code },
+      isError: true,
+    };
+  }
+  if (result.code !== 0) {
+    return {
+      content: [{
+        type: 'text',
+        text: stderr || stdout || `OMP subagent exited with code ${result.code}.`,
+      }],
+      details: { model: modelSpec, cwd, exitCode: result.code },
+      isError: true,
+    };
+  }
+
+  return {
+    content: [{ type: 'text', text: stdout || 'OMP subagent completed without output.' }],
+    details: {
+      model: modelSpec,
+      resolvedModel: `${resolvedModel.provider}/${resolvedModel.id}`,
+      cwd,
+      exitCode: result.code,
+    },
+  };
+}
+
+export function registerModelTaskTool(pi) {
+  if (typeof pi?.registerTool !== 'function' || !pi.zod) return false;
+  const z = pi.zod;
+  pi.registerTool({
+    name: MODEL_TASK_TOOL,
+    label: 'Model subagent',
+    description: 'Launch a separate OMP subagent with an explicit model for this task only. Use this when the user asks a subagent to use a named model. This does not change the parent chat model or persisted model roles. The model accepts any OMP selector and an optional :thinking suffix.',
+    parameters: z.object({
+      model: z.string().min(1),
+      task: z.string().min(1),
+    }),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      return executeModelTask(pi, params, signal, ctx);
+    },
+  });
+  return true;
+}
+
 export default function happyBridgeExtension(pi) {
   installCrossProcessIrc(pi);
   const socketPath = process.env[SOCKET_ENV];
@@ -430,6 +554,7 @@ export default function happyBridgeExtension(pi) {
         };
       },
     });
+    registerModelTaskTool(pi);
   }
 
 
@@ -446,6 +571,7 @@ export default function happyBridgeExtension(pi) {
       cwd: ctx.cwd,
       models: modelSnapshot.models,
       currentModel: modelSnapshot.currentModel,
+      modelRoles: getModelRolesSnapshot(pi),
       thoughtLevels: thinkingSnapshot.thoughtLevels,
       currentThoughtLevel: thinkingSnapshot.currentThoughtLevel,
       title: typeof pi.getSessionName === 'function'
@@ -492,13 +618,25 @@ export default function happyBridgeExtension(pi) {
       send({ type: 'aborted' });
       return;
     }
-    if (command.type === 'set_model' && typeof command.spec === 'string' && latestContext) {
+    if (command.type === 'set_model_role'
+      && (command.role === 'default' || command.role === 'task')
+      && typeof command.spec === 'string'
+      && latestContext) {
       const model = resolveRequestedModel(latestContext.models, command.spec);
-      if (!model || !(await pi.setModel(model))) {
-        send({ type: 'bridge_error', message: `Unable to select OMP model: ${command.spec}` });
-      } else {
-        publishReady(latestContext);
+      if (!model) {
+        send({ type: 'bridge_error', message: `Unable to resolve OMP ${command.role} model: ${command.spec}` });
+        return;
       }
+      if (command.role === 'default' && !(await pi.setModel(model))) {
+        send({ type: 'bridge_error', message: `Unable to select OMP model: ${command.spec}` });
+        return;
+      }
+      if (!setOmpModelRole(pi, command.role, command.spec)) {
+        send({ type: 'bridge_error', message: `Unable to persist OMP ${command.role} model: ${command.spec}` });
+        return;
+      }
+      publishReady(latestContext);
+      return;
     }
     if (command.type === 'set_thinking_level' && typeof command.level === 'string' && latestContext) {
       const snapshot = getThinkingSnapshot(pi, latestContext);

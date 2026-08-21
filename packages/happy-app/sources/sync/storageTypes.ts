@@ -11,6 +11,7 @@ export const MetadataSchema = z.object({
         description: z.string().nullish(),
     })).optional(),
     currentModelCode: z.string().optional(),
+    modelRoles: z.record(z.string(), z.string()).optional(),
     operatingModes: z.array(z.object({
         code: z.string(),
         value: z.string(),
