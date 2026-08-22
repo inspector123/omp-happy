@@ -1,5 +1,4 @@
 import { createConnection } from 'node:net';
-import { installCrossProcessIrc } from './omp-cross-process-irc.mjs';
 
 const SOCKET_ENV = 'OMP_HAPPY_BRIDGE_SOCKET';
 const CONTROL_MODE_ENV = 'OMP_HAPPY_CONTROL_MODE';
@@ -316,7 +315,6 @@ export function resolveTuiCommand(command) {
 }
 
 export default function happyBridgeExtension(pi) {
-  installCrossProcessIrc(pi);
   const socketPath = process.env[SOCKET_ENV];
   if (!socketPath) return;
 
