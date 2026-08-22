@@ -38,7 +38,7 @@ The incorrect Happy extension and UI implementation was reverted with:
 
 That rollback removes the separate `model_task` subprocess implementation. The final model-selection behavior lives in OMP core instead.
 
-The rollback was then built and installed from commit `f21fcaff`. The local and `Z.local` Happy daemons report version `1.1.10`. The Mac CLI also reports `1.1.10`; its daemon is intentionally not running. The `jobapp` checkout and CLI link were updated, but that account has no Happy credentials, so its daemon correctly stops at the authentication flow instead of starting.
+The rollback was then built and installed from commit `f21fcaff`. The local and `Z.local` Happy daemons report version `1.1.10`. The Mac CLI also reports `1.1.10`, but its daemon exits because the server rejects that machine's stored Happy credential with HTTP 401. The `jobapp` checkout and CLI link were updated, but that account has no Happy credentials, so its daemon correctly stops at the authentication flow instead of starting.
 
 ## OMP implementation
 
