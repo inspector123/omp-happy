@@ -1,6 +1,6 @@
 import { Ionicons, Octicons } from '@expo/vector-icons';
 import * as React from 'react';
-import { View, Platform, useWindowDimensions, ViewStyle, Text, TextInput, ScrollView, ActivityIndicator, TouchableWithoutFeedback, Image as RNImage, Pressable } from 'react-native';
+import { View, Platform, useWindowDimensions, ViewStyle, Text, TextInput, ScrollView, ActivityIndicator, TouchableWithoutFeedback, Image as RNImage, Pressable, type LayoutChangeEvent } from 'react-native';
 import { Image } from 'expo-image';
 import { AgentInputAttachmentStrip } from './AgentInputAttachmentStrip';
 import type { AttachmentPreview } from '@/sync/attachmentTypes';
@@ -259,7 +259,8 @@ const stylesheet = StyleSheet.create((theme, runtime) => ({
     },
     actionButtonsLeft: {
         flexDirection: 'row',
-        gap: 8,
+        alignItems: 'center',
+        gap: 6,
         flex: 1,
         overflow: 'hidden',
     },
@@ -578,6 +579,33 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     const canPressSendButton = !props.isSending
         && !props.isSendDisabled
         && (isSendBlocked ? (hasText || hasImages) : (hasText || hasImages || !!props.onMicPress));
+    const lastImagePickerLayoutRef = React.useRef<string | null>(null);
+    const handleImagePickerLayout = React.useCallback((event: LayoutChangeEvent) => {
+        const { x, y, width, height } = event.nativeEvent.layout;
+        const layoutSignature = `${x}:${y}:${width}:${height}`;
+        if (lastImagePickerLayoutRef.current === layoutSignature) {
+            return;
+        }
+        lastImagePickerLayoutRef.current = layoutSignature;
+        console.warn('[ImagePickerUI] button-layout', {
+            x,
+            y,
+            width,
+            height,
+            screenWidth,
+            hasAbort: Boolean(props.onAbort),
+            hasFilePicker: Boolean(props.onPickFiles),
+        });
+    }, [props.onAbort, props.onPickFiles, screenWidth]);
+    const handleImagePickerPress = React.useCallback(() => {
+        console.warn('[ImagePickerUI] button-press', {
+            screenWidth,
+            selectedCount: props.selectedImages?.length ?? 0,
+            hasAbort: Boolean(props.onAbort),
+            hasFilePicker: Boolean(props.onPickFiles),
+        });
+        props.onPickImages?.();
+    }, [props.onAbort, props.onPickFiles, props.onPickImages, props.selectedImages?.length, screenWidth]);
 
     // Check if this is a Codex, Gemini, or OpenClaw session
     // Use metadata.flavor for existing sessions, agentType prop for new sessions
@@ -1422,11 +1450,12 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                             flexDirection: 'row',
                                             alignItems: 'center',
                                             borderRadius: Platform.select({ default: 16, android: 20 }),
-                                            paddingHorizontal: 8,
+                                            paddingHorizontal: 6,
                                             paddingVertical: 6,
                                             justifyContent: 'center',
                                             height: 32,
                                             opacity: p.pressed ? 0.7 : 1,
+                                            flexShrink: 0,
                                         })}
                                     >
                                         <Octicons
@@ -1449,12 +1478,13 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                             flexDirection: 'row',
                                             alignItems: 'center',
                                             borderRadius: Platform.select({ default: 16, android: 20 }),
-                                            paddingHorizontal: 10,
+                                            paddingHorizontal: 8,
                                             paddingVertical: 6,
                                             justifyContent: 'center',
                                             height: 32,
                                             opacity: p.pressed ? 0.7 : 1,
-                                            gap: 6,
+                                            gap: 4,
+                                            flexShrink: 0,
                                         })}
                                     >
                                         <Octicons
@@ -1481,11 +1511,12 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                                 flexDirection: 'row',
                                                 alignItems: 'center',
                                                 borderRadius: Platform.select({ default: 16, android: 20 }),
-                                                paddingHorizontal: 8,
+                                                paddingHorizontal: 6,
                                                 paddingVertical: 6,
                                                 justifyContent: 'center',
                                                 height: 32,
                                                 opacity: p.pressed ? 0.7 : 1,
+                                                flexShrink: 0,
                                             })}
                                             hitSlop={{ top: 5, bottom: 10, left: 0, right: 0 }}
                                             onPress={handleAbortPress}
@@ -1509,33 +1540,6 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
 
                                 {/* Git Status Badge */}
                                 <GitStatusButton sessionId={props.sessionId} onPress={props.onFileViewerPress} />
-
-                                {/* Image picker button */}
-                                {props.onPickImages && (
-                                    <Pressable
-                                        onPress={props.onPickImages}
-                                        hitSlop={{ top: 5, bottom: 10, left: 0, right: 0 }}
-                                        style={(p) => ({
-                                            flexDirection: 'row',
-                                            alignItems: 'center',
-                                            borderRadius: Platform.select({ default: 16, android: 20 }),
-                                            paddingHorizontal: 8,
-                                            paddingVertical: 6,
-                                            justifyContent: 'center',
-                                            height: 32,
-                                            opacity: p.pressed ? 0.7 : 1,
-                                        })}
-                                    >
-                                        <Ionicons
-                                            name="image-outline"
-                                            size={16}
-                                            color={(props.selectedImages?.length ?? 0) > 0
-                                                ? theme.colors.radio.active
-                                                : theme.colors.button.secondary.tint}
-                                        />
-                                    </Pressable>
-                                )}
-
                                 {/* Workspace file upload button */}
                                 {props.onPickFiles && (
                                     <Pressable
@@ -1546,11 +1550,12 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                             flexDirection: 'row',
                                             alignItems: 'center',
                                             borderRadius: Platform.select({ default: 16, android: 20 }),
-                                            paddingHorizontal: 8,
+                                            paddingHorizontal: 6,
                                             paddingVertical: 6,
                                             justifyContent: 'center',
                                             height: 32,
                                             opacity: p.pressed ? 0.7 : 1,
+                                            flexShrink: 0,
                                         })}
                                     >
                                         {props.isUploadingFile ? (
@@ -1567,73 +1572,104 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                         )}
                                     </Pressable>
                                 )}
+
                                 </View>}
 
-                                {/* Send/Voice button - aligned with first row */}
-                                <View
-                                    style={[
-                                        styles.sendButton,
-                                        isSendBlocked ? styles.sendButtonLocked :
-                                        (hasText || hasImages || props.isSending || (props.onMicPress && !props.isMicActive))
-                                            ? styles.sendButtonActive
-                                            : styles.sendButtonInactive
-                                    ]}
-                                >
+                                {/* Keep the image picker outside the shrinkable action group.
+                                    Session-state controls can appear mid-chat; they must not
+                                    push this primary attachment action under the send button. */}
+                                {props.onPickImages && (
                                     <Pressable
-                                        style={(p) => ({
-                                            width: '100%',
-                                            height: '100%',
-                                            alignItems: 'center',
-                                            justifyContent: 'center',
-                                            opacity: p.pressed ? 0.7 : 1,
-                                        })}
+                                        onPress={handleImagePickerPress}
+                                        onLayout={handleImagePickerLayout}
                                         hitSlop={{ top: 5, bottom: 10, left: 0, right: 0 }}
-                                        onPress={handleSendPress}
-                                        disabled={!canPressSendButton}
+                                        style={(p) => ({
+                                            flexDirection: 'row',
+                                            alignItems: 'center',
+                                            borderRadius: Platform.select({ default: 16, android: 20 }),
+                                            paddingHorizontal: 6,
+                                            paddingVertical: 6,
+                                            justifyContent: 'center',
+                                            height: 32,
+                                            opacity: p.pressed ? 0.7 : 1,
+                                            flexShrink: 0,
+                                        })}
                                     >
-                                        {props.isSending ? (
-                                            <ActivityIndicator
-                                                size="small"
-                                                color={theme.colors.button.primary.tint}
-                                            />
-                                        ) : isSendBlocked ? (
-                                            <Ionicons
-                                                name="lock-closed"
-                                                size={15}
-                                                color={theme.colors.textSecondary}
-                                            />
-                                        ) : hasText || hasImages ? (
-                                            <Octicons
-                                                name="arrow-up"
-                                                size={16}
-                                                color={theme.colors.button.primary.tint}
-                                                style={[
-                                                    styles.sendButtonIcon,
-                                                    { marginTop: Platform.OS === 'web' ? 2 : 0 }
-                                                ]}
-                                            />
-                                        ) : props.onMicPress && !props.isMicActive ? (
-                                            <Image
-                                                source={require('@/assets/images/icon-voice-white.png')}
-                                                style={{
-                                                    width: 24,
-                                                    height: 24,
-                                                }}
-                                                tintColor={theme.colors.button.primary.tint}
-                                            />
-                                        ) : (
-                                            <Octicons
-                                                name="arrow-up"
-                                                size={16}
-                                                color={theme.colors.button.primary.tint}
-                                                style={[
-                                                    styles.sendButtonIcon,
-                                                    { marginTop: Platform.OS === 'web' ? 2 : 0 }
-                                                ]}
-                                            />
-                                        )}
+                                        <Ionicons
+                                            name="image-outline"
+                                            size={16}
+                                            color={(props.selectedImages?.length ?? 0) > 0
+                                                ? theme.colors.radio.active
+                                                : theme.colors.button.secondary.tint}
+                                        />
                                     </Pressable>
-                                </View>
+                                )}
+
+                                {/* Send/Voice button */}
+                                    <View
+                                        style={[
+                                            styles.sendButton,
+                                            isSendBlocked ? styles.sendButtonLocked :
+                                            (hasText || hasImages || props.isSending || (props.onMicPress && !props.isMicActive))
+                                                ? styles.sendButtonActive
+                                                : styles.sendButtonInactive
+                                        ]}
+                                    >
+                                        <Pressable
+                                            style={(p) => ({
+                                                width: '100%',
+                                                height: '100%',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                opacity: p.pressed ? 0.7 : 1,
+                                            })}
+                                            hitSlop={{ top: 5, bottom: 10, left: 0, right: 0 }}
+                                            onPress={handleSendPress}
+                                            disabled={!canPressSendButton}
+                                        >
+                                            {props.isSending ? (
+                                                <ActivityIndicator
+                                                    size="small"
+                                                    color={theme.colors.button.primary.tint}
+                                                />
+                                            ) : isSendBlocked ? (
+                                                <Ionicons
+                                                    name="lock-closed"
+                                                    size={15}
+                                                    color={theme.colors.textSecondary}
+                                                />
+                                            ) : hasText || hasImages ? (
+                                                <Octicons
+                                                    name="arrow-up"
+                                                    size={16}
+                                                    color={theme.colors.button.primary.tint}
+                                                    style={[
+                                                        styles.sendButtonIcon,
+                                                        { marginTop: Platform.OS === 'web' ? 2 : 0 }
+                                                    ]}
+                                                />
+                                            ) : props.onMicPress && !props.isMicActive ? (
+                                                <Image
+                                                    source={require('@/assets/images/icon-voice-white.png')}
+                                                    style={{
+                                                        width: 24,
+                                                        height: 24,
+                                                    }}
+                                                    tintColor={theme.colors.button.primary.tint}
+                                                />
+                                            ) : (
+                                                <Octicons
+                                                    name="arrow-up"
+                                                    size={16}
+                                                    color={theme.colors.button.primary.tint}
+                                                    style={[
+                                                        styles.sendButtonIcon,
+                                                        { marginTop: Platform.OS === 'web' ? 2 : 0 }
+                                                    ]}
+                                                />
+                                            )}
+                                        </Pressable>
+                                    </View>
                             </View>
                         </View>
                     </View>
@@ -1660,12 +1696,11 @@ function GitStatusButton({ sessionId, onPress }: { sessionId?: string, onPress?:
                 flexDirection: 'row',
                 alignItems: 'center',
                 borderRadius: Platform.select({ default: 16, android: 20 }),
-                paddingHorizontal: 8,
+                paddingHorizontal: 6,
                 paddingVertical: 6,
                 height: 32,
                 opacity: p.pressed ? 0.7 : 1,
-                flex: 1,
-                overflow: 'hidden',
+                flexShrink: 0,
             })}
             hitSlop={{ top: 5, bottom: 10, left: 0, right: 0 }}
             onPress={() => {
