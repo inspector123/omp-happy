@@ -191,8 +191,8 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
 
     const isRunning = tool.state === 'running';
     const permissionId = tool.permission?.id;
-    const canInteract = isRunning && !isSubmitting && !isSubmitted;
-
+    const isPermitted = !tool.permission || tool.permission.status === 'pending' || tool.permission.status === 'approved';
+    const canInteract = isRunning && !isSubmitting && !isSubmitted && isPermitted;
     const allQuestionsAnswered = isPasswordPrompt
         ? secretAnswer.length > 0
         : questions.every((_, qIndex) => isQuestionAnswered(qIndex, selections, customAnswers));
@@ -280,8 +280,8 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
         }
     }, [sessionId, permissionId, questions, selections, customAnswers, allQuestionsAnswered, isSubmitting, isPasswordPrompt, secretAnswer]);
 
-    // Show submitted state
-    if (isSubmitted || tool.state === 'completed') {
+    // Show submitted or completed state (no interactive inputs if prompt is not running or canceled)
+    if (isSubmitted || !isRunning || !isPermitted) {
         return (
             <ToolSectionView>
                 <View style={styles.submittedContainer}>
@@ -289,7 +289,11 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
                         <View key={q.id ?? q.question} style={styles.submittedItem}>
                             <Text style={styles.submittedHeader}>{q.header}:</Text>
                             <Text style={styles.submittedValue}>
-                                {isPasswordPrompt ? '••••••••' : getAnswerValues(q, questions.indexOf(q), selections, customAnswers).join(', ') || '-'}
+                                {isPasswordPrompt
+                                    ? (isSubmitted || secretAnswer.length > 0
+                                        ? '••••••••'
+                                        : 'Not required')
+                                    : getAnswerValues(q, questions.indexOf(q), selections, customAnswers).join(', ') || '-'}
                             </Text>
                         </View>
                     ))}
@@ -318,7 +322,7 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
                                     secureTextEntry
                                     autoCapitalize="none"
                                     autoCorrect={false}
-                                    autoFocus
+                                    autoFocus={canInteract}
                                     editable={canInteract}
                                     onSubmitEditing={() => {
                                         if (allQuestionsAnswered) void handleSubmit();

@@ -54,6 +54,9 @@ vi.mock('./views/_all', () => ({
 vi.mock('./views/MCPToolView', () => ({
     formatMCPTitle: (name: string) => name,
 }));
+vi.mock('./views/AskUserQuestionView', () => ({
+    AskUserQuestionView: () => null,
+}));
 
 vi.mock('./ToolError', () => ({
     ToolError: () => null,

@@ -33,6 +33,16 @@ import { FeedItem } from "./feedTypes";
 import { isFolderPathHidden, resolveSessionHomeDir } from '@/utils/hiddenFolders';
 import { isSessionActive, resolveSessionActivity } from './sessionPresence';
 
+function compareMessagesNewestFirst(left: Message, right: Message): number {
+    if (left.serverSeq !== undefined && right.serverSeq !== undefined) {
+        const sequenceDifference = right.serverSeq - left.serverSeq;
+        if (sequenceDifference !== 0) {
+            return sequenceDifference;
+        }
+    }
+    return right.createdAt - left.createdAt;
+}
+
 // Debounce timer for realtimeMode changes
 let realtimeModeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 const REALTIME_MODE_DEBOUNCE_MS = 150;
@@ -603,7 +613,7 @@ export const storage = create<StorageState>()((set, get) => {
                     });
 
                     const messagesArray = Object.values(mergedMessagesMap)
-                        .sort((a, b) => b.createdAt - a.createdAt);
+                        .sort(compareMessagesNewestFirst);
 
                     updatedSessionMessages[session.id] = {
                         messages: messagesArray,
@@ -732,9 +742,11 @@ export const storage = create<StorageState>()((set, get) => {
                     mergedMessagesMap[message.id] = message;
                 });
 
-                // Convert to array and sort by createdAt
+                // Server sequence preserves turn order across skewed phone and
+                // daemon clocks. createdAt remains the fallback for optimistic
+                // and synthetic messages that have not received a sequence.
                 const messagesArray = Object.values(mergedMessagesMap)
-                    .sort((a, b) => b.createdAt - a.createdAt);
+                    .sort(compareMessagesNewestFirst);
 
                 // Update session with todos and latestUsage
                 // IMPORTANT: We extract latestUsage from the mutable reducerState and copy it to the Session object

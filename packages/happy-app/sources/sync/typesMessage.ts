@@ -28,6 +28,7 @@ export type UserTextMessage = {
     id: string;
     localId: string | null;
     createdAt: number;
+    serverSeq?: number;
     text: string;
     subagentId?: string;
     displayText?: string; // Optional text to display in UI instead of actual text
@@ -49,6 +50,7 @@ export type ModeSwitchMessage = {
     kind: 'agent-event';
     id: string;
     createdAt: number;
+    serverSeq?: number;
     event: AgentEvent;
     subagentId?: string;
     meta?: MessageMeta;
@@ -59,6 +61,7 @@ export type AgentTextMessage = {
     id: string;
     localId: string | null;
     createdAt: number;
+    serverSeq?: number;
     text: string;
     isThinking?: boolean;
     subagentId?: string;
@@ -70,6 +73,7 @@ export type ToolCallMessage = {
     id: string;
     localId: string | null;
     createdAt: number;
+    serverSeq?: number;
     tool: ToolCall;
     children: Message[];
     subagentId?: string;

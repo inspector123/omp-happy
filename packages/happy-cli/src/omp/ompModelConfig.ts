@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 export type OmpConfigCommandRunner = (args: string[]) => Promise<string>;
@@ -17,8 +19,27 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 const execFileAsync = promisify(execFile);
 
 export function createOmpConfigCommandRunner(ompBinary: string): OmpConfigCommandRunner {
+  const home = homedir();
+  const bunBin = join(home, '.bun', 'bin');
+  const localBin = join(home, '.local', 'bin');
+  const currentPath = process.env.PATH ?? '';
+  const pathParts = currentPath.split(':').filter(Boolean);
+  if (!pathParts.includes(bunBin)) {
+    pathParts.unshift(bunBin);
+  }
+  if (!pathParts.includes(localBin)) {
+    pathParts.unshift(localBin);
+  }
+  const augmentedPath = pathParts.join(':');
+
   return async (args) => {
-    const { stdout } = await execFileAsync(ompBinary, args, { encoding: 'utf8' });
+    const { stdout } = await execFileAsync(ompBinary, args, {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: augmentedPath,
+      },
+    });
     return stdout;
   };
 }

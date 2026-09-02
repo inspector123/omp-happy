@@ -123,6 +123,7 @@ type ReducerMessage = {
     localId?: string | null;
     realID: string | null;
     createdAt: number;
+    serverSeq?: number;
     role: 'user' | 'agent';
     text: string | null;
     isThinking?: boolean;
@@ -338,9 +339,25 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
     const convertedEvents: { message: NormalizedMessage, event: AgentEvent }[] = [];
 
     for (const msg of nonSidechainMessages) {
-        // Check if we've already processed this message
-        if (msg.role === 'user' && msg.localId && state.localIds.has(msg.localId)) {
-            continue;
+        // Reconcile the server echo with its optimistic user message. The
+        // server sequence is authoritative across devices; wall clocks are
+        // not, and a slow local model can otherwise sort its reasoning above
+        // the user prompt when the daemon clock trails the phone clock.
+        if (msg.role === 'user' && msg.localId) {
+            const optimisticMessageId = state.localIds.get(msg.localId);
+            if (optimisticMessageId) {
+                state.messageIds.set(msg.id, optimisticMessageId);
+                const optimisticMessage = state.messages.get(optimisticMessageId);
+                if (
+                    optimisticMessage
+                    && msg.seq !== undefined
+                    && optimisticMessage.serverSeq !== msg.seq
+                ) {
+                    optimisticMessage.serverSeq = msg.seq;
+                    changed.add(optimisticMessageId);
+                }
+                continue;
+            }
         }
         if (state.messageIds.has(msg.id)) {
             continue;
@@ -417,6 +434,7 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
             realID: message.id,
             role: 'agent',
             createdAt: message.createdAt,
+            serverSeq: message.seq,
             event: event,
             tool: null,
             text: null,
@@ -709,6 +727,7 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                 realID: msg.id,
                 role: 'user',
                 createdAt: msg.createdAt,
+                serverSeq: msg.seq,
                 text: msg.content.text,
                 tool: null,
                 event: null,
@@ -747,6 +766,12 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                 if (existingStreamMessageId) {
                     const streamedMessage = state.messages.get(existingStreamMessageId);
                     if (streamedMessage && streamedMessage.isThinking === isThinking) {
+                        if (
+                            msg.seq !== undefined
+                            && (streamedMessage.serverSeq === undefined || msg.seq < streamedMessage.serverSeq)
+                        ) {
+                            streamedMessage.serverSeq = msg.seq;
+                        }
                         const streamChunks = msg.append && msg.streamId && msg.seq !== undefined
                             ? state.streamChunks.get(msg.streamId)
                             : undefined;
@@ -774,6 +799,7 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                     realID: msg.id,
                     role: 'agent',
                     createdAt: msg.createdAt,
+                    serverSeq: msg.seq,
                     text: isThinking ? `*${delta}*` : delta,
                     isThinking,
                     tool: null,
@@ -826,6 +852,19 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                                 state.toolIdToMessageId.set(c.id, parentMessageId);
                                 changed.add(parentMessageId);
                                 continue;
+                            }
+                        }
+                    } else {
+                        // When a new non-child tool call begins, any prior running inline request
+                        // from previous tools is definitely finished / superseded.
+                        for (const [mid, prevMsg] of state.messages) {
+                            if (prevMsg.tool?.inlineRequest?.state === 'running') {
+                                prevMsg.tool.inlineRequest.state = 'completed';
+                                prevMsg.tool.inlineRequest.completedAt = msg.createdAt;
+                                if (prevMsg.tool.inlineRequest.permission?.status === 'pending') {
+                                    prevMsg.tool.inlineRequest.permission.status = 'canceled';
+                                }
+                                changed.add(mid);
                             }
                         }
                     }
@@ -901,6 +940,7 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                             realID: msg.id,
                             role: 'agent',
                             createdAt: msg.createdAt,
+                            serverSeq: msg.seq,
                             text: null,
                             tool: toolCall,
                             event: null,
@@ -954,6 +994,14 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                     message.tool.state = c.is_error ? 'error' : 'completed';
                     message.tool.result = c.content;
                     message.tool.completedAt = msg.createdAt;
+
+                    if (message.tool.inlineRequest && message.tool.inlineRequest.state === 'running') {
+                        message.tool.inlineRequest.state = 'completed';
+                        message.tool.inlineRequest.completedAt = msg.createdAt;
+                        if (message.tool.inlineRequest.permission?.status === 'pending') {
+                            message.tool.inlineRequest.permission.status = 'canceled';
+                        }
+                    }
 
                     // Update permission data if provided by backend
                     if (c.permissions) {
@@ -1246,6 +1294,7 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                 realID: msg.id,
                 role: 'agent',
                 createdAt: msg.createdAt,
+                serverSeq: msg.seq,
                 event: msg.content,
                 tool: null,
                 text: null,
@@ -1328,6 +1377,7 @@ function convertReducerMessageToMessage(reducerMsg: ReducerMessage, state: Reduc
             id: reducerMsg.id,
             localId: reducerMsg.localId ?? null,
             createdAt: reducerMsg.createdAt,
+            ...(reducerMsg.serverSeq !== undefined && { serverSeq: reducerMsg.serverSeq }),
             kind: 'user-text',
             text: reducerMsg.text,
             ...(reducerMsg.meta?.displayText && { displayText: reducerMsg.meta.displayText }),
@@ -1340,6 +1390,7 @@ function convertReducerMessageToMessage(reducerMsg: ReducerMessage, state: Reduc
             id: reducerMsg.id,
             localId: null,
             createdAt: reducerMsg.createdAt,
+            ...(reducerMsg.serverSeq !== undefined && { serverSeq: reducerMsg.serverSeq }),
             kind: 'agent-text',
             text: reducerMsg.text,
             ...(reducerMsg.isThinking && { isThinking: true }),
@@ -1361,6 +1412,7 @@ function convertReducerMessageToMessage(reducerMsg: ReducerMessage, state: Reduc
             id: reducerMsg.id,
             localId: null,
             createdAt: reducerMsg.createdAt,
+            ...(reducerMsg.serverSeq !== undefined && { serverSeq: reducerMsg.serverSeq }),
             kind: 'tool-call',
             tool: { ...reducerMsg.tool },
             children: childMessages,
@@ -1371,6 +1423,7 @@ function convertReducerMessageToMessage(reducerMsg: ReducerMessage, state: Reduc
         return {
             id: reducerMsg.id,
             createdAt: reducerMsg.createdAt,
+            ...(reducerMsg.serverSeq !== undefined && { serverSeq: reducerMsg.serverSeq }),
             kind: 'agent-event',
             event: reducerMsg.event,
             ...(reducerMsg.subagentId && { subagentId: reducerMsg.subagentId }),

@@ -18,6 +18,8 @@ import {
 } from 'react-native';
 import { GlassView } from 'expo-glass-effect';
 import { Ionicons, Octicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useImagePicker } from '@/hooks/useImagePicker';
+import { AgentInputAttachmentStrip } from '@/components/AgentInputAttachmentStrip';
 import { useNavigation, useRouter } from 'expo-router';
 import { Typography } from '@/constants/Typography';
 import { layout } from '@/components/layout';
@@ -561,6 +563,9 @@ function NewSessionScreen() {
     const fileDiffsSidebarEnabled = useSetting('fileDiffsSidebar');
     const zenMode = useLocalSetting('zenMode');
     const { width: windowWidth } = useWindowDimensions();
+    const { selectedImages, pickImages, removeImage, clearImages } = useImagePicker('new-session');
+    const selectedImagesRef = React.useRef(selectedImages);
+    selectedImagesRef.current = selectedImages;
 
     // Persisted draft state (survives navigation).
     //
@@ -1016,13 +1021,16 @@ function NewSessionScreen() {
                     const trimmedPrompt = draftState.input.trim();
                     draftState.setInput('');
 
-                    if (trimmedPrompt) {
+                    const attachments = selectedImagesRef.current;
+                    if (trimmedPrompt || attachments.length > 0) {
                         await sync.sendMessage(result.sessionId, trimmedPrompt, {
                             source: 'new_session',
                             model: modelOverride === 'default' ? null : modelOverride,
                             effort: effortOverride,
                             permissionMode: permissionOverride ?? undefined,
+                            attachments: attachments.length > 0 ? attachments : undefined,
                         });
+                        clearImages();
                     }
 
                     router.back();
@@ -1366,6 +1374,12 @@ function NewSessionScreen() {
 
     const composerNode = (
         <View style={styles.inputBox}>
+            {selectedImages.length > 0 && (
+                <AgentInputAttachmentStrip
+                    images={selectedImages}
+                    onRemove={removeImage}
+                />
+            )}
             <View style={styles.inputField}>
                 <PromptInput
                     ref={composerInputRef}
@@ -1375,6 +1389,27 @@ function NewSessionScreen() {
             </View>
             <View style={styles.actionButtonsContainer}>
                 <View style={styles.actionButtonsLeft} />
+                <Pressable
+                    onPress={pickImages}
+                    hitSlop={{ top: 5, bottom: 10, left: 5, right: 5 }}
+                    accessibilityLabel="Attach images"
+                    style={(p) => ({
+                        paddingHorizontal: 6,
+                        paddingVertical: 6,
+                        justifyContent: 'center',
+                        height: 32,
+                        opacity: p.pressed ? 0.7 : 1,
+                        flexShrink: 0,
+                    })}
+                >
+                    <Ionicons
+                        name="image-outline"
+                        size={16}
+                        color={selectedImages.length > 0
+                            ? theme.colors.radio.active
+                            : theme.colors.button.secondary.tint}
+                    />
+                </Pressable>
                 <View style={[
                     styles.sendButton,
                     isSpawning ? styles.sendButtonActive :

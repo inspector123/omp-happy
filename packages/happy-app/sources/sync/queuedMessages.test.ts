@@ -391,6 +391,43 @@ describe('queued message store contract', () => {
         expect(session.messages[0].kind === 'user-text' && session.messages[0].text).toBe('hello, edited');
     });
 
+    it('orders a slow local-model response after its optimistic user prompt despite clock skew', () => {
+        const sessionId = 'q-order';
+        storage.getState().applyMessages(sessionId, [
+            optimisticUserMessage('local-order', 'Hi', 2_000),
+        ]);
+
+        const serverEcho: NormalizedMessage = {
+            ...optimisticUserMessage('local-order', 'Hi', 900),
+            id: 'server-user',
+            seq: 10,
+        };
+        const streamedReasoning: NormalizedMessage = {
+            id: 'server-reasoning',
+            localId: null,
+            createdAt: 1_000,
+            seq: 11,
+            role: 'agent',
+            content: [{
+                type: 'thinking',
+                thinking: 'Working slowly',
+                uuid: 'reasoning-uuid',
+                parentUUID: null,
+            }],
+            isSidechain: false,
+            meta: undefined,
+        };
+
+        storage.getState().applyMessages(sessionId, [serverEcho, streamedReasoning]);
+
+        const messages = storage.getState().sessionMessages[sessionId].messages;
+        // ChatList is inverted, so newest-first data renders the user prompt
+        // above the subsequent reasoning block.
+        expect(messages.map((message) => message.kind)).toEqual(['agent-text', 'user-text']);
+        expect(messages[1].serverSeq).toBe(10);
+        expect(messages[0].serverSeq).toBe(11);
+    });
+
     it('removeMessage ignores unknown localIds without touching state', () => {
         const sessionId = 'q3';
         storage.getState().applyMessages(sessionId, [optimisticUserMessage('local-9', 'keep me')]);

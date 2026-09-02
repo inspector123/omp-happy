@@ -700,8 +700,18 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       clearTimeout(ptyPromptTimer);
       ptyPromptTimer = null;
     }
+    const promptToDismiss = pendingPtyPrompt;
     pendingPtyPrompt = null;
     ptyPromptScanBuffer = '';
+    if (promptToDismiss) {
+      session.sendAgentMessage('omp', {
+        type: 'tool-result',
+        callId: promptToDismiss.id,
+        output: { dismissed: true },
+        id: randomUUID(),
+        isError: false,
+      });
+    }
   };
 
   const publishPtyPrompt = (prompt: string, callId?: string): void => {
@@ -1250,6 +1260,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   };
 
   const completeTurn = (): void => {
+    clearPendingPtyPrompt();
     if (!turnStarted) return;
     flushPendingText();
     turnStarted = false;
@@ -1352,11 +1363,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         if (wasInteractiveBash && pendingPtyPrompt?.callId === toolCallId) {
           clearPendingPtyPrompt();
         } else if (wasInteractiveBash && activeInteractiveBashCalls.size === 0) {
-          if (ptyPromptTimer) {
-            clearTimeout(ptyPromptTimer);
-            ptyPromptTimer = null;
-          }
-          ptyPromptScanBuffer = '';
+          clearPendingPtyPrompt();
         }
         if (compactTodoCallIds.delete(toolCallId)) {
           emitPlanTodos(event.result);
@@ -1372,6 +1379,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         return;
       }
       case 'session_shutdown': {
+        clearPendingPtyPrompt();
         releaseBridgeBindings(ROOT_BRIDGE_KEY);
         return;
       }
@@ -1756,7 +1764,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     await waitForBridgeReady();
     const sent = bridgeServer?.send({ type: 'set_model', spec: normalizedModel }) ?? false;
     const persisted = await persistedPromise;
-    return { success: sent && persisted };
+    return { success: sent || persisted };
   });
   session.rpcHandlerManager.registerHandler<{
     enabled: boolean;
