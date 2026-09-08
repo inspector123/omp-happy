@@ -85,4 +85,50 @@ describe('parseMarkdown', () => {
             },
         ]);
     });
+
+    it('renders dollar-delimited math in financial prose and bold list items', () => {
+        const blocks = parseMarkdown([
+            '1. Best peak of **$203.8\\times$** on $MEME ($664k $\\to$ $135.3M).',
+            '2. The **$2\\times-3\\times$ Scalp Bots**',
+            '- Tokens reached $\\ge 10\\times$; take profit at $5\\times-50\\times+$.',
+            '- Enter at $2\\times$, exit at $2.0\\times-2.5\\times$.',
+        ].join('\n'));
+
+        expect(blocks).toEqual([
+            {
+                type: 'numbered-list',
+                items: [
+                    { number: 1, ...item([
+                        { styles: [], text: 'Best peak of ', url: null },
+                        { styles: ['bold'], text: '203.8×', url: null },
+                        { styles: [], text: ' on $MEME ($664k → $135.3M).', url: null },
+                    ]) },
+                    { number: 2, ...item([
+                        { styles: [], text: 'The ', url: null },
+                        { styles: ['bold'], text: '2×-3× Scalp Bots', url: null },
+                    ]) },
+                ],
+            },
+            {
+                type: 'list',
+                items: [
+                    item([{ styles: [], text: 'Tokens reached ≥ 10×; take profit at 5×-50×+.', url: null }]),
+                    item([{ styles: [], text: 'Enter at 2×, exit at 2.0×-2.5×.', url: null }]),
+                ],
+            },
+        ]);
+    });
+
+    it('preserves currency, escaped dollars, code, and unfinished dollar math', () => {
+        const text = String.raw`$5 to $10, $MEME and $SOL, \$5\times$, $2\times`;
+        expect(parseMarkdown(text)).toEqual([
+            { type: 'text', content: [{ styles: [], text, url: null }] },
+        ]);
+        expect(parseMarkdown('`$2\\times$` and $2\\times$')).toEqual([
+            { type: 'text', content: [
+                { styles: ['code'], text: '$2\\times$', url: null },
+                { styles: [], text: ' and 2×', url: null },
+            ] },
+        ]);
+    });
 });

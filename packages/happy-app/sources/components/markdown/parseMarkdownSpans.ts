@@ -4,16 +4,24 @@ import type { MarkdownSpan } from "./parseMarkdown";
 const pattern = /(\*\*(.*?)(?:\*\*|$))|(\*(.*?)(?:\*|$))|(\[([^\]]+)\](?:\(([^)]+)\))?)|(`(.*?)(?:`|$))/g;
 
 function normalizeInlineMath(text: string): string {
-    return text.replace(/\\\((.*?)\\\)/g, (_match, expression: string) => expression
-        .replace(/\\text\{([^{}]*)\}/g, '$1')
-        .replace(/\\%/g, '%')
-        .replace(/\\times/g, '×')
-        .replace(/\\cdot/g, '·')
-        .replace(/\\leq?/g, '≤')
-        .replace(/\\geq?/g, '≥')
-        .replace(/\\neq/g, '≠')
-        .replace(/\\,/g, ' ')
-        .trim());
+    // Dollar math must contain a LaTeX command, so currency and token tickers
+    // remain literal. Exclude escaped dollars and display-math delimiters.
+    return text.replace(
+        /\\\((.*?)\\\)|(?<![\\$])\$(?!\$)(?=\S)((?=[^$\n]*\\[a-zA-Z])[^$\n]+?)(?<![\\\s])\$(?!\$)/g,
+        (_match, bracketExpression: string | undefined, dollarExpression: string | undefined) =>
+            (bracketExpression ?? dollarExpression ?? '')
+                .replace(/\\text\{([^{}]*)\}/g, '$1')
+                .replace(/\\%/g, '%')
+                .replace(/\\times\b/g, '×')
+                .replace(/\\cdot\b/g, '·')
+                .replace(/\\leq?\b/g, '≤')
+                .replace(/\\geq?\b/g, '≥')
+                .replace(/\\neq\b/g, '≠')
+                .replace(/\\(?:to|rightarrow)\b/g, '→')
+                .replace(/\\leftarrow\b/g, '←')
+                .replace(/\\,/g, ' ')
+                .trim(),
+    );
 }
 
 function pushTextWithAutoLinks(spans: MarkdownSpan[], text: string, styles: MarkdownSpan['styles']) {
