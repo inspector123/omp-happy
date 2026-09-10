@@ -52,11 +52,23 @@ export async function startApi(opts: StartApiOptions = {}) {
         methods: ['GET', 'POST', 'PUT', 'DELETE']
     });
 
-    app.addHook('onRequest', async (_request, reply) => {
+    app.addHook('onRequest', async (request, reply) => {
         reply.header('X-Content-Type-Options', 'nosniff');
         reply.header('X-Frame-Options', 'DENY');
         reply.header('Referrer-Policy', 'no-referrer');
         reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+
+        // Happy mobile app validates custom servers by sending GET / with Accept: text/plain
+        // expecting "Welcome to Happy Server!". If static webapp is enabled, static files would
+        // otherwise serve index.html (which fails text.includes("Welcome to Happy Server!")).
+        const url = request.raw.url || '';
+        if (request.method === 'GET' && (url === '/' || url.startsWith('/?'))) {
+            const accept = request.headers['accept'] || '';
+            if (accept.includes('text/plain') || !opts.staticDir) {
+                reply.type('text/plain').send('Welcome to Happy Server!');
+                return reply;
+            }
+        }
     });
 
     // Required for local-mode attachment uploads (PUT /v1/sessions/:id/attachments/:file).
@@ -126,9 +138,11 @@ export async function startApi(opts: StartApiOptions = {}) {
     // Static webapp (self-host mode)
     if (opts.staticDir) {
         const fastifyStatic = (await import('@fastify/static')).default;
-        const injectScript = opts.injectHtmlConfig
-            ? `<script>window.__HAPPY_CONFIG__ = ${JSON.stringify(opts.injectHtmlConfig)};</script>`
-            : null;
+        const injectParts: string[] = ['<!-- Welcome to Happy Server! -->'];
+        if (opts.injectHtmlConfig) {
+            injectParts.push(`<script>window.__HAPPY_CONFIG__ = ${JSON.stringify(opts.injectHtmlConfig)};</script>`);
+        }
+        const injectScript = injectParts.join('\n');
         app.register(fastifyStatic, {
             root: opts.staticDir,
             prefix: '/',
