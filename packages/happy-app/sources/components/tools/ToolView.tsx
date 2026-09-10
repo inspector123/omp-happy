@@ -243,20 +243,7 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
             {tool.inlineRequest ? (
                 <View style={styles.inlineRequest}>
                     <AskUserQuestionView
-                        tool={tool.state !== 'running' && tool.inlineRequest.state === 'running'
-                            ? {
-                                ...tool.inlineRequest,
-                                state: 'completed',
-                                permission: tool.inlineRequest.permission
-                                    ? {
-                                        ...tool.inlineRequest.permission,
-                                        status: tool.inlineRequest.permission.status === 'pending'
-                                            ? 'canceled'
-                                            : tool.inlineRequest.permission.status,
-                                    }
-                                    : undefined,
-                            }
-                            : tool.inlineRequest}
+                        tool={tool.inlineRequest}
                         metadata={props.metadata}
                         messages={[]}
                         sessionId={sessionId}

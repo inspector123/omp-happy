@@ -2024,57 +2024,6 @@ describe('runOmp', () => {
     await vi.advanceTimersByTimeAsync(200);
     await runPromise;
   });
-  it('dismisses PTY password prompts when bash command ends without user input', async () => {
-    vi.useFakeTimers();
-    const runPromise = runOmp({ credentials, startedBy: 'daemon' });
-    await settleMicrotasks();
-    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-sudo-dismiss' });
-    await vi.advanceTimersByTimeAsync(1);
-
-    child.emitData('\u001b[2K│ [sudo] password for zarathustra: \u001b[0m│\r\n');
-    mocks.emitBridgeFrame({
-      type: 'agent_event',
-      event: {
-        type: 'tool_execution_start',
-        toolCallId: 'sudo-call-2',
-        toolName: 'bash',
-        args: { command: 'sudo true' },
-      },
-    });
-
-    const promptCall = mocks.mockSession.sendAgentMessage.mock.calls.find(([, message]) =>
-      isRecord(message) && message.type === 'permission-request' && message.description === '[sudo] password for zarathustra:'
-    );
-    expect(promptCall).toBeDefined();
-    const promptMessage = promptCall?.[1];
-    const promptId = isRecord(promptMessage) && typeof promptMessage.permissionId === 'string'
-      ? promptMessage.permissionId
-      : '';
-    expect(promptId).toBeTruthy();
-
-    mocks.emitBridgeFrame({
-      type: 'agent_event',
-      event: {
-        type: 'tool_execution_end',
-        toolCallId: 'sudo-call-2',
-        toolName: 'bash',
-        result: { content: [{ type: 'text', text: 'done' }] },
-        isError: false,
-      },
-    });
-
-    expect(mocks.mockSession.sendAgentMessage).toHaveBeenCalledWith('omp', expect.objectContaining({
-      type: 'tool-result',
-      callId: promptId,
-      output: { dismissed: true },
-      isError: false,
-    }));
-
-    child.emitExit(0);
-    await vi.advanceTimersByTimeAsync(200);
-    await runPromise;
-  });
-
 
   it('routes remote OMP ask requests and answers through the permission RPC', async () => {
     vi.useFakeTimers();

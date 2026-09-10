@@ -700,18 +700,8 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       clearTimeout(ptyPromptTimer);
       ptyPromptTimer = null;
     }
-    const promptToDismiss = pendingPtyPrompt;
     pendingPtyPrompt = null;
     ptyPromptScanBuffer = '';
-    if (promptToDismiss) {
-      session.sendAgentMessage('omp', {
-        type: 'tool-result',
-        callId: promptToDismiss.id,
-        output: { dismissed: true },
-        id: randomUUID(),
-        isError: false,
-      });
-    }
   };
 
   const publishPtyPrompt = (prompt: string, callId?: string): void => {
@@ -1260,7 +1250,6 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   };
 
   const completeTurn = (): void => {
-    clearPendingPtyPrompt();
     if (!turnStarted) return;
     flushPendingText();
     turnStarted = false;
@@ -1363,7 +1352,11 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         if (wasInteractiveBash && pendingPtyPrompt?.callId === toolCallId) {
           clearPendingPtyPrompt();
         } else if (wasInteractiveBash && activeInteractiveBashCalls.size === 0) {
-          clearPendingPtyPrompt();
+          if (ptyPromptTimer) {
+            clearTimeout(ptyPromptTimer);
+            ptyPromptTimer = null;
+          }
+          ptyPromptScanBuffer = '';
         }
         if (compactTodoCallIds.delete(toolCallId)) {
           emitPlanTodos(event.result);
@@ -1379,7 +1372,6 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         return;
       }
       case 'session_shutdown': {
-        clearPendingPtyPrompt();
         releaseBridgeBindings(ROOT_BRIDGE_KEY);
         return;
       }
@@ -1562,6 +1554,15 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       if (frame.source === 'extension') return;
       const text = frame.text.trim();
       if (!text) return;
+      // A mid-turn interjection keeps the harness agent run alive, so no new
+      // agent_start fires and the thinking/output stream ids would carry on
+      // across turns. Everything emitted after the interjection would then
+      // append into the pre-interjection cells, which are sequenced at their
+      // first chunk and render above the prompt that triggered them. Flush
+      // what is buffered, then rotate so each segment gets its own cell.
+      flushPendingText();
+      outputStreamId = randomUUID();
+      thinkingStreamId = randomUUID();
       const advisorMatch = /^\/advisor(?:\s+(on|off|toggle))?\s*$/i.exec(text);
       if (advisorMatch) {
         const action = advisorMatch[1]?.toLowerCase() ?? 'toggle';
