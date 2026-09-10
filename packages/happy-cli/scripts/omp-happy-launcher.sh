@@ -38,4 +38,4 @@ if [ "${1:-}" = "attach" ]; then
   exec node "$HAPPY_OMP_CLI" omp "$@"
 fi
 
-exec node "$HAPPY_OMP_CLI" omp -- "$@"
+exec node "$HAPPY_OMP_CLI" omp -- --extension "$HOME/.omp/agent/extensions/tg_bridge.ts" "$@"
