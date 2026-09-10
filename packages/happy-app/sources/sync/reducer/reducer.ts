@@ -158,6 +158,8 @@ export type ReducerState = {
     messages: Map<string, ReducerMessage>;
     sidechains: Map<string, ReducerMessage[]>;
     tracerState: TracerState; // Tracer state for sidechain processing
+    maxServerSeq: number; // highest server sequence ever seen for this session
+    lastUserSeq: number; // highest user-message sequence seen (boundary marker)
     latestTodos?: {
         todos: TodoItem[];
         timestamp: number;
@@ -186,11 +188,50 @@ export function createReducer(): ReducerState {
         streamIds: new Map(),
         streamChunks: new Map(),
         sidechains: new Map(),
+        maxServerSeq: 0,
+        lastUserSeq: 0,
         tracerState: createTracer()
     }
 };
 
 const ENABLE_LOGGING = false;
+
+// Half a sequence step. An optimistic message is stamped just above the highest
+// sequence known when it was sent, so it sorts above everything already in the
+// thread and below anything the server sequences afterwards — which is the
+// agent's next turn, the reply the prompt is waiting for. A whole step would
+// collide with the next real sequence and fall back to wall clocks, and the
+// phone clock runs ahead of the daemon (measured ~2s on the Pixel), which is
+// what made the next turn's reasoning render above the prompt that caused it.
+const PENDING_SEQ_STEP = 0.5;
+
+// Lowest and highest server sequence among the chunks already folded into a
+// stream, or null when it has no sequenced chunks yet.
+function streamChunkBounds(state: ReducerState, streamId: string | undefined): { min: number, max: number } | null {
+    if (!streamId) return null;
+    const chunks = state.streamChunks.get(streamId);
+    if (!chunks || chunks.size === 0) return null;
+    let min = Infinity;
+    let max = 0;
+    for (const seq of chunks.keys()) {
+        if (seq < min) min = seq;
+        if (seq > max) max = seq;
+    }
+    return { min, max };
+}
+
+// True when a newly created cell should become the stream's current cell. A
+// chunk older than the newest user message that broke away from a newer cell is
+// a historical segment; the live stream stays with the newer cell.
+function reclaimsStream(
+    msg: NormalizedMessage,
+    existingStreamMessageId: string | undefined,
+    spansUserBoundary: boolean,
+    lastUserSeq: number,
+): boolean {
+    if (!existingStreamMessageId || !spansUserBoundary) return true;
+    return msg.seq === undefined || msg.seq > lastUserSeq;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -321,6 +362,20 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
 
     // First, trace all messages to identify sidechains
     const tracedMessages = traceMessages(state.tracerState, messages);
+
+    // Sequence bookkeeping for the whole batch, before any message is walked.
+    // Batches are not guaranteed to arrive oldest-first — a loaded history is
+    // replayed newest-first — so the boundary a later check depends on must not
+    // be discovered mid-loop.
+    for (const msg of tracedMessages) {
+        if (msg.seq === undefined) continue;
+        if (msg.seq > state.maxServerSeq) {
+            state.maxServerSeq = msg.seq;
+        }
+        if (msg.role === 'user' && msg.seq > state.lastUserSeq) {
+            state.lastUserSeq = msg.seq;
+        }
+    }
 
     // Separate sidechain and non-sidechain messages
     let nonSidechainMessages = tracedMessages.filter(msg => !msg.sidechainId);
@@ -727,7 +782,7 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                 realID: msg.id,
                 role: 'user',
                 createdAt: msg.createdAt,
-                serverSeq: msg.seq,
+                serverSeq: msg.seq ?? state.maxServerSeq + PENDING_SEQ_STEP,
                 text: msg.content.text,
                 tool: null,
                 event: null,
@@ -763,9 +818,23 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                 }
                 const isThinking = content.type === 'thinking';
                 const delta = isThinking ? content.thinking : content.text;
+                // A stream cell must not straddle a user message. The harness
+                // keeps one agent run alive across mid-turn interjections, so the
+                // daemon can keep reusing one stream id across turns; every later
+                // turn's reasoning then appends into the first turn's cell, which
+                // is sequenced at its first chunk and renders above the prompt
+                // that triggered it. Checked in both directions because a chunk
+                // can arrive on either side of the boundary — replay walks a batch
+                // newest first, so an older chunk may try to join a newer cell.
+                const bounds = streamChunkBounds(state, msg.streamId);
+                const spansUserBoundary = msg.seq !== undefined
+                    && state.lastUserSeq > 0
+                    && bounds !== null
+                    && ((msg.seq > state.lastUserSeq && bounds.min < state.lastUserSeq)
+                        || (msg.seq < state.lastUserSeq && bounds.max > state.lastUserSeq));
                 if (existingStreamMessageId) {
                     const streamedMessage = state.messages.get(existingStreamMessageId);
-                    if (streamedMessage && streamedMessage.isThinking === isThinking) {
+                    if (streamedMessage && !spansUserBoundary && streamedMessage.isThinking === isThinking) {
                         if (
                             msg.seq !== undefined
                             && (streamedMessage.serverSeq === undefined || msg.seq < streamedMessage.serverSeq)
@@ -807,7 +876,11 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                     meta: msg.meta,
                 });
                 state.messageIds.set(msg.id, mid);
-                if (msg.append && msg.streamId) {
+                // An older chunk that broke away must not steal the stream
+                // pointer: later chunks belong to the cell on the newest side of
+                // the boundary, and re-pointing here would fragment every
+                // subsequent chunk into its own message.
+                if (reclaimsStream(msg, existingStreamMessageId, spansUserBoundary, state.lastUserSeq) && msg.append && msg.streamId) {
                     state.streamIds.set(msg.streamId, mid);
                     if (msg.seq !== undefined) {
                         state.streamChunks.set(msg.streamId, new Map([
@@ -852,19 +925,6 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                                 state.toolIdToMessageId.set(c.id, parentMessageId);
                                 changed.add(parentMessageId);
                                 continue;
-                            }
-                        }
-                    } else {
-                        // When a new non-child tool call begins, any prior running inline request
-                        // from previous tools is definitely finished / superseded.
-                        for (const [mid, prevMsg] of state.messages) {
-                            if (prevMsg.tool?.inlineRequest?.state === 'running') {
-                                prevMsg.tool.inlineRequest.state = 'completed';
-                                prevMsg.tool.inlineRequest.completedAt = msg.createdAt;
-                                if (prevMsg.tool.inlineRequest.permission?.status === 'pending') {
-                                    prevMsg.tool.inlineRequest.permission.status = 'canceled';
-                                }
-                                changed.add(mid);
                             }
                         }
                     }
@@ -995,13 +1055,6 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                     message.tool.result = c.content;
                     message.tool.completedAt = msg.createdAt;
 
-                    if (message.tool.inlineRequest && message.tool.inlineRequest.state === 'running') {
-                        message.tool.inlineRequest.state = 'completed';
-                        message.tool.inlineRequest.completedAt = msg.createdAt;
-                        if (message.tool.inlineRequest.permission?.status === 'pending') {
-                            message.tool.inlineRequest.permission.status = 'canceled';
-                        }
-                    }
 
                     // Update permission data if provided by backend
                     if (c.permissions) {

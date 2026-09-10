@@ -428,6 +428,178 @@ describe('queued message store contract', () => {
         expect(messages[0].serverSeq).toBe(11);
     });
 
+    it('keeps a mid-turn prompt above the next turn that streams in before its echo', () => {
+        const sessionId = 'q-order-pending';
+        const turnStream = 'omp-stream-pending';
+
+        // The turn already in flight when the user types.
+        storage.getState().applyMessages(sessionId, [{
+            id: 'server-first-chunk',
+            localId: null,
+            createdAt: 500,
+            seq: 40,
+            role: 'agent',
+            append: true,
+            streamId: turnStream,
+            content: [{
+                type: 'text',
+                text: 'Finishing the current turn. ',
+                uuid: 'first-chunk-uuid',
+                parentUUID: null,
+            }],
+            isSidechain: false,
+            meta: undefined,
+        }]);
+
+        // Sent mid-turn from the phone, whose clock runs ~2s ahead of the daemon.
+        storage.getState().applyMessages(sessionId, [
+            optimisticUserMessage('local-pending', 'Hi', 3_000),
+        ]);
+
+        // The tail of the in-flight turn keeps arriving, then the next turn
+        // starts. Both carry daemon timestamps older than the local send time.
+        storage.getState().applyMessages(sessionId, [
+            {
+                id: 'server-tail-chunk',
+                localId: null,
+                createdAt: 800,
+                seq: 41,
+                role: 'agent',
+                append: true,
+                streamId: turnStream,
+                content: [{
+                    type: 'text',
+                    text: 'One moment.',
+                    uuid: 'tail-chunk-uuid',
+                    parentUUID: null,
+                }],
+                isSidechain: false,
+                meta: undefined,
+            },
+            {
+                id: 'server-next-turn',
+                localId: null,
+                createdAt: 1_000,
+                seq: 42,
+                role: 'agent',
+                append: true,
+                streamId: 'omp-stream-next-turn',
+                content: [{
+                    type: 'thinking',
+                    thinking: 'Starting the next turn',
+                    uuid: 'next-turn-uuid',
+                    parentUUID: null,
+                }],
+                isSidechain: false,
+                meta: undefined,
+            },
+        ]);
+
+        // Inverted list: index 0 renders at the visual bottom. The prompt sits
+        // after the turn it interrupted and before the turn it triggered, and
+        // the in-flight turn's tail stays glued to its own first chunk.
+        const pending = storage.getState().sessionMessages[sessionId].messages;
+        expect(pending.map((message) => message.kind)).toEqual(['agent-text', 'user-text', 'agent-text']);
+        expect(pending.map((message) => message.serverSeq)).toEqual([42, 40.5, 40]);
+
+        // Echo lands and supplies the authoritative sequence. The provisional
+        // half-step already guessed the right slot, so nothing moves.
+        storage.getState().applyMessages(sessionId, [{
+            ...optimisticUserMessage('local-pending', 'Hi', 2_900),
+            id: 'server-user-pending',
+            seq: 41,
+        }]);
+
+        const sequenced = storage.getState().sessionMessages[sessionId].messages;
+        expect(sequenced.map((message) => message.kind)).toEqual(['agent-text', 'user-text', 'agent-text']);
+        expect(sequenced.map((message) => message.serverSeq)).toEqual([42, 41, 40]);
+    });
+
+    it('starts a new reasoning cell when the daemon reuses a stream across a user message', () => {
+        const sessionId = 'q-stream-boundary';
+        const stream = 'omp-stream-reused';
+        const thinking = (id: string, seq: number, text: string) => ({
+            id,
+            localId: null,
+            createdAt: 1_000 + seq * 100,
+            seq,
+            role: 'agent' as const,
+            append: true,
+            streamId: stream,
+            content: [{ type: 'thinking' as const, thinking: text, uuid: `${id}-uuid`, parentUUID: null }],
+            isSidechain: false,
+            meta: undefined,
+        });
+
+        storage.getState().applyMessages(sessionId, [
+            thinking('reason-first', 10, 'Reasoning about the first ask. '),
+        ]);
+        // The user interjects mid-run. The harness keeps the same agent run
+        // alive, so the daemon keeps emitting on the same stream id.
+        storage.getState().applyMessages(sessionId, [{
+            id: 'server-user-interjection',
+            localId: null,
+            createdAt: 2_000,
+            seq: 11,
+            role: 'user',
+            content: { type: 'text', text: 'Go' },
+            isSidechain: false,
+            meta: undefined,
+        }]);
+        storage.getState().applyMessages(sessionId, [
+            thinking('reason-second', 12, 'Reasoning after the interjection.'),
+        ]);
+
+        // Newest-first: the post-interjection reasoning must sit below the
+        // prompt, not inside the pre-interjection cell that is sequenced at
+        // its first chunk.
+        const messages = storage.getState().sessionMessages[sessionId].messages;
+        expect(messages.map((message) => message.kind)).toEqual(['agent-text', 'user-text', 'agent-text']);
+        expect(messages.map((message) => message.serverSeq)).toEqual([12, 11, 10]);
+        expect(messages[0].kind === 'agent-text' && messages[0].text).toBe('*Reasoning after the interjection.*');
+        expect(messages[2].kind === 'agent-text' && messages[2].text).toBe('*Reasoning about the first ask. *');
+    });
+
+    it('splits a reused stream when a batch delivers the newest message first', () => {
+        const sessionId = 'q-stream-boundary-batch';
+        const stream = 'omp-stream-batch';
+        const thinking = (id: string, seq: number, text: string) => ({
+            id,
+            localId: null,
+            createdAt: 5_000 + seq * 100,
+            seq,
+            role: 'agent' as const,
+            append: true,
+            streamId: stream,
+            content: [{ type: 'thinking' as const, thinking: text, uuid: `${id}-uuid`, parentUUID: null }],
+            isSidechain: false,
+            meta: undefined,
+        });
+
+        // One batch, newest first — the order a loaded history is replayed in,
+        // so the user message has not been walked yet when the newest chunk is.
+        // The boundary must still hold.
+        storage.getState().applyMessages(sessionId, [
+            thinking('batch-reason-after', 12, 'After the interjection.'),
+            {
+                id: 'batch-user',
+                localId: null,
+                createdAt: 6_000,
+                seq: 11,
+                role: 'user',
+                content: { type: 'text', text: 'Back' },
+                isSidechain: false,
+                meta: undefined,
+            },
+            thinking('batch-reason-before', 10, 'Before the interjection.'),
+        ]);
+
+        const messages = storage.getState().sessionMessages[sessionId].messages;
+        expect(messages.map((message) => message.kind)).toEqual(['agent-text', 'user-text', 'agent-text']);
+        expect(messages[0].kind === 'agent-text' && messages[0].text).toBe('*After the interjection.*');
+        expect(messages[2].kind === 'agent-text' && messages[2].text).toBe('*Before the interjection.*');
+    });
+
     it('removeMessage ignores unknown localIds without touching state', () => {
         const sessionId = 'q3';
         storage.getState().applyMessages(sessionId, [optimisticUserMessage('local-9', 'keep me')]);

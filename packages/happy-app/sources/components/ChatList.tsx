@@ -18,6 +18,19 @@ import { Modal } from '@/modal';
 import { useSessionQuickActions } from '@/hooks/useSessionQuickActions';
 
 const SCROLL_THRESHOLD = 300;
+// Distance from the newest end (contentOffset 0 in an inverted list) that still
+// counts as "the user is following the stream". Anything past this and we stop
+// forcing the list down, so scrolling up to read history is never fought.
+const PINNED_EPSILON = 24;
+
+// Used only while scrolled away from the newest end. Anchoring starts at the
+// first child whose end is past the offset, so it holds the cell the user is
+// actually reading; the 6px footer at child index 0 only wins inside its own
+// height, which is the pinned band where this is switched off anyway.
+// A stable object: a fresh literal per render would re-configure the native
+// helper on every streamed chunk.
+const MVCP_WHILE_UNPINNED = { minIndexForVisible: 0 };
+
 
 export const ChatList = React.memo((props: {
     session: Session;
@@ -76,6 +89,12 @@ const ChatListInternal = React.memo((props: {
 }) => {
     const { theme } = useUnistyles();
     const flatListRef = React.useRef<FlatList>(null);
+    // True while the viewport sits on the newest end. A ref, not state: it is
+    // read from scroll/layout callbacks at stream cadence and must not re-render.
+    const pinnedRef = React.useRef(true);
+    // pinnedRef mirrored into render state, because disengaging the native
+    // anchor is a prop change. Flips only when the threshold is crossed.
+    const [pinned, setPinned] = React.useState(true);
     const [showScrollButton, setShowScrollButton] = React.useState(false);
     // Tracks whether the scroll-button is currently shown, so we only call
     // setShowScrollButton when the threshold is actually crossed instead of
@@ -275,14 +294,24 @@ const ChatListInternal = React.memo((props: {
         );
     }, [props.metadata, props.sessionId, canFork, handleForkFromMessage, handleEditQueuedMessage, collapsedGroups, handleToggleGroup]);
 
-    // In inverted FlatList, offset 0 = latest messages (visual bottom).
-    // Offset increases as user scrolls up to see older messages.
-    // Auto-stick-to-bottom on new messages is handled natively by FlatList's
-    // maintainVisibleContentPosition.autoscrollToBottomThreshold — no JS-side
-    // scrollToOffset is needed (and running both produces a fight that drags
-    // the user's viewport when reading older messages mid-stream).
+    // In an inverted FlatList, offset 0 is the newest end (visual bottom);
+    // offset grows as the user scrolls up into older messages.
+    //
+    // Stick-to-bottom is driven from handleContentSizeChange below, not by
+    // maintainVisibleContentPosition.autoscrollToTopThreshold. That native snap
+    // is animated (ReactScrollViewHelper.smoothScrollTo) and is evaluated on
+    // the offset *before* its own anchor compensation, so a chunk landing while
+    // the snap is in flight leaves the offset stranded past the stick threshold
+    // and the follow never re-arms: newest lines keep rendering below the fold.
+    // The mirror re-lays out every MIRROR_FLUSH_DELAY_MS (150ms), well inside
+    // that animation, so a faster model desyncs more reliably.
     const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
         const offsetY = e.nativeEvent.contentOffset.y;
+        const nextPinned = offsetY <= PINNED_EPSILON;
+        if (nextPinned !== pinnedRef.current) {
+            pinnedRef.current = nextPinned;
+            setPinned(nextPinned);
+        }
         const next = offsetY > SCROLL_THRESHOLD;
         if (next !== showScrollButtonRef.current) {
             showScrollButtonRef.current = next;
@@ -290,7 +319,22 @@ const ChatListInternal = React.memo((props: {
         }
     }, []);
 
+    // Content height changes on every streamed chunk (reducer.ts coalesces all
+    // chunks of one streamId into the newest cell). While pinned, re-assert
+    // offset 0 on the frame after layout — non-animated, so consecutive chunks
+    // can never interrupt each other.
+    const handleContentSizeChange = useCallback((_width: number, _height: number) => {
+        if (!pinnedRef.current) return;
+        requestAnimationFrame(() => {
+            if (pinnedRef.current) {
+                flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
+            }
+        });
+    }, []);
+
     const scrollToBottom = useCallback(() => {
+        pinnedRef.current = true;
+        setPinned(true);
         flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
     }, []);
 
@@ -321,6 +365,16 @@ const ChatListInternal = React.memo((props: {
         return () => node.removeEventListener('wheel', handler);
     }, []);
 
+    // The native anchor is only useful away from the newest end, so it is
+    // switched off while pinned (ReactScrollView stops the helper outright on a
+    // null config). It anchors by shifting the offset to hold a chosen cell
+    // still, and with minIndexForVisible: 1 that cell was the newest one — so
+    // every streamed chunk, and every freshly mounted message or reasoning
+    // block, pushed the offset down by exactly the height of the content the
+    // user is trying to watch. Nothing at offset 0 needs anchoring: growth there
+    // keeps the newest line on the bottom edge by itself. Scrolled up, the helper
+    // comes back with minIndexForVisible: 0 so lazy history loads and tool-group
+    // collapses hold the cell being read.
     return (
         <View style={{ flex: 1 }}>
             <FlatList
@@ -328,25 +382,13 @@ const ChatListInternal = React.memo((props: {
                 data={displayItems}
                 inverted={true}
                 keyExtractor={keyExtractor}
-                maintainVisibleContentPosition={{
-                    // Anchor on the second-newest message (index 1), not the
-                    // newest. The newest slot (index 0) gets a brand-new item
-                    // each agent token, which would otherwise destabilise the
-                    // anchor and drag the viewport up.
-                    //
-                    // autoscrollToTopThreshold: for INVERTED lists this is
-                    // actually the auto-stick-to-visual-bottom threshold —
-                    // contentOffset 0 is at the visual bottom in an inverted
-                    // list, and this prop sticks the viewport to offset 0
-                    // when the user is within N units of it.
-                    minIndexForVisible: 1,
-                    autoscrollToTopThreshold: 50,
-                }}
+                maintainVisibleContentPosition={pinned ? undefined : MVCP_WHILE_UNPINNED}
                 keyboardShouldPersistTaps="handled"
                 keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'none'}
                 renderItem={renderItem}
                 onScroll={handleScroll}
                 scrollEventThrottle={16}
+                onContentSizeChange={handleContentSizeChange}
                 ListHeaderComponent={<ListFooter sessionId={props.sessionId} />}
                 ListFooterComponent={<ListHeader isLoadingOlder={props.isLoadingOlder} />}
                 onEndReached={handleLoadOlder}
