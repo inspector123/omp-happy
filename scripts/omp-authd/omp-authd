@@ -1,0 +1,710 @@
+#!/usr/bin/env bun
+/**
+ * omp-authd — finish omp provider OAuth logins without touching the keyboard.
+ *
+ * omp starts an OAuth authorization-code flow, binds a loopback callback server
+ * (default 127.0.0.1:51121), and hands the authorize URL to the user: the TUI
+ * `/login` panel calls xdg-open, `omp auth-broker login <provider>` prints the
+ * URL to stdout. This tool takes that URL, opens it in a real Google Chrome
+ * driven over the DevTools protocol, and clicks through Google's screens
+ * (account chooser -> first-party native-app warning -> consent) until the
+ * browser lands on the loopback callback, which is what makes omp store the
+ * credential.
+ *
+ * Why a copied Chrome profile: Chrome 136+ refuses --remote-debugging-port on
+ * the default user-data-dir ("DevTools remote debugging requires a non-default
+ * data directory"), so the signed-in profile at ~/.config/google-chrome is
+ * cloned to ~/.cache/omp-authd/chrome-profile. The clone carries the Google
+ * session cookies, which is what keeps the flow to two clicks and no password.
+ *
+ * Commands
+ *   complete <authorize-url>     drive an already-running login to completion
+ *   login <provider>             run `omp auth-broker login <provider>`, capture
+ *                                its URL, complete it, wait for the credential save
+ *   seed [--force]               (re)clone the real Chrome profile
+ *   status                       CDP/browser/credential state
+ *   chrome-stop                  close the automation Chrome
+ *
+ * Installed by scripts/omp-authd/install.sh as ~/.local/bin/omp-authd (symlink).
+ * Config: ~/.config/omp-authd/config.json (see DEFAULTS below).
+ * Google password (only if Google demands one): ~/.config/omp-authd/google-password
+ */
+
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, readdirSync, openSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
+const HOME = homedir();
+const STATE_DIR = process.env.OMP_AUTHD_DIR ?? join(HOME, ".cache/omp-authd");
+const LOG_DIR = join(STATE_DIR, "logs");
+const LOG_FILE = join(LOG_DIR, "omp-authd.log");
+const DONE_FILE = join(STATE_DIR, "processed-states.txt");
+
+const DEFAULTS = {
+  /**
+   * Account to pick when Google shows the chooser. Deliberately unset here so
+   * the repo carries no personal identity: put it in config.json, or export
+   * OMP_AUTHD_ACCOUNT. Without it a flow that reaches the chooser fails with a
+   * message instead of clicking an arbitrary account.
+   */
+  account: process.env.OMP_AUTHD_ACCOUNT ?? "",
+  cdpPort: 9333,
+  chromeBin: "/usr/bin/google-chrome",
+  srcProfile: join(HOME, ".config/google-chrome"),
+  profileDir: join(STATE_DIR, "chrome-profile"),
+  display: ":0",
+  timeoutMs: 180_000,
+};
+
+type Config = typeof DEFAULTS;
+
+function loadConfig(): Config {
+  const p = join(HOME, ".config/omp-authd/config.json");
+  if (!existsSync(p)) return { ...DEFAULTS };
+  try {
+    return { ...DEFAULTS, ...(JSON.parse(readFileSync(p, "utf8")) as Partial<Config>) };
+  } catch (e) {
+    log(`config parse failed, using defaults: ${err(e)}`);
+    return { ...DEFAULTS };
+  }
+}
+
+function err(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+function log(msg: string): void {
+  mkdirSync(LOG_DIR, { recursive: true });
+  const line = `${new Date().toISOString()} ${msg}\n`;
+  appendFileSync(LOG_FILE, line);
+  process.stderr.write(`[omp-authd] ${msg}\n`);
+}
+
+function notify(title: string, body: string): void {
+  log(`NOTICE ${title}: ${body}`);
+  try {
+    Bun.spawn(["notify-send", "-u", "critical", title, body], { stdout: "ignore", stderr: "ignore" }).exited.catch(() => {});
+  } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Chrome lifecycle
+// ---------------------------------------------------------------------------
+
+const CDP_CACHE_EXCLUDES = new Set([
+  "Cache", "Code Cache", "GPUCache", "GrShaderCache", "ShaderCache", "DawnCache",
+  "DawnGraphiteCache", "DawnWebGPUCache", "Default", "blob_storage", "Crash Reports",
+  "Service Worker", "Crashpad", "BrowserMetrics", "DeferredBrowserMetrics",
+]);
+
+/** Clone the real Chrome profile so CDP is permitted while keeping the Google session. */
+function seedProfile(cfg: Config, force: boolean): void {
+  const dstDefault = join(cfg.profileDir, "Default");
+  if (existsSync(dstDefault) && !force) return;
+  mkdirSync(cfg.profileDir, { recursive: true });
+  const cp = (src: string, dst: string) => {
+    Bun.spawnSync(["cp", "-a", src, dst]);
+  };
+  const localState = join(cfg.srcProfile, "Local State");
+  if (existsSync(localState)) cp(localState, join(cfg.profileDir, "Local State"));
+  if (existsSync(join(cfg.srcProfile, "First Run"))) cp(join(cfg.srcProfile, "First Run"), join(cfg.profileDir, "First Run"));
+  if (existsSync(dstDefault)) Bun.spawnSync(["rm", "-rf", dstDefault]);
+  cp(join(cfg.srcProfile, "Default"), dstDefault);
+  for (const name of readdirSync(dstDefault)) {
+    if (CDP_CACHE_EXCLUDES.has(name)) Bun.spawnSync(["rm", "-rf", join(dstDefault, name)]);
+  }
+  for (const junk of ["SingletonLock", "SingletonCookie", "SingletonSocket", "LOCK", "LOG", "LOG.old"]) {
+    Bun.spawnSync(["rm", "-f", join(cfg.profileDir, junk)]);
+    Bun.spawnSync(["rm", "-f", join(dstDefault, junk)]);
+  }
+  const prefs = join(dstDefault, "Preferences");
+  try {
+    const j = JSON.parse(readFileSync(prefs, "utf8")) as Record<string, unknown>;
+    // Chrome 136+ also gates DevTools on the profile being the default one; make
+    // sure nothing in the clone still claims to be it.
+    j.exit_type = "Normal";
+    j.exited_cleanly = true;
+    writeFileSync(prefs, JSON.stringify(j));
+  } catch {}
+  log(`seeded automation profile from ${cfg.srcProfile}`);
+}
+
+async function cdpVersion(port: number): Promise<{ Browser?: string } | null> {
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(2000) });
+    return (await r.json()) as { Browser?: string };
+  } catch {
+    return null;
+  }
+}
+
+async function ensureChrome(cfg: Config): Promise<void> {
+  if (await cdpVersion(cfg.cdpPort)) return;
+  seedProfile(cfg, false);
+  mkdirSync(LOG_DIR, { recursive: true });
+  const args = [
+    cfg.chromeBin,
+    `--user-data-dir=${cfg.profileDir}`,
+    `--remote-debugging-port=${cfg.cdpPort}`,
+    "--remote-allow-origins=*",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-session-crashed-bubble",
+    "--disable-features=Translate",
+    "--window-size=1180,880",
+    "--window-position=120,80",
+    "--no-startup-window",
+  ];
+  const chromeLog = join(LOG_DIR, "chrome.log");
+  const fd = openSync(chromeLog, "a");
+  const child = Bun.spawn(args, {
+    env: { ...process.env, DISPLAY: cfg.display },
+    stdout: fd,
+    stderr: fd,
+    detached: true,
+  });
+  child.unref();
+  log(`launched chrome pid=${child.pid} port=${cfg.cdpPort}`);
+  for (let i = 0; i < 60; i++) {
+    if (await cdpVersion(cfg.cdpPort)) return;
+    await Bun.sleep(250);
+  }
+  throw new Error(`chrome did not expose CDP on ${cfg.cdpPort} (see ${join(LOG_DIR, "chrome.log")})`);
+}
+
+// ---------------------------------------------------------------------------
+// Minimal CDP client
+// ---------------------------------------------------------------------------
+
+type CdpEvent = { method: string; params?: unknown };
+
+class Cdp {
+  #ws: WebSocket;
+  #id = 0;
+  #pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+  #listeners = new Map<string, Set<(p: any) => void>>();
+
+  private constructor(ws: WebSocket) {
+    this.#ws = ws;
+  }
+
+  static async connect(url: string): Promise<Cdp> {
+    const ws = new WebSocket(url);
+    await new Promise<void>((resolve, reject) => {
+      ws.onopen = () => resolve();
+      ws.onerror = () => reject(new Error(`websocket connect failed: ${url}`));
+      setTimeout(() => reject(new Error(`websocket connect timeout: ${url}`)), 8000);
+    });
+    const cdp = new Cdp(ws);
+    ws.onmessage = (ev) => {
+      let msg: any;
+      try {
+        msg = JSON.parse(String(ev.data));
+      } catch {
+        return;
+      }
+      if (msg.id !== undefined) {
+        const p = cdp.#pending.get(msg.id);
+        if (p) {
+          cdp.#pending.delete(msg.id);
+          if (msg.error) p.reject(new Error(`${msg.error.message ?? JSON.stringify(msg.error)}`));
+          else p.resolve(msg.result);
+        }
+        return;
+      }
+      if (msg.method) {
+        for (const cb of cdp.#listeners.get(msg.method) ?? []) {
+          try {
+            cb(msg.params);
+          } catch {}
+        }
+      }
+    };
+    return cdp;
+  }
+
+  cmd<T = any>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    const id = ++this.#id;
+    return new Promise<T>((resolve, reject) => {
+      this.#pending.set(id, { resolve, reject });
+      this.#ws.send(JSON.stringify({ id, method, params }));
+      setTimeout(() => {
+        if (this.#pending.delete(id)) reject(new Error(`cdp timeout: ${method}`));
+      }, 30_000);
+    });
+  }
+
+  on(method: string, cb: (p: any) => void): void {
+    if (!this.#listeners.has(method)) this.#listeners.set(method, new Set());
+    this.#listeners.get(method)!.add(cb);
+  }
+
+  close(): void {
+    try {
+      this.#ws.close();
+    } catch {}
+  }
+}
+
+type PageTarget = { id: string; url: string; webSocketDebuggerUrl: string; type: string };
+
+async function pageTargets(port: number): Promise<PageTarget[]> {
+  const r = await fetch(`http://127.0.0.1:${port}/json`, { signal: AbortSignal.timeout(4000) });
+  return ((await r.json()) as PageTarget[]).filter((t) => t.type === "page");
+}
+
+async function openTab(port: number, url: string): Promise<PageTarget> {
+  const r = await fetch(`http://127.0.0.1:${port}/json/new?${new URLSearchParams({ url })}`, {
+    method: "PUT",
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!r.ok) throw new Error(`Target.createTarget failed: ${r.status} ${await r.text()}`);
+  return (await r.json()) as PageTarget;
+}
+
+const PROBE = `(() => {
+  const vis = (el) => {
+    const r = el.getBoundingClientRect();
+    const s = getComputedStyle(el);
+    return r.width > 1 && r.height > 1 && s.visibility !== "hidden" && s.display !== "none" && parseFloat(s.opacity || "1") > 0.05;
+  };
+  const box = (el) => {
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  };
+  const label = (el) => ((el.innerText || el.getAttribute("aria-label") || el.value || el.textContent || "").trim().replace(/\\s+/g, " ").slice(0, 140));
+  const clickable = [...document.querySelectorAll("button,[role=button],[role=link],[role=option],[role=menuitem],a[href],a,input[type=submit],li[tabindex]")]
+    .filter(vis).map((el) => ({ tag: el.tagName.toLowerCase(), text: label(el), aria: el.getAttribute("aria-label") || "",
+      href: el.getAttribute("href") || "", id: el.id || "", ...box(el) })).slice(0, 120);
+  const inputs = [...document.querySelectorAll("input")].filter(vis)
+    .map((el) => ({ type: (el.type || "text").toLowerCase(), name: el.name || "", id: el.id || "",
+      aria: el.getAttribute("aria-label") || "", ...box(el) })).slice(0, 20);
+  const headings = [...document.querySelectorAll("h1,h2,[role=heading]")]
+    .filter(vis).map((el) => (el.innerText || "").trim().replace(/\\s+/g, " ").slice(0, 160)).slice(0, 6);
+  return JSON.stringify({ url: location.href, title: document.title, headings, clickable, inputs,
+    body: document.body ? (document.body.innerText || "").replace(/\\s+/g, " ").slice(0, 900) : "" });
+})()`;
+
+type Probe = {
+  url: string;
+  title: string;
+  headings: string[];
+  clickable: Array<{ tag: string; text: string; aria: string; href: string; id: string; x: number; y: number }>;
+  inputs: Array<{ type: string; name: string; id: string; aria: string; x: number; y: number }>;
+  body: string;
+};
+
+async function probe(cdp: Cdp): Promise<Probe | null> {
+  try {
+    const r = await cdp.cmd("Runtime.evaluate", {
+      expression: PROBE,
+      returnByValue: true,
+      awaitPromise: false,
+      userGesture: false,
+    });
+    if (r?.exceptionDetails) return null;
+    return JSON.parse(String(r.result.value)) as Probe;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Google renders the account chip as a component whose role is not reliably a
+ * link, so fall back to locating the deepest visible element containing the
+ * text and clicking its centre with real mouse events.
+ */
+async function clickText(cdp: Cdp, text: string): Promise<boolean> {
+  const expr = `(() => {
+    const needle = ${JSON.stringify(text)}.toLowerCase();
+    const vis = (el) => {
+      const r = el.getBoundingClientRect();
+      const s = getComputedStyle(el);
+      return r.width > 4 && r.height > 4 && s.visibility !== "hidden" && s.display !== "none";
+    };
+    let best = null;
+    for (const el of document.querySelectorAll("*")) {
+      if (!vis(el)) continue;
+      const t = (el.innerText || el.textContent || "").toLowerCase();
+      if (!t.includes(needle)) continue;
+      const nested = [...el.children].some((c) => (c.innerText || c.textContent || "").toLowerCase().includes(needle));
+      if (nested) continue;
+      best = el;
+    }
+    if (!best) return "";
+    best.scrollIntoView({ block: "center", inline: "center" });
+    const r = best.getBoundingClientRect();
+    return Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2);
+  })()`;
+  try {
+    const r = await cdp.cmd("Runtime.evaluate", { expression: expr, returnByValue: true });
+    const at = String(r?.result?.value ?? "");
+    if (!at.includes(",")) return false;
+    const [x, y] = at.split(",").map(Number);
+    await clickAt(cdp, x, y);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function clickAt(cdp: Cdp, x: number, y: number): Promise<void> {
+  await cdp.cmd("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, buttons: 0 });
+  await cdp.cmd("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
+  await cdp.cmd("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 });
+}
+
+async function typeText(cdp: Cdp, text: string): Promise<void> {
+  await cdp.cmd("Input.insertText", { text });
+}
+
+// ---------------------------------------------------------------------------
+// The sign-in state machine
+// ---------------------------------------------------------------------------
+
+type Outcome = { ok: boolean; detail: string };
+
+function readPassword(): string | null {
+  const p = join(HOME, ".config/omp-authd/google-password");
+  if (!existsSync(p)) return null;
+  const v = readFileSync(p, "utf8").trim();
+  return v.length ? v : null;
+}
+
+function alreadyProcessed(state: string): boolean {
+  if (!existsSync(DONE_FILE)) return false;
+  return readFileSync(DONE_FILE, "utf8").split("\n").includes(state);
+}
+
+function markProcessed(state: string): void {
+  mkdirSync(STATE_DIR, { recursive: true });
+  const lines = existsSync(DONE_FILE) ? readFileSync(DONE_FILE, "utf8").split("\n") : [];
+  lines.push(state);
+  writeFileSync(DONE_FILE, lines.slice(-200).join("\n"));
+}
+
+// Exact accessible labels of the confirmation buttons Google's screens use. The
+// first-party native-app warning ("Make sure that you downloaded this app from
+// Google") answers with "Sign in"; consent screens answer with "Continue".
+const CONSENT_LABELS = ["continue", "sign in", "log in", "allow", "authorize", "next", "yes", "done", "accept", "agree"];
+
+/**
+ * Drive one authorize URL to the loopback callback.
+ */
+async function drive(cfg: Config, authorizeUrl: string): Promise<Outcome> {
+  const u = new URL(authorizeUrl);
+  const redirectUri = u.searchParams.get("redirect_uri") ?? "";
+  const state = u.searchParams.get("state") ?? "";
+  let callbackHost = "127.0.0.1";
+  let callbackPath = "/oauth-callback";
+  try {
+    const cb = new URL(redirectUri);
+    callbackHost = cb.hostname;
+    callbackPath = cb.pathname;
+  } catch {}
+
+  // Always a fresh tab: a reused target may belong to a Chrome instance that has
+  // since been restarted, whose websocket url is dead.
+  const target = await openTab(cfg.cdpPort, authorizeUrl);
+  const cdp = await Cdp.connect(target.webSocketDebuggerUrl);
+  await cdp.cmd("Page.enable");
+  await cdp.cmd("Runtime.enable");
+  // /json/new can hand back a target that is still about:blank when Chrome is
+  // mid-startup, so navigate explicitly and re-navigate if the tab never moves.
+  await cdp.cmd("Page.navigate", { url: authorizeUrl }).catch(() => {});
+  let navigations = 1;
+
+  const deadline = Date.now() + cfg.timeoutMs;
+  const seen = new Map<string, number>();
+  let seeded = false;
+  let chooserProbes = 0;
+  let manualNoticeAt = 0;
+  const password = readPassword();
+
+  try {
+    while (Date.now() < deadline) {
+      await Bun.sleep(900);
+      const p = await probe(cdp);
+      if (!p) continue;
+
+      if ((p.url === "about:blank" || p.url === "") && navigations < 4) {
+        navigations++;
+        await cdp.cmd("Page.navigate", { url: authorizeUrl }).catch(() => {});
+        continue;
+      }
+
+      // 1. loopback callback reached -> omp owns the credential from here
+      let here: URL | null = null;
+      try {
+        here = new URL(p.url);
+      } catch {}
+      if (here && (here.hostname === callbackHost || here.hostname === "localhost") && here.pathname === callbackPath) {
+        if (here.searchParams.has("error")) {
+          return { ok: false, detail: `callback reported ${here.searchParams.get("error")}` };
+        }
+        return { ok: true, detail: `reached ${callbackHost}${callbackPath}` };
+      }
+      if (here && (here.searchParams.get("error") || here.searchParams.get("access_denied"))) {
+        return { ok: false, detail: `${here.searchParams.get("error") ?? "access_denied"} — ${p.body.slice(0, 160)}` };
+      }
+      if (/authentication successful|successfully logged in/i.test(p.body)) {
+        return { ok: true, detail: "callback page confirmed" };
+      }
+
+      // 2. password challenge
+      const pw = p.inputs.find((i) => i.type === "password");
+      if (pw) {
+        if (!password) {
+          if (Date.now() - manualNoticeAt > 15_000) {
+            manualNoticeAt = Date.now();
+            notify("omp-authd: Google wants a password", `Type it into the Chrome window, or save it to ~/.config/omp-authd/google-password (${cfg.account})`);
+          }
+          continue;
+        }
+        await clickAt(cdp, pw.x, pw.y);
+        await cdp.cmd("Input.dispatchKeyEvent", { type: "keyDown", key: "a", code: "KeyA", modifiers: 2, windowsVirtualKeyCode: 65 });
+        await cdp.cmd("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", modifiers: 2, windowsVirtualKeyCode: 65 });
+        await typeText(cdp, password);
+        const next = p.clickable.find((c) => /^(next|sign in|log in)$/i.test(c.text));
+        if (next) await clickAt(cdp, next.x, next.y);
+        else await cdp.cmd("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+        log("submitted password");
+        continue;
+      }
+
+      // 3. account chooser. Google renders the account list a beat after the
+      // shell, so keep probing before concluding the clone lost its session.
+      const chooser = /accountchooser|choose an account|sign in to continue/i.test(p.url + " " + p.headings.join(" "));
+      if (chooser) {
+        if (!cfg.account) {
+          return {
+            ok: false,
+            detail: 'the chooser needs an account: set "account" in ~/.config/omp-authd/config.json (or OMP_AUTHD_ACCOUNT)',
+          };
+        }
+        chooserProbes++;
+        const enc = encodeURIComponent(cfg.account);
+        const mine = p.clickable.find(
+          (c) => c.text.includes(cfg.account) || c.href.includes(enc) || c.href.toLowerCase().includes(cfg.account.toLowerCase()),
+        );
+        if (mine) {
+          await clickAt(cdp, mine.x, mine.y);
+          log(`picked account ${cfg.account}`);
+          continue;
+        }
+        if (await clickText(cdp, cfg.account)) {
+          log(`picked account ${cfg.account} by text anchor`);
+          continue;
+        }
+        if (chooserProbes < 14) {
+          if (chooserProbes === 6) log(`chooser still has no ${cfg.account} after 6s: "${p.body.slice(0, 120)}"`);
+          continue;
+        }
+        if (!seeded) {
+          seeded = true;
+          log("target account missing from chooser; re-seeding profile from live Chrome");
+          return { ok: false, detail: RETRY_SEED };
+        }
+        return { ok: false, detail: `chooser has no ${cfg.account}; body="${p.body.slice(0, 160)}"` };
+      }
+
+      // 4. generic confirmations: first-party native-app warning, consent, 2fa "other prompt"
+      const hit = CONSENT_LABELS.map((l) => ({ l, c: p.clickable.find((k) => k.text.toLowerCase() === l) }))
+        .find((x) => x.c !== undefined);
+      if (hit?.c) {
+        const sig = `${hit.l}|${p.headings[0] ?? p.title}`;
+        const times = (seen.get(sig) ?? 0) + 1;
+        seen.set(sig, times);
+        if (times === 1) {
+          await clickAt(cdp, hit.c.x, hit.c.y);
+          log(`clicked "${hit.c.text}" (${p.headings[0] ?? p.title})`);
+        } else if (times === 2 && (await clickText(cdp, hit.c.text))) {
+          log(`re-clicked "${hit.c.text}" by text anchor`);
+        } else if (times === 3) {
+          await cdp.cmd("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+          log(`pressed Enter on "${hit.c.text}" screen`);
+        } else if (times > 5) {
+          return { ok: false, detail: `stuck on "${p.headings[0] ?? p.title}" — "${p.body.slice(0, 160)}"` };
+        }
+        continue;
+      }
+
+      // 5. screens that need the human (passkey, SMS, captcha, "couldn't verify")
+      if (/passkey|verification code|couldn.t verify|unusual activity|choose your device|not you\?/i.test(p.body)) {
+        if (Date.now() - manualNoticeAt > 20_000) {
+          manualNoticeAt = Date.now();
+          notify("omp-authd: Google needs a manual step", p.headings[0] ?? p.title);
+        }
+        continue;
+      }
+
+      const sig = `wait:${p.url.slice(0, 60)}`;
+      seen.set(sig, (seen.get(sig) ?? 0) + 1);
+      if ((seen.get(sig) ?? 0) > 40) return { ok: false, detail: `no actionable control at ${p.url.slice(0, 90)} — "${p.body.slice(0, 160)}"` };
+    }
+    return { ok: false, detail: `timed out after ${cfg.timeoutMs}ms` };
+  } finally {
+    cdp.close();
+  }
+}
+
+/** Sentinel: the caller re-clones the profile and drives the URL once more. */
+const RETRY_SEED = "__reseed__";
+
+async function stopChrome(cfg: Config): Promise<void> {
+  const targets = await pageTargets(cfg.cdpPort).catch(() => [] as PageTarget[]);
+  if (!targets.length && !(await cdpVersion(cfg.cdpPort))) return;
+  const out = Bun.spawnSync(["pkill", "-f", `user-data-dir=${cfg.profileDir}`]);
+  log(`stopped automation chrome (pkill status=${out.exitCode})`);
+  await Bun.sleep(1200);
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
+function isAuthUrl(url: string): boolean {
+  // the real endpoint carries the version segment: /o/oauth2/v2/auth
+  return /accounts\.google\.com\/o\/oauth2\/(?:v\d+\/)?auth/i.test(url);
+}
+
+async function cmdComplete(url: string, cfg: Config): Promise<number> {
+  url = url.trim();
+  if (!isAuthUrl(url)) {
+    log(`refusing to drive non-Google-authorize url: ${url.slice(0, 120)}`);
+    return 2;
+  }
+  const state = new URL(url).searchParams.get("state") ?? "";
+  if (state && alreadyProcessed(state)) {
+    log(`state ${state} already handled; skipping`);
+    return 0;
+  }
+  await ensureChrome(cfg);
+  log(`driving authorize url state=${state || "?"}`);
+  let res = await drive(cfg, url);
+  if (!res.ok && res.detail === RETRY_SEED) {
+    await stopChrome(cfg);
+    await Bun.sleep(1500);
+    seedProfile(cfg, true);
+    await ensureChrome(cfg);
+    res = await drive(cfg, url);
+  }
+  if (res.ok && state) markProcessed(state);
+  log(res.ok ? `SUCCESS ${res.detail}` : `FAILED ${res.detail}`);
+  if (!res.ok) notify("omp-authd: sign-in failed", res.detail.slice(0, 200));
+  return res.ok ? 0 : 1;
+}
+
+async function cmdLogin(provider: string, cfg: Config, extraArgs: string[]): Promise<number> {
+  const child = Bun.spawn(["omp", "auth-broker", "login", provider, ...extraArgs], {
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, DISPLAY: cfg.display },
+  });
+  // omp's login prompt reads stdin. Bun hands back a FileSink; simply never
+  // ending it keeps the pipe open so readline does not see EOF mid-flow.
+  const stdin = child.stdin as unknown as { write?: (d: string) => void; end?: () => void };
+
+  let url = "";
+  let tail = "";
+  const decoder = new TextDecoder();
+  const pump = async (stream: ReadableStream<Uint8Array> | null, sink: "stdout" | "stderr") => {
+    if (!stream) return;
+    for await (const chunk of stream) {
+      const text = decoder.decode(chunk as Uint8Array, { stream: true });
+      process[sink].write(text);
+      // the URL can straddle chunk boundaries, so search a rolling window
+      tail = (tail + text).slice(-16_000);
+      if (!url) {
+        const m = tail.match(/https:\/\/accounts\.google\.com\/o\/oauth2\/(?:v\d+\/)?auth\S+/);
+        if (m) url = m[0];
+      }
+    }
+  };
+  const readers = [pump(child.stdout as ReadableStream<Uint8Array>, "stdout"), pump(child.stderr as ReadableStream<Uint8Array>, "stderr")];
+
+  for (let i = 0; i < 120 && !url; i++) await Bun.sleep(250);
+  if (!url) {
+    child.kill();
+    log("no authorize URL on omp stdout");
+    return 1;
+  }
+  const code = await cmdComplete(url, cfg);
+  try {
+    stdin.end?.();
+  } catch {}
+  const exit = await child.exited;
+  await Promise.allSettled(readers);
+  log(`omp auth-broker login ${provider} exited ${exit} (drive=${code})`);
+  return exit === 0 ? 0 : exit || code;
+}
+
+async function cmdStatus(cfg: Config): Promise<void> {
+  const v = await cdpVersion(cfg.cdpPort);
+  console.log(`cdp ${cfg.cdpPort}: ${v ? `UP (${v.Browser})` : "down"}`);
+  console.log(`profile: ${cfg.profileDir}${existsSync(join(cfg.profileDir, "Default")) ? " (seeded)" : " (missing)"}`);
+  console.log(`source:  ${cfg.srcProfile}`);
+  console.log(`account: ${cfg.account || "(unset — required when Google shows the account chooser)"}`);
+  console.log(`password file: ${existsSync(join(HOME, ".config/omp-authd/google-password")) ? "present" : "absent"}`);
+  const db = join(HOME, ".omp/agent/agent.db");
+  if (existsSync(db)) {
+    const r = Bun.spawnSync(["sqlite3", db, "select provider||' '||identity_key||' expires='||datetime(json_extract(data,'$.expires')/1000,'unixepoch') from auth_credentials where credential_type='oauth' order by provider"]);
+    console.log("oauth credentials:\n  " + r.stdout.toString().trim().split("\n").join("\n  "));
+  }
+}
+
+async function main(): Promise<void> {
+  const [cmd, ...rest] = process.argv.slice(2);
+  const cfg = loadConfig();
+  mkdirSync(LOG_DIR, { recursive: true });
+  switch (cmd) {
+    case "complete": {
+      const url = rest[0] ?? "";
+      if (!url) {
+        console.error("usage: omp-authd complete <authorize-url>");
+        process.exit(2);
+      }
+      process.exit(await cmdComplete(url, cfg));
+      break;
+    }
+    case "login": {
+      const provider = rest[0];
+      if (!provider) {
+        console.error("usage: omp-authd login <provider> [-- extra omp args]");
+        process.exit(2);
+      }
+      process.exit(await cmdLogin(provider, cfg, rest.slice(1)));
+      break;
+    }
+    case "seed":
+      seedProfile(cfg, rest.includes("--force"));
+      console.log(`profile: ${cfg.profileDir}`);
+      break;
+    case "chrome-stop":
+      await stopChrome(cfg);
+      break;
+    case "status":
+      await cmdStatus(cfg);
+      break;
+    case "watch":
+      console.error("the pane watcher lives in ~/.local/bin/omp-authd-watch");
+      process.exit(2);
+      break;
+    default:
+      console.log(`omp-authd — drive omp provider OAuth logins through real Chrome over CDP
+
+  omp-authd complete <authorize-url>   drive a printed authorize URL to completion
+  omp-authd login <provider>           run 'omp auth-broker login <provider>' and finish it
+  omp-authd seed [--force]             (re)clone ~/.config/google-chrome into the CDP profile
+  omp-authd status                     CDP + profile + credential state
+  omp-authd chrome-stop                close the automation Chrome
+
+config: ~/.config/omp-authd/config.json   log: ${LOG_FILE}`);
+  }
+}
+
+main().catch((e) => {
+  log(`fatal: ${err(e)}`);
+  process.exit(1);
+});

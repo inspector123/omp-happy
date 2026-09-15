@@ -1,0 +1,18 @@
+# Repo source of ~/.config/systemd/user/omp-authd-watch.service; scripts/omp-authd/install.sh symlinks it.
+[Unit]
+Description=Drive Google OAuth authorize URLs seen in tmux panes through omp-authd
+Documentation=file://%h/.local/bin/omp-authd-watch
+
+[Service]
+Type=simple
+# absolute interpreter + PATH: systemd's default PATH has neither ~/.bun/bin nor ~/.local/bin
+ExecStart=%h/.bun/bin/bun %h/.local/bin/omp-authd-watch
+Environment=PATH=%h/.local/bin:%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DISPLAY=:0
+Restart=on-failure
+RestartSec=5
+Nice=10
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

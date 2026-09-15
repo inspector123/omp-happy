@@ -1,0 +1,138 @@
+#!/usr/bin/env bun
+/**
+ * omp-authd-watch — belt-and-braces companion to the xdg-open shim.
+ *
+ * Some flows only *print* the authorize URL (e.g. `omp auth-broker login` run by
+ * hand, or a session whose opener was suppressed). This watcher polls every
+ * tmux pane, pulls Google authorize URLs out of the scrollback, and hands them
+ * to `omp-authd complete`.
+ *
+ * Two guards keep it from acting on stale scrollback:
+ *   1. the callback port in redirect_uri must actually be listening, i.e. a live
+ *      OAuth flow is waiting for the browser;
+ *   2. each `state` value is only ever driven once (persisted).
+ *
+ * Installed and run by scripts/omp-authd/install.sh, which symlinks this file to
+ * ~/.local/bin/omp-authd-watch and enables omp-authd-watch.service.
+ */
+
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+const HOME = homedir();
+const POLL_MS = Number(process.env.OMP_AUTHD_POLL_MS ?? 1500);
+const HISTORY = Number(process.env.OMP_AUTHD_HISTORY ?? 400);
+const LOG = join(HOME, ".cache/omp-authd/logs/watch.log");
+const DONE = join(HOME, ".cache/omp-authd/processed-states.txt");
+
+/**
+ * The driver sits next to this file in the repo. When installed as a symlink,
+ * import.meta.dir resolves through it, so the service never depends on PATH.
+ */
+const DRIVER = existsSync(join(import.meta.dir, "omp-authd")) ? join(import.meta.dir, "omp-authd") : "omp-authd";
+
+function log(msg: string): void {
+  mkdirSync(join(LOG, ".."), { recursive: true });
+  const line = `${new Date().toISOString()} ${msg}`;
+  appendFileSync(LOG, line + "\n");
+  process.stderr.write(`[omp-authd-watch] ${line}\n`);
+}
+
+function rememberState(state: string): void {
+  appendFileSync(DONE, state + "\n");
+}
+
+function run(cmd: string[]): string {
+  const r = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "ignore" });
+  return r.stdout?.toString() ?? "";
+}
+
+function listeningPorts(): Set<string> {
+  const out = run(["ss", "-ltnH"]);
+  const ports = new Set<string>();
+  for (const line of out.split("\n")) {
+    const m = line.match(/:(\d+)\s/);
+    if (m) ports.add(m[1]);
+  }
+  return ports;
+}
+
+function processedStates(): Set<string> {
+  try {
+    return new Set(readFileSync(DONE, "utf8").split("\n").filter(Boolean));
+  } catch {
+    return new Set();
+  }
+}
+
+type Pane = { id: string; cmd: string };
+
+function panes(): Pane[] {
+  const out = run(["tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}"]);
+  return out
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => {
+      const [id, cmd] = l.split("\t");
+      return { id, cmd };
+    });
+}
+
+/**
+ * tmux hard-wraps long lines, so the URL is split across rows with no separator.
+ * Joining the whole capture removes those breaks; the pattern then stops at the
+ * last parameter omp appends (prompt=consent / access_type=offline).
+ */
+function extractUrls(text: string): string[] {
+  const flat = text.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").replace(/\s+/g, "");
+  // ordered longest-first so the canonical `access_type=offline&prompt=consent`
+  // tail is kept whole; a partial URL without prompt=consent changes the flow
+  const re = /https:\/\/accounts\.google\.com\/o\/oauth2\/(?:v\d+\/)?auth.*?(?:access_type=offline&prompt=consent|access_type=offline|prompt=consent)/g;
+  return [...flat.matchAll(re)].map((m) => m[0]);
+}
+
+function callbackPort(url: string): string | null {
+  const m = url.match(/redirect_uri=([^&]+)/);
+  if (!m) return null;
+  const dec = decodeURIComponent(m[1]);
+  const p = dec.match(/:(\d+)/);
+  return p ? p[1] : null;
+}
+
+async function main(): Promise<void> {
+  log(`watching ${panes().length} panes every ${POLL_MS}ms`);
+  const seen = processedStates();
+  for (;;) {
+    const ports = listeningPorts();
+    for (const pane of panes()) {
+      const text = run(["tmux", "capture-pane", "-p", "-e", "-S", `-${HISTORY}`, "-t", pane.id]);
+      if (!text.includes("accounts.google.com")) continue;
+      for (const url of extractUrls(text)) {
+        const state = url.match(/[?&]state=([0-9a-f]{16,})/)?.[1] ?? "";
+        if (!state || seen.has(state)) continue;
+        const port = callbackPort(url);
+        if (!port || !ports.has(port)) {
+          seen.add(state); // nothing is waiting for this flow; never revisit
+          rememberState(state);
+          continue;
+        }
+        log(`pane ${pane.id} (${pane.cmd}) has a live authorize url state=${state.slice(0, 12)} port=${port}`);
+        seen.add(state); // in-memory only: the driver persists on success
+        const child = Bun.spawn([DRIVER, "complete", url], { stdout: "ignore", stderr: "ignore" });
+        child.unref();
+        void child.exited.then((code) => {
+          log(`drive state=${state.slice(0, 12)} exit=${code}`);
+          // a failed drive must not be retried from scrollback on every restart
+          if (code !== 0) rememberState(state);
+        });
+      }
+    }
+    await Bun.sleep(POLL_MS);
+  }
+}
+
+main().catch((e) => {
+  log(`fatal: ${e instanceof Error ? e.message : String(e)}`);
+  process.exit(1);
+});

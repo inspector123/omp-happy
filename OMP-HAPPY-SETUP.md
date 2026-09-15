@@ -656,6 +656,50 @@ scripts/omp-run.sh
 
 uses the generic ACP integration and does not validate the native Pi extension bridge.
 
+## Optional: unattended Google sign-in
+
+`google-antigravity` and `google-gemini-cli` credentials expire every few hours, and each
+renewal wants a browser click-through. `scripts/omp-authd/` removes that: it drives a real
+Google Chrome over the DevTools protocol, picks the configured account, clicks the consent
+screens, and lets omp's loopback callback store the credential.
+
+```text
+scripts/omp-authd/install.sh
+    |-- ~/.local/bin/omp-authd                      driver: sign-in state machine over CDP
+    |-- ~/.local/bin/omp-authd-watch                scans tmux panes for authorize URLs
+    |-- ~/.local/bin/xdg-open                       intercepts omp's browser opener
+    |-- ~/.omp/agent/extensions/oauth-autopilot.ts  /gauth plus re-auth on credential_disabled
+    `-- ~/.config/systemd/user/omp-authd-watch.service
+```
+
+Every install is a symlink, so this directory is the live source. The driver does the
+browser work and runs with no omp session. The extension adds the two things only a
+session can do: a `/gauth` command, and an automatic retry when omp disables a credential
+after a hard auth rejection. Disable the extension and the rest still works; remove the
+shim and the driver has nothing to hook.
+
+```bash
+cd <repo>
+./scripts/omp-authd/install.sh      # links everything, moves prior files to *.pre-repo.bak
+```
+
+Name the Google account before the first sign-in. Google shows an account chooser, and the
+driver refuses to guess an identity:
+
+```bash
+$EDITOR ~/.config/omp-authd/config.json      # "account": "you@gmail.com"
+./scripts/omp-authd/omp-authd login google-antigravity
+./scripts/omp-authd/omp-authd status
+```
+
+Chrome 136+ refuses `--remote-debugging-port` on a default profile, so the driver clones
+`~/.config/google-chrome` to `~/.cache/omp-authd/chrome-profile`; that clone carries the
+Google session cookies, which keeps the flow to two clicks with no password. Run
+`omp-authd seed --force` when the chooser stops listing the account. Logs live in
+`~/.cache/omp-authd/logs/`. For one sign-in by hand, prefix the command with
+`OMP_AUTHD_DISABLE=1`. To back the whole thing out, including the `xdg-open` shim:
+`./scripts/omp-authd/install.sh uninstall`.
+
 ## Security and backup checklist
 
 - Use HTTPS for any public server.
