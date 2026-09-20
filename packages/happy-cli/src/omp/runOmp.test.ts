@@ -363,7 +363,7 @@ describe('runOmp', () => {
     await runPromise;
   });
 
-  it('launches native omp through node-pty with the bundled extension bridge', async () => {
+  it('launches native omp through node-pty with the bridge extension', async () => {
     vi.useFakeTimers();
 
     const runPromise = runOmp({
@@ -375,7 +375,7 @@ describe('runOmp', () => {
 
     expect(mocks.mockSpawnPty).toHaveBeenCalledWith(
       expect.stringMatching(/(?:^|[/\\])omp(?:\.exe)?$/),
-      ['--allow-home', '--extension', expect.stringMatching(/scripts\/omp-happy-bridge\.mjs$/), '--extension', expect.stringMatching(/scripts\/omp-session-irc\.ts$/), '--model', 'test-model', '--config', expect.stringMatching(/scripts\/omp-happy-config\.overlay\.yml$/)],
+      ['--allow-home', '--extension', expect.stringMatching(/scripts\/omp-happy-bridge\.mjs$/), '--model', 'test-model', '--config', expect.stringMatching(/scripts\/omp-happy-config\.overlay\.yml$/)],
       expect.objectContaining({
         cwd: process.cwd(),
         env: expect.objectContaining({
@@ -437,6 +437,37 @@ describe('runOmp', () => {
     child.emitExit(0);
     await vi.advanceTimersByTimeAsync(200);
     await runPromise;
+  });
+
+  it('bundles the session IRC extension only when it is explicitly enabled', async () => {
+    vi.useFakeTimers();
+    const previous = process.env.OMP_HAPPY_SESSION_IRC;
+    process.env.OMP_HAPPY_SESSION_IRC = '1';
+    try {
+      const runPromise = runOmp({
+        credentials,
+        extraArgs: ['--model', 'test-model'],
+      });
+
+      await settleMicrotasks();
+
+      expect(mocks.mockSpawnPty).toHaveBeenCalledWith(
+        expect.stringMatching(/(?:^|[/\\])omp(?:\.exe)?$/),
+        ['--allow-home', '--extension', expect.stringMatching(/scripts\/omp-happy-bridge\.mjs$/), '--extension', expect.stringMatching(/scripts\/omp-session-irc\.ts$/), '--model', 'test-model', '--config', expect.stringMatching(/scripts\/omp-happy-config\.overlay\.yml$/)],
+        expect.objectContaining({ name: expect.any(String) }),
+      );
+
+      expect(mocks.mockSpawnPty).toHaveBeenCalledTimes(1);
+      child.emitExit(0);
+      await vi.advanceTimersByTimeAsync(200);
+      await runPromise;
+    } finally {
+      if (previous === undefined) {
+        delete process.env.OMP_HAPPY_SESSION_IRC;
+      } else {
+        process.env.OMP_HAPPY_SESSION_IRC = previous;
+      }
+    }
   });
 
   it('serves peer send and roster requests only from the primary bridge', async () => {

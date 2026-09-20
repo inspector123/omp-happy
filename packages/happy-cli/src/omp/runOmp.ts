@@ -480,10 +480,12 @@ function buildOmpArgs(opts: RunOmpOptions, extensionPath: string, configOverlayP
     (value): value is string => typeof value === 'string' && value.length > 0 && value !== 'undefined',
   );
   const args = ['--allow-home', '--extension', extensionPath, ...extraArgs, '--config', configOverlayPath];
-  // Bundle the session IRC extension next to the bridge so every omp child the
-  // CLI spawns, terminal or daemon-initiated, gets an agent-to-agent channel.
+  // The session IRC extension is opt-in: it gives an omp child an
+  // agent-to-agent channel, and auto-relaying replies between two sessions that
+  // both load it creates an echo loop that forces turns on both sides. Only
+  // spawn it when OMP_HAPPY_SESSION_IRC=1.
   const sessionIrcPath = join(dirname(extensionPath), SESSION_IRC_EXTENSION_FILE);
-  if (process.env.OMP_HAPPY_SESSION_IRC !== '0' && existsSync(sessionIrcPath)) {
+  if (process.env.OMP_HAPPY_SESSION_IRC === '1' && existsSync(sessionIrcPath)) {
     args.splice(3, 0, '--extension', sessionIrcPath);
   }
   if (opts.yolo && !args.includes('--auto-approve') && !args.includes('--approval-mode')) {
