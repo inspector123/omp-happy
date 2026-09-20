@@ -38,4 +38,11 @@ if [ "${1:-}" = "attach" ]; then
   exec node "$HAPPY_OMP_CLI" omp "$@"
 fi
 
-exec node "$HAPPY_OMP_CLI" omp -- --extension "$HOME/.omp/agent/extensions/tg_bridge.ts" "$@"
+# The Telegram bridge is an opt-in extension that only some machines install.
+# Pass it when present so a machine without it does not log a load failure.
+TG_BRIDGE="$HOME/.omp/agent/extensions/tg_bridge.ts"
+if [ -f "$TG_BRIDGE" ]; then
+  set -- --extension "$TG_BRIDGE" "$@"
+fi
+
+exec node "$HAPPY_OMP_CLI" omp -- "$@"
