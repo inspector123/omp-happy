@@ -1,7 +1,7 @@
 import { logger } from '@/ui/logger'
 import { EventEmitter } from 'node:events'
 import { io, Socket } from 'socket.io-client'
-import { AgentState, ClientToServerEvents, FileEventMessage, FileEventMessageSchema, Metadata, ServerToClientEvents, Session, Update, UserMessage, UserMessageSchema, Usage } from './types'
+import { AgentState, ClientToServerEvents, FileEventMessage, FileEventMessageSchema, Metadata, PeerMessageEvent, PeerMessageHistoryItem, PeerRosterEntry, ServerToClientEvents, Session, Update, UserMessage, UserMessageSchema, Usage } from './types'
 import { decodeBase64, decryptBlob, decrypt, encodeBase64, encrypt, encryptBlob } from './encryption';
 import { backoff, delay } from '@/utils/time';
 import { configuration } from '@/configuration';
@@ -20,6 +20,7 @@ import {
     type ClaudeSessionProtocolState,
 } from '@/claude/utils/sessionProtocolMapper';
 import { InvalidateSync } from '@/utils/sync';
+import { readPersistedSessions } from '@/persistence';
 import axios from 'axios';
 
 /**
@@ -77,6 +78,37 @@ type V3PostSessionMessagesResponse = {
         updatedAt: number;
     }>;
 };
+
+type PeerMessagesResponse = {
+    items: PeerMessageHistoryItem[];
+    hasMore: boolean;
+};
+
+type PeerSendResponse = {
+    id: string;
+    delivered: boolean;
+};
+
+type PeerSessionRecord = {
+    id: string;
+    active: boolean;
+    metadata?: string;
+};
+
+export function getPeerSessionTitle(
+    metadata: Partial<Metadata> | null | undefined,
+    sessionId: string,
+): string {
+    const summary = typeof metadata?.summary?.text === 'string'
+        ? metadata.summary.text.trim()
+        : '';
+    if (summary) return summary;
+
+    const host = typeof metadata?.host === 'string' ? metadata.host.trim() : '';
+    const path = typeof metadata?.path === 'string' ? metadata.path.trim() : '';
+    if (host && path) return `${host}:${path}`;
+    return host || path || sessionId;
+}
 
 type AttachmentUploadResult = {
     ref: string;
@@ -218,6 +250,8 @@ export class ApiSessionClient extends EventEmitter {
     private pendingMessageCallback: ((message: UserMessage) => void) | null = null;
     private pendingFileEvents: FileEventMessage[] = [];
     private pendingFileEventCallback: ((data: FileEventMessage) => void) | null = null;
+    private pendingPeerMessages: PeerMessageEvent[] = [];
+    private pendingPeerMessageCallback: ((message: PeerMessageEvent) => void) | null = null;
     private blobKey: Uint8Array | null = null;
     /**
      * In-flight attachment download promises that belong to the *current*
@@ -380,6 +414,17 @@ export class ApiSessionClient extends EventEmitter {
             }
         });
 
+        this.socket.on('ephemeral', (data) => {
+            if (data.type !== 'peer-message' || data.toSessionId !== this.sessionId) {
+                return;
+            }
+            if (this.pendingPeerMessageCallback) {
+                this.pendingPeerMessageCallback(data);
+            } else {
+                this.pendingPeerMessages.push(data);
+            }
+        });
+
         // DEATH
         this.socket.on('error', (error) => {
             logger.debug('[API] Socket error:', error);
@@ -403,6 +448,13 @@ export class ApiSessionClient extends EventEmitter {
         this.pendingFileEventCallback = callback;
         while (this.pendingFileEvents.length > 0) {
             callback(this.pendingFileEvents.shift()!);
+        }
+    }
+
+    onPeerMessage(callback: (data: PeerMessageEvent) => void) {
+        this.pendingPeerMessageCallback = callback;
+        while (this.pendingPeerMessages.length > 0) {
+            callback(this.pendingPeerMessages.shift()!);
         }
     }
 
@@ -567,6 +619,93 @@ export class ApiSessionClient extends EventEmitter {
             'Content-Type': 'application/json',
             'X-Happy-Client': `cli-coding-session/${configuration.currentCliVersion}`
         };
+    }
+
+    async sendPeerMessage(message: {
+        id: string;
+        fromTitle: string;
+        toSessionId: string;
+        body: string;
+        replyTo?: string | null;
+    }): Promise<PeerSendResponse> {
+        const response = await axios.post<PeerSendResponse>(
+            `${configuration.serverUrl}/v1/peer-messages`,
+            {
+                id: message.id,
+                fromSessionId: this.sessionId,
+                fromTitle: message.fromTitle,
+                toSessionId: message.toSessionId,
+                body: message.body,
+                replyTo: message.replyTo ?? null,
+            },
+            {
+                headers: this.authHeaders(),
+                timeout: 60000,
+            },
+        );
+        return response.data;
+    }
+
+    async listPeerSessions(): Promise<PeerRosterEntry[]> {
+        const response = await axios.get<{ sessions: PeerSessionRecord[] }>(
+            `${configuration.serverUrl}/v1/sessions`,
+            {
+                headers: this.authHeaders(),
+                timeout: 60000,
+            },
+        );
+        const persistedSessions = readPersistedSessions();
+        const records = Array.isArray(response.data.sessions) ? response.data.sessions : [];
+
+        return records.map((record) => {
+            const persisted = persistedSessions[record.id];
+            let metadata: Partial<Metadata> | null = record.id === this.sessionId
+                ? this.metadata
+                : persisted?.metadata ?? null;
+            const encryption = record.id === this.sessionId
+                ? { key: this.encryptionKey, variant: this.encryptionVariant }
+                : persisted
+                    ? { key: decodeBase64(persisted.encryptionKey), variant: persisted.encryptionVariant }
+                    : null;
+
+            if (record.metadata && encryption) {
+                try {
+                    const decrypted = decrypt(
+                        encryption.key,
+                        encryption.variant,
+                        decodeBase64(record.metadata),
+                    );
+                    if (typeof decrypted === 'object' && decrypted !== null) {
+                        metadata = decrypted as Partial<Metadata>;
+                    }
+                } catch {
+                    // The locally persisted metadata remains a useful fallback
+                    // when a stale key cannot decrypt the latest server record.
+                }
+            }
+
+            return {
+                sessionId: record.id,
+                title: getPeerSessionTitle(metadata, record.id),
+                active: record.active === true,
+                machineId: typeof metadata?.machineId === 'string' ? metadata.machineId : null,
+            };
+        });
+    }
+
+    async getPeerMessages(limit: number = 200): Promise<PeerMessageHistoryItem[]> {
+        const response = await axios.get<PeerMessagesResponse>(
+            `${configuration.serverUrl}/v1/peer-messages`,
+            {
+                params: {
+                    sessionId: this.sessionId,
+                    limit,
+                },
+                headers: this.authHeaders(),
+                timeout: 60000,
+            },
+        );
+        return Array.isArray(response.data.items) ? response.data.items : [];
     }
 
     private routeIncomingMessage(message: unknown) {

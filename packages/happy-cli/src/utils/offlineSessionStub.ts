@@ -40,6 +40,12 @@ export function createOfflineSessionStub(sessionTag: string): ApiSessionClient {
         keepAlive: () => {},
         sendSessionEvent: () => {},
         sendSessionDeath: () => {},
+        getMetadata: () => null,
+        sendPeerMessage: async () => {
+            throw new Error('Happy server unavailable');
+        },
+        listPeerSessions: async () => [],
+        getPeerMessages: async () => [],
         updateLifecycleState: () => {},
         requestControlTransfer: async () => {},
         flush: async () => {},
@@ -47,6 +53,7 @@ export function createOfflineSessionStub(sessionTag: string): ApiSessionClient {
         updateMetadata: () => {},
         updateAgentState: () => {},
         onUserMessage: () => {},
+        onPeerMessage: () => {},
         rpcHandlerManager: {
             registerHandler: () => {}
         }

@@ -39,6 +39,34 @@ export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | '
  */
 export type Usage = z.infer<typeof UsageSchema>
 
+export type PeerMessageEvent = {
+  type: 'peer-message'
+  id: string
+  fromSessionId: string
+  fromTitle: string
+  toSessionId: string
+  body: string
+  replyTo: string | null
+  ts: number
+}
+
+export type PeerMessageHistoryItem = Omit<PeerMessageEvent, 'type'> & {
+  cursor: string
+  createdAt: number
+}
+
+export type PeerRosterEntry = {
+  sessionId: string
+  title: string
+  active: boolean
+  machineId: string | null
+}
+
+export type EphemeralEvent =
+  | { type: 'activity', id: string, active: boolean, activeAt: number, thinking: boolean }
+  | PeerMessageEvent
+
+
 /**
  * Socket events from server to client
  */
@@ -48,7 +76,7 @@ export interface ServerToClientEvents {
   'rpc-registered': (data: { method: string }) => void
   'rpc-unregistered': (data: { method: string }) => void
   'rpc-error': (data: { type: string, error: string }) => void
-  ephemeral: (data: { type: 'activity', id: string, active: boolean, activeAt: number, thinking: boolean }) => void
+  ephemeral: (data: EphemeralEvent) => void
   auth: (data: { success: boolean, user: string }) => void
   error: (data: { message: string }) => void
 }

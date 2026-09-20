@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiSessionClient } from './apiSession';
+import { ApiSessionClient, getPeerSessionTitle } from './apiSession';
 import { decodeBase64, decrypt, decryptBlob, encodeBase64, encrypt } from './encryption';
 import type { Update } from './types';
 import { logger } from '@/ui/logger';
@@ -11,7 +11,8 @@ const {
     mockAxiosPut,
     mockBackoff,
     mockDelay,
-    mockShouldReconnect
+    mockShouldReconnect,
+    mockReadPersistedSessions
 } = vi.hoisted(() => ({
     mockIo: vi.fn(),
     mockAxiosGet: vi.fn(),
@@ -29,7 +30,8 @@ const {
         throw lastError;
     }),
     mockDelay: vi.fn(async () => undefined),
-    mockShouldReconnect: vi.fn(() => true)
+    mockShouldReconnect: vi.fn(() => true),
+    mockReadPersistedSessions: vi.fn(() => ({}))
 }));
 
 vi.mock('socket.io-client', () => ({
@@ -42,6 +44,10 @@ vi.mock('axios', () => ({
         post: mockAxiosPost,
         put: mockAxiosPut
     }
+}));
+
+vi.mock('@/persistence', () => ({
+    readPersistedSessions: mockReadPersistedSessions
 }));
 
 vi.mock('@/configuration', () => ({
@@ -156,6 +162,7 @@ describe('ApiSessionClient v3 messages API migration', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         mockShouldReconnect.mockReturnValue(true);
+        mockReadPersistedSessions.mockReturnValue({});
         socketHandlers = {};
         session = makeSession();
         mockSocket = {
@@ -190,7 +197,193 @@ describe('ApiSessionClient v3 messages API migration', () => {
         expect(mockSocket.on).toHaveBeenCalledWith('connect', expect.any(Function));
         expect(mockSocket.on).toHaveBeenCalledWith('disconnect', expect.any(Function));
         expect(mockSocket.on).toHaveBeenCalledWith('update', expect.any(Function));
+        expect(mockSocket.on).toHaveBeenCalledWith('ephemeral', expect.any(Function));
         expect(mockSocket.connect).toHaveBeenCalledTimes(1);
+    });
+
+    it('derives peer titles from summary, host and path without truncating', () => {
+        expect(getPeerSessionTitle({ summary: { text: '  Fix sockets  ', updatedAt: 1 } }, 'session-1'))
+            .toBe('Fix sockets');
+        expect(getPeerSessionTitle({ host: 'workstation', path: '/repo' }, 'session-1'))
+            .toBe('workstation:/repo');
+        expect(getPeerSessionTitle({ host: 'workstation' }, 'session-1')).toBe('workstation');
+        expect(getPeerSessionTitle({ path: '/repo' }, 'session-1')).toBe('/repo');
+        expect(getPeerSessionTitle(null, 'session-1')).toBe('session-1');
+    });
+
+    it('queues matching peer-message ephemerals and ignores other sessions', () => {
+        const client = new ApiSessionClient('fake-token', session);
+        const onPeerMessage = vi.fn();
+        const matchingMessage = {
+            type: 'peer-message' as const,
+            id: 'peer-message-1',
+            fromSessionId: 'sender-session',
+            fromTitle: 'Sender',
+            toSessionId: session.id,
+            body: 'Review this',
+            replyTo: null,
+            ts: 1234
+        };
+
+        emitSocketEvent('ephemeral', {
+            type: 'activity',
+            id: session.id,
+            active: true,
+            activeAt: 1000,
+            thinking: false
+        });
+        emitSocketEvent('ephemeral', {
+            ...matchingMessage,
+            id: 'wrong-target',
+            toSessionId: 'another-session'
+        });
+        emitSocketEvent('ephemeral', matchingMessage);
+        client.onPeerMessage(onPeerMessage);
+
+        expect(onPeerMessage).toHaveBeenCalledTimes(1);
+        expect(onPeerMessage).toHaveBeenCalledWith(matchingMessage);
+    });
+
+    it('uses the session-scoped HTTP API for peer sends and cold-path reads', async () => {
+        const client = new ApiSessionClient('fake-token', session);
+        mockAxiosPost.mockResolvedValueOnce({
+            data: { id: 'peer-message-1', delivered: true }
+        });
+
+        await expect(client.sendPeerMessage({
+            id: 'peer-message-1',
+            fromTitle: 'Current session',
+            toSessionId: 'target-session',
+            body: 'Please review',
+            replyTo: 'parent-message'
+        })).resolves.toEqual({ id: 'peer-message-1', delivered: true });
+
+        expect(mockAxiosPost).toHaveBeenCalledWith(
+            'https://server.test/v1/peer-messages',
+            {
+                id: 'peer-message-1',
+                fromSessionId: session.id,
+                fromTitle: 'Current session',
+                toSessionId: 'target-session',
+                body: 'Please review',
+                replyTo: 'parent-message'
+            },
+            expect.objectContaining({
+                headers: expect.objectContaining({
+                    Authorization: 'Bearer fake-token'
+                })
+            })
+        );
+
+        const historyItem = {
+            id: 'peer-message-1',
+            fromSessionId: 'sender-session',
+            fromTitle: 'Sender',
+            toSessionId: session.id,
+            body: 'Please review',
+            replyTo: null,
+            ts: 1234,
+            cursor: '0-1',
+            createdAt: 1234
+        };
+        mockAxiosGet.mockResolvedValueOnce({
+            data: { items: [historyItem], hasMore: false }
+        });
+
+        await expect(client.getPeerMessages(50)).resolves.toEqual([historyItem]);
+        expect(mockAxiosGet).toHaveBeenCalledWith(
+            'https://server.test/v1/peer-messages',
+            expect.objectContaining({
+                params: {
+                    sessionId: session.id,
+                    limit: 50
+                },
+                headers: expect.objectContaining({
+                    Authorization: 'Bearer fake-token'
+                })
+            })
+        );
+    });
+
+    it('joins the server session list with locally decryptable peer metadata', async () => {
+        const remoteKey = new Uint8Array(32).fill(7);
+        const remoteMetadata = {
+            ...session.metadata,
+            host: 'remote-host',
+            path: '/remote/repo',
+            machineId: 'machine-2',
+            summary: { text: 'Remote review', updatedAt: 1 }
+        };
+        const currentMetadata = {
+            ...session.metadata,
+            machineId: 'machine-1',
+            summary: { text: 'Current work', updatedAt: 1 }
+        };
+        mockReadPersistedSessions.mockReturnValue({
+            'remote-session': {
+                encryptionKey: encodeBase64(remoteKey),
+                encryptionVariant: 'legacy',
+                seq: 0,
+                metadataVersion: 1,
+                agentStateVersion: 1,
+                metadata: {
+                    ...remoteMetadata,
+                    summary: { text: 'Stale title', updatedAt: 0 }
+                },
+                savedAt: Date.now()
+            }
+        });
+        mockAxiosGet.mockResolvedValueOnce({
+            data: {
+                sessions: [
+                    {
+                        id: session.id,
+                        active: true,
+                        metadata: encodeBase64(encrypt(session.encryptionKey, session.encryptionVariant, currentMetadata))
+                    },
+                    {
+                        id: 'remote-session',
+                        active: false,
+                        metadata: encodeBase64(encrypt(remoteKey, 'legacy', remoteMetadata))
+                    },
+                    {
+                        id: 'unknown-session',
+                        active: true,
+                        metadata: 'unreadable'
+                    }
+                ]
+            }
+        });
+
+        const client = new ApiSessionClient('fake-token', session);
+        await expect(client.listPeerSessions()).resolves.toEqual([
+            {
+                sessionId: session.id,
+                title: 'Current work',
+                active: true,
+                machineId: 'machine-1'
+            },
+            {
+                sessionId: 'remote-session',
+                title: 'Remote review',
+                active: false,
+                machineId: 'machine-2'
+            },
+            {
+                sessionId: 'unknown-session',
+                title: 'unknown-session',
+                active: true,
+                machineId: null
+            }
+        ]);
+        expect(mockAxiosGet).toHaveBeenCalledWith(
+            'https://server.test/v1/sessions',
+            expect.objectContaining({
+                headers: expect.objectContaining({
+                    Authorization: 'Bearer fake-token'
+                })
+            })
+        );
     });
 
     it('retries after initial socket connection error', async () => {
