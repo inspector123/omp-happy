@@ -57,6 +57,9 @@ CLAUDE.md
 .environments/
 environments/data/
 
+# PGlite data written by standalone server runs
+/data/
+
 # Development planning notes (keep local, don't commit)
 notes/
 docs/notes/
