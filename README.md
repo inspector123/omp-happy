@@ -91,6 +91,7 @@ The relevant paths are:
 | `packages/happy-cli/src/index.ts` | Internal `omp` and `omp attach` command dispatch. |
 | `packages/happy-cli/src/omp/runOmp.ts` | Relay session, PTY, socket server, event translation, and cleanup. |
 | `packages/happy-cli/scripts/omp-happy-bridge.mjs` | Pi extension loaded inside native OMP. |
+| `packages/happy-cli/scripts/omp-session-irc.ts` | Pi extension giving OMP sessions an agent-to-agent IRC channel across processes and machines. The CLI loads it beside the bridge for every spawned session; set `OMP_HAPPY_SESSION_IRC=0` to disable. |
 | `packages/happy-cli/scripts/omp-happy-config.overlay.yml` | Forces a fresh OMP transcript unless an explicit resume is requested. |
 | `scripts/omp-daemon.sh` | Convenience script for phone-initiated sessions. |
 | `packages/happy-cli/src/daemon/run.ts` | Remote process creation and herdr/tmux integration. |
