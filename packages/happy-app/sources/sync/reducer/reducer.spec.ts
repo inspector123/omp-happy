@@ -3154,6 +3154,59 @@ describe('reducer', () => {
             }
         });
 
+        it('holds paged subagent output until its older delegate owner loads', () => {
+            const state = createReducer();
+            const subagent = createId();
+
+            const newestPage = reducer(state, [{
+                id: 'paged-child-output',
+                localId: null,
+                createdAt: 2000,
+                seq: 102,
+                role: 'agent',
+                isSidechain: true,
+                content: [{
+                    type: 'text',
+                    text: 'child-only reviewer output',
+                    uuid: 'paged-child-output-uuid',
+                    parentUUID: subagent
+                }]
+            }]);
+
+            expect(newestPage.messages).toHaveLength(0);
+
+            const olderPage = reducer(state, [{
+                id: 'paged-delegate-owner',
+                localId: null,
+                createdAt: 1000,
+                seq: 1,
+                role: 'agent',
+                isSidechain: false,
+                content: [{
+                    type: 'tool-call',
+                    id: 'paged-delegate-call',
+                    name: 'delegate_task',
+                    input: {
+                        tasks: [{ id: 'PagedWorker', sessionSubagent: subagent }],
+                    },
+                    description: null,
+                    uuid: 'paged-delegate-owner-uuid',
+                    parentUUID: null
+                }]
+            }]);
+
+            expect(olderPage.messages).toHaveLength(1);
+            const owner = olderPage.messages[0];
+            if (owner.kind !== 'tool-call') throw new Error('Expected paged delegate owner');
+            expect(owner.children).toEqual([
+                expect.objectContaining({
+                    kind: 'agent-text',
+                    subagentId: subagent,
+                    text: 'child-only reviewer output'
+                })
+            ]);
+        });
+
         it('keeps subagent lifecycle markers nested and non-chat', () => {
             const subagent = createId();
             const state = createReducer();

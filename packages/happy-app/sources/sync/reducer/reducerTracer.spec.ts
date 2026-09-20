@@ -517,7 +517,7 @@ describe('reducerTracer', () => {
             expect(state.orphanMessages.size).toBe(0);
         });
 
-        it('should not orphan non-uuid parent references', () => {
+        it('should not orphan unresolved legacy parent references', () => {
             const state = createTracer();
 
             const orphanSubagent: NormalizedMessage = {

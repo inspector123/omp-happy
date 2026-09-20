@@ -57,6 +57,7 @@
 // ============================================================================
 
 import { NormalizedMessage } from '../typesRaw';
+import { isCuid } from '@paralleldrive/cuid2';
 
 // Extended message type with sidechain ID for tracking message relationships
 export type TracedMessage = NormalizedMessage & {
@@ -290,10 +291,13 @@ export function traceMessages(state: TracerState, messages: NormalizedMessage[])
                     results.push(...orphanResults);
                 }
             } else {
-                // For non-UUID parent references (e.g. subagent ids), treat as standalone
-                // when no parent mapping exists. CLI mapper is expected to resolve/sequence
-                // subagent ownership, so app should not permanently orphan these messages.
-                if (!isUuidLike(parentUuid)) {
+                // A session-protocol subagent id can arrive in the latest page
+                // before its delegate tool owner is fetched from older history.
+                // Buffer that CUID just like a UUID ancestry reference so child
+                // output never becomes a top-level chat message. Preserve the
+                // standalone fallback only for legacy arbitrary parent values
+                // that cannot be resolved deterministically.
+                if (!isUuidLike(parentUuid) && !isCuid(parentUuid)) {
                     state.processedIds.add(message.id);
                     const tracedMessage: TracedMessage = {
                         ...message
