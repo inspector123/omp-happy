@@ -705,6 +705,16 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   const PROMPT_BURST_WINDOW_MS = 750;
   const promptBurst: Array<{ message: UserMessage; attachments: PhoneAttachment[] }> = [];
   let promptBurstTimer: NodeJS.Timeout | null = null;
+  // A resumed session receives the app's offline outbox as a burst in its first
+  // seconds. Those prompts were typed while the session was down, and delivering
+  // them turns "resume" into a queue of stale runs that one abort cannot clear.
+  // A resumed child therefore starts clean and ignores that burst.
+  const resumedSession = (opts.extraArgs ?? []).some(
+    (arg) => arg === '--resume' || arg.startsWith('--resume='),
+  );
+  const RESUME_BACKLOG_WINDOW_MS = 4000;
+  const cliStartedAt = Date.now();
+  let ignoredResumeBacklog = 0;
   let assistantTextEmitted = false;
   let thinking = false;
   let pendingText = '';
@@ -1909,6 +1919,11 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
     const text = message.content.text?.trim() ?? '';
     log(`Received phone prompt (${text.length} chars, ${attachmentsForThisMessage.length} images)`);
+    if (resumedSession && Date.now() - cliStartedAt < RESUME_BACKLOG_WINDOW_MS) {
+      ignoredResumeBacklog += 1;
+      log(`Ignored prompt queued while the session was down (${ignoredResumeBacklog} total, ${text.length} chars)`);
+      return;
+    }
     if (abortInProgress) {
       queuedAfterAbort.push({ message, attachments: attachmentsForThisMessage });
       log('Queued phone prompt until OMP abort completes');

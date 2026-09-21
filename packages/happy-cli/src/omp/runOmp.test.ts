@@ -1701,6 +1701,43 @@ describe('runOmp', () => {
   });
 
 
+  it('ignores the offline backlog burst when the session is resumed', async () => {
+    vi.useFakeTimers();
+
+    const runPromise = runOmp({ credentials, extraArgs: ['--resume', 'omp-session-tag'] });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-resume' });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.mockBridgeSocket.write.mockClear();
+
+    const handler = mocks.getUserMessageHandler();
+    expect(handler).toBeTypeOf('function');
+    await handler?.({ content: { text: 'queued while the session was down' } });
+    await vi.advanceTimersByTimeAsync(800);
+
+    const promptWritesDuringWindow = mocks.mockBridgeSocket.write.mock.calls
+      .map(([line]) => line as string)
+      .filter((line) => line.includes('"type":"prompt"'));
+    expect(promptWritesDuringWindow).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(4000);
+    await handler?.({ content: { text: 'live question after resume' } });
+    await vi.advanceTimersByTimeAsync(800);
+
+    const promptWrites = mocks.mockBridgeSocket.write.mock.calls
+      .map(([line]) => line as string)
+      .filter((line) => line.includes('"type":"prompt"'));
+    expect(promptWrites).toEqual([
+      '{"type":"prompt","text":"live question after resume","images":[]}\n',
+    ]);
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
+
   it('routes phone images and model selection through the extension bridge', async () => {
     vi.useFakeTimers();
     mocks.mockSession.drainAttachmentsForUserMessage.mockResolvedValueOnce([
