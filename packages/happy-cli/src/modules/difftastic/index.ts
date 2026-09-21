@@ -6,6 +6,7 @@ import { spawn } from 'child_process';
 import { join, resolve } from 'path';
 import { platform, arch } from 'os';
 import { projectPath } from '@/projectPath';
+import { collectOutput } from '@/utils/boundedOutput';
 
 export interface DifftasticResult {
     exitCode: number
@@ -34,40 +35,17 @@ function getBinaryPath(): string {
  */
 export function run(args: string[], options?: DifftasticOptions): Promise<DifftasticResult> {
     const binaryPath = getBinaryPath();
-    
-    return new Promise((resolve, reject) => {
-        const child = spawn(binaryPath, args, {
-            stdio: ['pipe', 'pipe', 'pipe'],
-            cwd: options?.cwd,
-            windowsHide: true,
-            env: {
-                ...process.env,
-                // Force color output when needed
-                FORCE_COLOR: '1'
-            }
-        });
 
-        let stdout = '';
-        let stderr = '';
-
-        child.stdout.on('data', (data) => {
-            stdout += data.toString();
-        });
-
-        child.stderr.on('data', (data) => {
-            stderr += data.toString();
-        });
-
-        child.on('close', (code) => {
-            resolve({
-                exitCode: code || 0,
-                stdout,
-                stderr
-            });
-        });
-
-        child.on('error', (err) => {
-            reject(err);
-        });
+    const child = spawn(binaryPath, args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: options?.cwd,
+        windowsHide: true,
+        env: {
+            ...process.env,
+            // Force color output when needed
+            FORCE_COLOR: '1'
+        }
     });
+
+    return collectOutput(child);
 }

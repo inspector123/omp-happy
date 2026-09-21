@@ -5,7 +5,8 @@
     "moduleResolution": "bundler",
     "lib": [
       "es2020",
-      "es2022"
+      "es2022",
+      "ES2024.Promise"
     ],
     "jsx": "react",
     "rootDir": "src",
