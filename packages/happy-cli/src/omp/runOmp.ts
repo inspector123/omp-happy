@@ -697,6 +697,14 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   let turnStarted = false;
   let abortInProgress = false;
   const queuedAfterAbort: Array<{ message: UserMessage; attachments: PhoneAttachment[] }> = [];
+  // An app outbox flush after a resume delivers its whole backlog at once, and
+  // a quick series of phone messages behaves the same way. Every message
+  // becomes its own OMP run, so a resume could queue dozens of runs that a
+  // single abort cannot cancel. Idle prompts are therefore joined while they
+  // keep arriving inside the burst window.
+  const PROMPT_BURST_WINDOW_MS = 750;
+  const promptBurst: Array<{ message: UserMessage; attachments: PhoneAttachment[] }> = [];
+  let promptBurstTimer: NodeJS.Timeout | null = null;
   let assistantTextEmitted = false;
   let thinking = false;
   let pendingText = '';
@@ -1336,7 +1344,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     abortInProgress = false;
     const queued = queuedAfterAbort.splice(0);
     for (const item of queued) {
-      sendPhonePrompt(item.message, item.attachments, false);
+      queuePhonePrompt(item.message, item.attachments);
     }
   };
 
@@ -1870,6 +1878,30 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     log(steering ? 'Sent remote steering message through the OMP extension bridge' : 'Sent remote prompt through the OMP extension bridge');
   };
 
+  const flushPromptBurst = (): void => {
+    promptBurstTimer = null;
+    const items = promptBurst.splice(0);
+    if (items.length === 0) return;
+    if (items.length === 1) {
+      sendPhonePrompt(items[0].message, items[0].attachments, turnStarted);
+      return;
+    }
+    const text = items
+      .map((item) => item.message.content.text?.trim() ?? '')
+      .filter((part) => part.length > 0)
+      .join('\n\n');
+    const attachments = items.flatMap((item) => item.attachments);
+    const last = items[items.length - 1];
+    log(`Joined ${items.length} phone prompts into one (${text.length} chars)`);
+    sendPhonePrompt({ ...last.message, content: { ...last.message.content, text } }, attachments, turnStarted);
+  };
+
+  const queuePhonePrompt = (message: UserMessage, attachments: PhoneAttachment[]): void => {
+    promptBurst.push({ message, attachments });
+    if (promptBurstTimer) return;
+    promptBurstTimer = setTimeout(flushPromptBurst, PROMPT_BURST_WINDOW_MS);
+  };
+
   session.onUserMessage(async (message: UserMessage) => {
     const attachmentsForThisMessage = await session.drainAttachmentsForUserMessage();
     if (!message.content.text && attachmentsForThisMessage.length === 0) {
@@ -1882,7 +1914,12 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       log('Queued phone prompt until OMP abort completes');
       return;
     }
-    sendPhonePrompt(message, attachmentsForThisMessage, turnStarted);
+    // Steering reaches the running turn directly; only idle prompts are joined.
+    if (turnStarted) {
+      sendPhonePrompt(message, attachmentsForThisMessage, true);
+      return;
+    }
+    queuePhonePrompt(message, attachmentsForThisMessage);
   });
 
   // Daemon sessions ignore inherited startup bytes unless the wrapper is
@@ -2052,6 +2089,10 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
     clearPendingPtyPrompt();
     flushPendingText();
+    if (promptBurstTimer) {
+      clearTimeout(promptBurstTimer);
+      flushPromptBurst();
+    }
     process.off('SIGINT', swallowSigint);
     if (resizeHandler) {
       process.off('SIGWINCH', resizeHandler);

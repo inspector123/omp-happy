@@ -865,6 +865,7 @@ describe('runOmp', () => {
     await userMessageHandler?.({
       content: { text: 'Prompt from phone' },
     });
+    await vi.advanceTimersByTimeAsync(800);
 
     expect(mocks.mockSession.sendSessionEvent).toHaveBeenCalledTimes(1);
     expect(mocks.mockSession.sendSessionEvent).toHaveBeenCalledWith({ type: 'switch', mode: 'remote' });
@@ -1638,6 +1639,7 @@ describe('runOmp', () => {
     expect(mocks.mockBridgeSocket.write).toHaveBeenLastCalledWith('{"type":"abort"}\n');
 
     mocks.emitBridgeFrame({ type: 'aborted' });
+    await vi.advanceTimersByTimeAsync(800);
     expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
       2,
       '{"type":"set_model","spec":"openai/gpt-5.6-sol"}\n',
@@ -1663,6 +1665,42 @@ describe('runOmp', () => {
   });
 
 
+  it('joins a burst of idle phone prompts into one prompt', async () => {
+    vi.useFakeTimers();
+
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-burst' });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.mockBridgeSocket.write.mockClear();
+
+    const handler = mocks.getUserMessageHandler();
+    expect(handler).toBeTypeOf('function');
+    await handler?.({ content: { text: 'First' } });
+    await handler?.({ content: { text: 'Second' } });
+    await handler?.({ content: { text: 'Third' } });
+
+    const promptWritesBeforeWindow = mocks.mockBridgeSocket.write.mock.calls
+      .map(([line]) => line as string)
+      .filter((line) => line.includes('"type":"prompt"'));
+    expect(promptWritesBeforeWindow).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(800);
+
+    const promptWrites = mocks.mockBridgeSocket.write.mock.calls
+      .map(([line]) => line as string)
+      .filter((line) => line.includes('"type":"prompt"'));
+    expect(promptWrites).toEqual([
+      '{"type":"prompt","text":"First\\n\\nSecond\\n\\nThird","images":[]}\n',
+    ]);
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
+
   it('routes phone images and model selection through the extension bridge', async () => {
     vi.useFakeTimers();
     mocks.mockSession.drainAttachmentsForUserMessage.mockResolvedValueOnce([
@@ -1680,6 +1718,7 @@ describe('runOmp', () => {
       content: { text: '' },
       meta: { model: 'openai/gpt-5.6-sol', effort: 'high' },
     });
+    await vi.advanceTimersByTimeAsync(800);
 
     expect(mocks.mockBridgeSocket.write).toHaveBeenNthCalledWith(
       1,
