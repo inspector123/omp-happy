@@ -29,14 +29,6 @@ export const es: TranslationStructure = {
         updates: 'Actualizaciones',
     },
 
-    // TODO translate
-    peers: {
-        title: 'Peer messages',
-        empty: 'No peer messages yet',
-        viewAll: 'View peer conversations',
-        from: ({ name }: { name: string }) => `From ${name}`,
-        to: ({ name }: { name: string }) => `Messages to ${name}`,
-    },
 
     common: {
         // Simple string constants

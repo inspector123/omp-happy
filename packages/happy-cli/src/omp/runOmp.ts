@@ -3,15 +3,15 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, extname, join } from 'node:path';
+import { basename, extname, join } from 'node:path';
 
 import { spawn as spawnPty, type IPty } from 'node-pty';
 import { createId } from '@paralleldrive/cuid2';
 import { createEnvelope, type SessionEvent } from '@slopus/happy-wire';
 
 import { ApiClient } from '@/api/api';
-import { getPeerSessionTitle, type ApiSessionClient } from '@/api/apiSession';
-import type { PeerMessageEvent, PeerMessageHistoryItem, Session as ApiSession, UserMessage } from '@/api/types';
+import type { ApiSessionClient } from '@/api/apiSession';
+import type { Session as ApiSession, UserMessage } from '@/api/types';
 import { decodeBase64, encodeBase64 } from '@/api/encryption';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { notifyDaemonSessionStarted, notifyDaemonSessionTitle } from '@/daemon/controlClient';
@@ -37,7 +37,6 @@ const BRIDGE_EXIT_GRACE_MS = 300;
 const BRIDGE_SOCKET_ENV = 'OMP_HAPPY_BRIDGE_SOCKET';
 const BRIDGE_CONTROL_MODE_ENV = 'OMP_HAPPY_CONTROL_MODE';
 const BRIDGE_EXTENSION_FILE = 'omp-happy-bridge.mjs';
-const SESSION_IRC_EXTENSION_FILE = 'omp-session-irc.ts';
 // Overlay that pins autoResume off for Happy-managed spawns so every chat
 // mints a fresh OMP transcript (and thus a unique ompSessionId) regardless
 // of the host's global omp settings. Passed after user extra args so it wins.
@@ -45,7 +44,6 @@ const CONFIG_OVERLAY_FILE = 'omp-happy-config.overlay.yml';
 const MAX_BUFFERED_CHILD_EVENTS = 256;
 const MAX_CHILD_TEXT_CHARS = 256 * 1024;
 const MAX_SEEN_CHILD_MESSAGES = 128;
-const MAX_SEEN_PEER_MESSAGES = 200;
 const ROOT_BRIDGE_KEY = '$root';
 
 type RunMode = 'local' | 'remote';
@@ -60,12 +58,7 @@ type BridgeFrame =
   | BridgeAbortedFrame
   | BridgeAskRequestFrame
   | BridgeChangeTitleFrame
-  | BridgeTuiCommandReadyFrame
-  | BridgePeerSendFrame
-  | BridgePeerRosterFrame
-  | BridgePeerMessageFrame
-  | BridgePeerSendResultFrame
-  | BridgePeerRosterResultFrame;
+  | BridgeTuiCommandReadyFrame;
 
 type BridgeReadyFrame = {
   type: 'ready';
@@ -147,48 +140,6 @@ type BridgeTuiCommandReadyFrame = {
   command: string;
 };
 
-type BridgePeerSendFrame = {
-  type: 'peer_send';
-  requestId: string;
-  to: string;
-  body: string;
-  replyTo?: string;
-};
-
-type BridgePeerRosterFrame = {
-  type: 'peer_roster';
-  requestId: string;
-};
-
-type BridgePeerMessageFrame = {
-  type: 'peer_message';
-  id: string;
-  from: string;
-  fromTitle: string;
-  body: string;
-  replyTo: string | null;
-  ts: number;
-};
-
-type BridgePeerSendResultFrame = {
-  type: 'peer_send_result';
-  requestId: string;
-  ok: boolean;
-  id?: string;
-  delivered?: boolean;
-  error?: string;
-};
-
-type BridgePeerRosterResultFrame = {
-  type: 'peer_roster_result';
-  requestId: string;
-  peers: Array<{
-    sessionId: string;
-    title: string;
-    active: boolean;
-    machineId: string | null;
-  }>;
-};
 
 type PendingPtyPrompt = {
   id: string;
@@ -480,14 +431,6 @@ function buildOmpArgs(opts: RunOmpOptions, extensionPath: string, configOverlayP
     (value): value is string => typeof value === 'string' && value.length > 0 && value !== 'undefined',
   );
   const args = ['--allow-home', '--extension', extensionPath, ...extraArgs, '--config', configOverlayPath];
-  // The session IRC extension is opt-in: it gives an omp child an
-  // agent-to-agent channel, and auto-relaying replies between two sessions that
-  // both load it creates an echo loop that forces turns on both sides. Only
-  // spawn it when OMP_HAPPY_SESSION_IRC=1.
-  const sessionIrcPath = join(dirname(extensionPath), SESSION_IRC_EXTENSION_FILE);
-  if (process.env.OMP_HAPPY_SESSION_IRC === '1' && existsSync(sessionIrcPath)) {
-    args.splice(3, 0, '--extension', sessionIrcPath);
-  }
   if (opts.yolo && !args.includes('--auto-approve') && !args.includes('--approval-mode')) {
     args.unshift('--auto-approve');
   }
@@ -622,7 +565,6 @@ async function startBridgeServer(
 }
 
 export async function runOmp(opts: RunOmpOptions): Promise<void> {
-  const processStartedAt = Date.now();
   const verbose = opts.verbose === true;
   const sessionTag = randomUUID();
   connectionState.setBackend('omp');
@@ -731,8 +673,6 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   let ptyPromptTimer: NodeJS.Timeout | null = null;
   const activeDelegateTasksByBridge = new Map<string, Map<string, DelegateTaskBinding[]>>();
   const childMirrorsBySource = new Map<BridgeFrameSource, ChildMirrorState>();
-  const seenPeerMessageIds = new Set<string>();
-  const seenPeerMessageOrder: string[] = [];
   let bridgeServer: BridgeServer | null = null;
   let bridgeReadyResolved = false;
   let bridgeReadyError: Error | null = null;
@@ -743,7 +683,6 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   const initialRunMode: RunMode = 'remote';
   let runMode: RunMode = initialRunMode;
   let advisorEnabled = opts.extraArgs?.includes('--advisor') ?? false;
-  let peerSessionTitle: string | undefined;
   let stdinDataHandler: ((data: string | Buffer) => void) | null = null;
   let stdinRawModeEnabled = false;
   let stdinResumed = false;
@@ -1486,7 +1425,6 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   const updateSessionTitle = (value: string): string | undefined => {
     const title = value.trim();
     if (!title) return undefined;
-    peerSessionTitle = title;
     session.updateMetadata((currentMetadata) => ({
       ...currentMetadata,
       summary: {
@@ -1497,104 +1435,6 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     return title;
   };
 
-  const markPeerMessageForwarded = (id: string): void => {
-    seenPeerMessageIds.add(id);
-    seenPeerMessageOrder.push(id);
-    while (seenPeerMessageOrder.length > MAX_SEEN_PEER_MESSAGES) {
-      const oldest = seenPeerMessageOrder.shift();
-      if (oldest) seenPeerMessageIds.delete(oldest);
-    }
-  };
-
-  const forwardPeerMessage = (message: PeerMessageEvent | PeerMessageHistoryItem): boolean => {
-    if (message.toSessionId !== session.sessionId || seenPeerMessageIds.has(message.id)) {
-      return false;
-    }
-    const sent = bridgeServer?.send({
-      type: 'peer_message',
-      id: message.id,
-      from: message.fromSessionId,
-      fromTitle: message.fromTitle,
-      body: message.body,
-      replyTo: message.replyTo,
-      ts: message.ts,
-    } satisfies BridgePeerMessageFrame) ?? false;
-    if (sent) markPeerMessageForwarded(message.id);
-    return sent;
-  };
-
-  const fetchRecentPeerMessages = async (): Promise<void> => {
-    try {
-      const messages = await session.getPeerMessages(MAX_SEEN_PEER_MESSAGES);
-      // Live ephemerals are delivered immediately. This cold catch-up only
-      // fills the gap between this CLI process starting and the child bridge
-      // becoming ready. Older messages stay visible in the app inbox and are
-      // not replayed into the agent after a restart or resume.
-      for (const message of [...messages].reverse()) {
-        if (message.ts < processStartedAt) continue;
-        forwardPeerMessage(message);
-      }
-    } catch (error) {
-      log('Failed to fetch recent peer messages', error);
-    }
-  };
-
-  const handlePeerSend = async (frame: BridgePeerSendFrame): Promise<void> => {
-    const target = frame.to.trim();
-    const toSessionId = target.startsWith('happy:') ? target.slice('happy:'.length).trim() : target;
-    if (!toSessionId) {
-      bridgeServer?.send({
-        type: 'peer_send_result',
-        requestId: frame.requestId,
-        ok: false,
-        error: 'Peer session ID is required',
-      } satisfies BridgePeerSendResultFrame);
-      return;
-    }
-
-    const id = randomUUID();
-    try {
-      const result = await session.sendPeerMessage({
-        id,
-        fromTitle: peerSessionTitle ?? getPeerSessionTitle(session.getMetadata(), session.sessionId),
-        toSessionId,
-        body: frame.body,
-        replyTo: frame.replyTo ?? null,
-      });
-      bridgeServer?.send({
-        type: 'peer_send_result',
-        requestId: frame.requestId,
-        ok: true,
-        id: result.id,
-        delivered: result.delivered,
-      } satisfies BridgePeerSendResultFrame);
-    } catch (error) {
-      bridgeServer?.send({
-        type: 'peer_send_result',
-        requestId: frame.requestId,
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-      } satisfies BridgePeerSendResultFrame);
-    }
-  };
-
-  const handlePeerRoster = async (frame: BridgePeerRosterFrame): Promise<void> => {
-    try {
-      const peers = await session.listPeerSessions();
-      bridgeServer?.send({
-        type: 'peer_roster_result',
-        requestId: frame.requestId,
-        peers,
-      } satisfies BridgePeerRosterResultFrame);
-    } catch (error) {
-      log('Failed to list peer sessions', error);
-      bridgeServer?.send({
-        type: 'peer_roster_result',
-        requestId: frame.requestId,
-        peers: [],
-      } satisfies BridgePeerRosterResultFrame);
-    }
-  };
 
   const handleChildBridgeFrame = (frame: BridgeFrame, source: BridgeFrameSource): void => {
     if (frame.type === 'ready') {
@@ -1671,14 +1511,6 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       handleChildBridgeFrame(frame, source);
       return;
     }
-    if (frame.type === 'peer_send') {
-      void handlePeerSend(frame);
-      return;
-    }
-    if (frame.type === 'peer_roster') {
-      void handlePeerRoster(frame);
-      return;
-    }
     if (frame.type === 'subagent_lifecycle') {
       handleSubagentLifecycle(ROOT_BRIDGE_KEY, frame);
       return;
@@ -1700,7 +1532,6 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       }
       settleBridgeReady();
       bridgeServer?.send({ type: 'set_control_mode', mode: runMode });
-      void fetchRecentPeerMessages();
       return;
     }
     if (frame.type === 'usage') {
@@ -1843,9 +1674,6 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   }, KEEPALIVE_INTERVAL_MS);
 
   process.on('SIGINT', swallowSigint);
-  session.onPeerMessage((message) => {
-    forwardPeerMessage(message);
-  });
   session.onFileEvent((fileEvent) => {
     const event = fileEvent.content.data.ev;
     session.trackAttachmentDownload((async () => {

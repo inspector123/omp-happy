@@ -193,15 +193,6 @@ export type EphemeralEvent = {
     title: string;
     body: string;
     timestamp: number;
-} | {
-    type: 'peer-message';
-    id: string;
-    fromSessionId: string;
-    fromTitle: string;
-    toSessionId: string;
-    body: string;
-    replyTo: string | null;
-    ts: number;
 };
 
 // === EVENT PAYLOAD TYPES ===
@@ -306,17 +297,6 @@ class EventRouter {
         });
     }
 
-    /**
-     * Returns true when the target session currently has a session-scoped
-     * socket. fetchSockets() includes sockets connected to other replicas.
-     */
-    async hasSessionScopedSocket(userId: string, sessionId: string): Promise<boolean> {
-        const sockets = await this.io.in(`user:${userId}:session:${sessionId}`).fetchSockets();
-        return sockets.some(s => (
-            s.data.clientType === 'session-scoped' &&
-            s.data.sessionId === sessionId
-        ));
-    }
 
     // === PRIVATE ROUTING LOGIC ===
 

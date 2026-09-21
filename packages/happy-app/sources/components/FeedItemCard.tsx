@@ -92,17 +92,6 @@ export const FeedItemCard = React.memo(({ item }: FeedItemCardProps) => {
                 />
             );
             
-        case 'peer_message':
-            return (
-                <Item
-                    title={item.body.fromTitle}
-                    subtitle={`→ ${item.body.toSessionId}\n${item.body.body}`}
-                    subtitleLines={0}
-                    detail={getTimeAgo(item.body.ts)}
-                    icon={<Ionicons name="chatbubble-outline" size={20} color={theme.colors.textSecondary} />}
-                    showChevron={false}
-                />
-            );
 
         default:
             return null;

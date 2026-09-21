@@ -5,16 +5,6 @@ import type { Credentials } from '@/persistence';
 
 type UserMessageHandler = (message: unknown) => Promise<void> | void;
 type FileEventHandler = (message: unknown) => void;
-type PeerMessageHandler = (message: {
-  type: 'peer-message';
-  id: string;
-  fromSessionId: string;
-  fromTitle: string;
-  toSessionId: string;
-  body: string;
-  replyTo: string | null;
-  ts: number;
-}) => void;
 type MetadataRecord = Record<string, unknown>;
 type MetadataUpdater = (state: MetadataRecord) => MetadataRecord;
 type AgentStateUpdater = (state: MetadataRecord) => MetadataRecord;
@@ -28,7 +18,6 @@ type PendingAttachment = { data: Uint8Array; mimeType: string; name: string };
 const mocks = vi.hoisted(() => {
   let userMessageHandler: UserMessageHandler | null = null;
   let fileEventHandler: FileEventHandler | null = null;
-  let peerMessageHandler: PeerMessageHandler | null = null;
   let bridgeConnectionHandler: BridgeConnectionHandler | null = null;
   let listeningHandler: BridgeEventHandler | null = null;
   let killSessionHandler: (() => Promise<void>) | null = null;
@@ -69,28 +58,13 @@ const mocks = vi.hoisted(() => {
     bridgeConnectionHandler = handler;
     return mockNetServer;
   });
-  const mockSendPeerMessage = vi.fn();
-  const mockListPeerSessions = vi.fn();
-  const mockGetPeerMessages = vi.fn();
   const mockSession = {
     sessionId: 'happy-session-1',
-    getMetadata: vi.fn(() => ({
-      host: 'test-host',
-      path: '/repo',
-      machineId: 'machine-1',
-      summary: { text: 'Current session', updatedAt: 1 },
-    })),
-    sendPeerMessage: mockSendPeerMessage,
-    listPeerSessions: mockListPeerSessions,
-    getPeerMessages: mockGetPeerMessages,
     onUserMessage: vi.fn((handler: UserMessageHandler) => {
       userMessageHandler = handler;
     }),
     onFileEvent: vi.fn((handler: FileEventHandler) => {
       fileEventHandler = handler;
-    }),
-    onPeerMessage: vi.fn((handler: PeerMessageHandler) => {
-      peerMessageHandler = handler;
     }),
     drainAttachmentsForUserMessage: vi.fn(async (): Promise<PendingAttachment[]> => []),
     trackAttachmentDownload: vi.fn(),
@@ -134,14 +108,10 @@ const mocks = vi.hoisted(() => {
     mockLoggerDebug: vi.fn(),
     mockCancel: vi.fn(),
     mockPersistOmpDefaultModel: vi.fn(async () => {}),
-    mockSendPeerMessage,
-    mockListPeerSessions,
-    mockGetPeerMessages,
     mockSession,
     getUserMessageHandler: () => userMessageHandler,
     getFileEventHandler: () => fileEventHandler,
     getKillSessionHandler: () => killSessionHandler,
-    getPeerMessageHandler: () => peerMessageHandler,
     connectBridgeSocket: () => {
       const socket = createBridgeSocket();
       bridgeConnectionHandler?.(socket);
@@ -160,7 +130,6 @@ const mocks = vi.hoisted(() => {
     resetHandlers: () => {
       userMessageHandler = null;
       fileEventHandler = null;
-      peerMessageHandler = null;
       bridgeConnectionHandler = null;
       bridgeDataHandlers.clear();
       bridgeCloseHandlers.clear();
@@ -298,12 +267,6 @@ describe('runOmp', () => {
     mocks.mockMkdtemp.mockResolvedValue('/tmp/happy-omp-test');
     mocks.mockRm.mockResolvedValue(undefined);
     mocks.mockSpawnPty.mockImplementation(() => child);
-    mocks.mockSendPeerMessage.mockReset();
-    mocks.mockSendPeerMessage.mockResolvedValue({ id: 'sent-peer-message', delivered: true });
-    mocks.mockListPeerSessions.mockReset();
-    mocks.mockListPeerSessions.mockResolvedValue([]);
-    mocks.mockGetPeerMessages.mockReset();
-    mocks.mockGetPeerMessages.mockResolvedValue([]);
     mocks.mockApiCreate.mockResolvedValue({
       getOrCreateMachine: mocks.mockGetOrCreateMachine,
       getOrCreateSession: mocks.mockGetOrCreateSession,
@@ -439,281 +402,6 @@ describe('runOmp', () => {
     await runPromise;
   });
 
-  it('bundles the session IRC extension only when it is explicitly enabled', async () => {
-    vi.useFakeTimers();
-    const previous = process.env.OMP_HAPPY_SESSION_IRC;
-    process.env.OMP_HAPPY_SESSION_IRC = '1';
-    try {
-      const runPromise = runOmp({
-        credentials,
-        extraArgs: ['--model', 'test-model'],
-      });
-
-      await settleMicrotasks();
-
-      expect(mocks.mockSpawnPty).toHaveBeenCalledWith(
-        expect.stringMatching(/(?:^|[/\\])omp(?:\.exe)?$/),
-        ['--allow-home', '--extension', expect.stringMatching(/scripts\/omp-happy-bridge\.mjs$/), '--extension', expect.stringMatching(/scripts\/omp-session-irc\.ts$/), '--model', 'test-model', '--config', expect.stringMatching(/scripts\/omp-happy-config\.overlay\.yml$/)],
-        expect.objectContaining({ name: expect.any(String) }),
-      );
-
-      expect(mocks.mockSpawnPty).toHaveBeenCalledTimes(1);
-      child.emitExit(0);
-      await vi.advanceTimersByTimeAsync(200);
-      await runPromise;
-    } finally {
-      if (previous === undefined) {
-        delete process.env.OMP_HAPPY_SESSION_IRC;
-      } else {
-        process.env.OMP_HAPPY_SESSION_IRC = previous;
-      }
-    }
-  });
-
-  it('serves peer send and roster requests only from the primary bridge', async () => {
-    vi.useFakeTimers();
-    mocks.mockListPeerSessions.mockResolvedValueOnce([
-      {
-        sessionId: 'target-session',
-        title: 'Target session',
-        active: true,
-        machineId: 'machine-2',
-      },
-    ]);
-    const runPromise = runOmp({ credentials });
-    await settleMicrotasks();
-
-    mocks.emitBridgeFrame({
-      type: 'ready',
-      protocolVersion: 1,
-      sessionId: 'omp-root-peer',
-      title: 'Primary peer',
-    });
-    await vi.advanceTimersByTimeAsync(1);
-    await settleMicrotasks();
-    mocks.mockBridgeSocket.write.mockClear();
-
-    mocks.emitBridgeFrame({
-      type: 'peer_send',
-      requestId: 'send-1',
-      to: 'happy:target-session',
-      body: 'Please review this',
-      replyTo: 'incoming-1',
-    });
-    await settleMicrotasks();
-
-    expect(mocks.mockSendPeerMessage).toHaveBeenCalledWith({
-      id: expect.any(String),
-      fromTitle: 'Primary peer',
-      toSessionId: 'target-session',
-      body: 'Please review this',
-      replyTo: 'incoming-1',
-    });
-    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
-      '{"type":"peer_send_result","requestId":"send-1","ok":true,"id":"sent-peer-message","delivered":true}\n',
-    );
-
-    mocks.emitBridgeFrame({ type: 'peer_roster', requestId: 'roster-1' });
-    await settleMicrotasks();
-    expect(mocks.mockListPeerSessions).toHaveBeenCalledOnce();
-    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
-      '{"type":"peer_roster_result","requestId":"roster-1","peers":[{"sessionId":"target-session","title":"Target session","active":true,"machineId":"machine-2"}]}\n',
-    );
-
-    mocks.mockSendPeerMessage.mockRejectedValueOnce(new Error('server unavailable'));
-    mocks.emitBridgeFrame({
-      type: 'peer_send',
-      requestId: 'send-2',
-      to: 'target-session',
-      body: 'Try again',
-    });
-    await settleMicrotasks();
-    expect(mocks.mockBridgeSocket.write).toHaveBeenCalledWith(
-      '{"type":"peer_send_result","requestId":"send-2","ok":false,"error":"server unavailable"}\n',
-    );
-
-    const childSocket = mocks.connectBridgeSocket();
-    mocks.emitBridgeFrameOn(childSocket, {
-      type: 'ready',
-      protocolVersion: 1,
-      sessionId: 'omp-child-peer',
-      sessionFile: '/tmp/root/PeerChild.jsonl',
-    });
-    mocks.emitBridgeFrameOn(childSocket, {
-      type: 'peer_send',
-      requestId: 'child-send',
-      to: 'happy:target-session',
-      body: 'Must be ignored',
-    });
-    mocks.emitBridgeFrameOn(childSocket, { type: 'peer_roster', requestId: 'child-roster' });
-    await settleMicrotasks();
-
-    expect(mocks.mockSendPeerMessage).toHaveBeenCalledTimes(2);
-    expect(mocks.mockListPeerSessions).toHaveBeenCalledTimes(1);
-    expect(childSocket.write).not.toHaveBeenCalled();
-
-    child.emitExit(0);
-    await vi.advanceTimersByTimeAsync(200);
-    await runPromise;
-  });
-
-  it('forwards live and cold peer messages once in chronological order', async () => {
-    vi.useFakeTimers();
-    const processStartedAt = 1_000_000;
-    vi.setSystemTime(processStartedAt);
-    const olderMessage = {
-      id: 'peer-older',
-      fromSessionId: 'sender-1',
-      fromTitle: 'Sender one',
-      toSessionId: 'happy-session-1',
-      body: 'Older message',
-      replyTo: null,
-      ts: processStartedAt + 100,
-      cursor: '0-1',
-      createdAt: 100,
-    };
-    const newerMessage = {
-      id: 'peer-newer',
-      fromSessionId: 'sender-2',
-      fromTitle: 'Sender two',
-      toSessionId: 'happy-session-1',
-      body: 'Newer message',
-      replyTo: 'peer-older',
-      ts: processStartedAt + 200,
-      cursor: '0-2',
-      createdAt: 200,
-    };
-    mocks.mockGetPeerMessages.mockResolvedValueOnce([
-      newerMessage,
-      {
-        ...newerMessage,
-        id: 'wrong-session',
-        toSessionId: 'another-session',
-      },
-      olderMessage,
-    ]);
-    const runPromise = runOmp({ credentials });
-    await settleMicrotasks();
-
-    mocks.emitBridgeFrame({
-      type: 'ready',
-      protocolVersion: 1,
-      sessionId: 'omp-root-peer-inbox',
-    });
-    await vi.advanceTimersByTimeAsync(1);
-    await settleMicrotasks();
-
-    const onPeerMessage = mocks.getPeerMessageHandler();
-    expect(onPeerMessage).toBeTypeOf('function');
-    onPeerMessage?.({ type: 'peer-message', ...newerMessage });
-    onPeerMessage?.({
-      type: 'peer-message',
-      id: 'peer-live',
-      fromSessionId: 'sender-3',
-      fromTitle: 'Sender three',
-      toSessionId: 'happy-session-1',
-      body: 'Live message',
-      replyTo: null,
-      ts: processStartedAt + 300,
-    });
-
-    const peerFrames = mocks.mockBridgeSocket.write.mock.calls
-      .map(([line]) => JSON.parse(line as string) as Record<string, unknown>)
-      .filter((frame) => frame.type === 'peer_message');
-    expect(mocks.mockGetPeerMessages).toHaveBeenCalledWith(200);
-    expect(peerFrames).toEqual([
-      {
-        type: 'peer_message',
-        id: 'peer-older',
-        from: 'sender-1',
-        fromTitle: 'Sender one',
-        body: 'Older message',
-        replyTo: null,
-        ts: processStartedAt + 100,
-      },
-      {
-        type: 'peer_message',
-        id: 'peer-newer',
-        from: 'sender-2',
-        fromTitle: 'Sender two',
-        body: 'Newer message',
-        replyTo: 'peer-older',
-        ts: processStartedAt + 200,
-      },
-      {
-        type: 'peer_message',
-        id: 'peer-live',
-        from: 'sender-3',
-        fromTitle: 'Sender three',
-        body: 'Live message',
-        replyTo: null,
-        ts: processStartedAt + 300,
-      },
-    ]);
-
-    child.emitExit(0);
-    await vi.advanceTimersByTimeAsync(200);
-    await runPromise;
-  });
-
-  it('cold-forwards only peer messages sent since this CLI process started', async () => {
-    vi.useFakeTimers();
-    const processStartedAt = 2_000_000;
-    vi.setSystemTime(processStartedAt);
-    mocks.mockGetPeerMessages.mockResolvedValueOnce([
-      {
-        id: 'after-process-start',
-        fromSessionId: 'sender-new',
-        fromTitle: 'New sender',
-        toSessionId: 'happy-session-1',
-        body: 'Arrived while the bridge was starting',
-        replyTo: null,
-        ts: processStartedAt + 1,
-        cursor: '0-2',
-        createdAt: processStartedAt + 1,
-      },
-      {
-        id: 'before-process-start',
-        fromSessionId: 'sender-old',
-        fromTitle: 'Old sender',
-        toSessionId: 'happy-session-1',
-        body: 'Remains in the app inbox',
-        replyTo: null,
-        ts: processStartedAt - 1,
-        cursor: '0-1',
-        createdAt: processStartedAt - 1,
-      },
-    ]);
-    const runPromise = runOmp({ credentials });
-    await settleMicrotasks();
-
-    mocks.emitBridgeFrame({
-      type: 'ready',
-      protocolVersion: 1,
-      sessionId: 'omp-root-peer-boundary',
-    });
-    await vi.advanceTimersByTimeAsync(1);
-    await settleMicrotasks();
-
-    const peerFrames = mocks.mockBridgeSocket.write.mock.calls
-      .map(([line]) => JSON.parse(line as string) as Record<string, unknown>)
-      .filter((frame) => frame.type === 'peer_message');
-    expect(peerFrames).toEqual([
-      {
-        type: 'peer_message',
-        id: 'after-process-start',
-        from: 'sender-new',
-        fromTitle: 'New sender',
-        body: 'Arrived while the bridge was starting',
-        replyTo: null,
-        ts: processStartedAt + 1,
-      },
-    ]);
-
-    child.emitExit(0);
-    await vi.advanceTimersByTimeAsync(200);
-    await runPromise;
-  });
 
   it('forwards OMP bridge usage as the exact shared token_count payload', async () => {
     vi.useFakeTimers();

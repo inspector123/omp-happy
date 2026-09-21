@@ -20,27 +20,6 @@ describe('ApiUpdateSchema', () => {
         expect(parsed.success).toBe(true);
     });
 
-    it('accepts peer messages delivered through the feed update', () => {
-        const parsed = ApiUpdateSchema.safeParse({
-            t: 'new-feed-post',
-            id: 'feed-item-1',
-            body: {
-                kind: 'peer_message',
-                id: 'peer-message-1',
-                fromSessionId: 'session-sender',
-                fromTitle: 'Research session',
-                toSessionId: 'session-target',
-                body: 'Please check the failing request.',
-                replyTo: null,
-                ts: 1700000000000,
-            },
-            cursor: 'f:42',
-            createdAt: 1700000000000,
-            repeatKey: null,
-        });
-
-        expect(parsed.success).toBe(true);
-    });
 
     // Regression: cold-onboarding "machine never shows up / can't start a new
     // session until app restart". When a machine is created, the server emits a

@@ -16,8 +16,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { FeedItemCard } from './FeedItemCard';
 import { VoiceAssistantStatusBar } from './VoiceAssistantStatusBar';
-import { Item } from './Item';
-import { filterPeerMessages } from '@/sync/peerMessages';
 
 const styles = StyleSheet.create((theme) => ({
     container: {
@@ -104,7 +102,6 @@ export const InboxView = React.memo(({}: InboxViewProps) => {
     const friendRequests = useFriendRequests();
     const requestedFriends = useRequestedFriends();
     const feedItems = useFeedItems();
-    const peerMessageCount = filterPeerMessages(feedItems).length;
     const feedLoaded = useFeedLoaded();
     const friendsLoaded = useFriendsLoaded();
     const { theme } = useUnistyles();
@@ -194,16 +191,6 @@ export const InboxView = React.memo(({}: InboxViewProps) => {
             }}>
                 <UpdateBanner />
                 
-                {peerMessageCount > 0 && (
-                    <ItemGroup title={t('peers.title')}>
-                        <Item
-                            title={t('peers.viewAll')}
-                            icon={<Ionicons name="chatbubbles-outline" size={20} color={theme.colors.textSecondary} />}
-                            onPress={() => router.push('/peers')}
-                            showChevron={true}
-                        />
-                    </ItemGroup>
-                )}
 
                 {feedItems.length > 0 && (
                     <>

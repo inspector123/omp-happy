@@ -54,22 +54,6 @@ export default function RootLayout() {
                 }}
             />
             <Stack.Screen
-                name="peers/index"
-                options={{
-                    headerShown: false,
-                    headerTitle: t('peers.title'),
-                    headerBackTitle: t('tabs.inbox')
-                }}
-            />
-            <Stack.Screen
-                name="peers/[sessionId]"
-                options={{
-                    headerShown: true,
-                    headerTitle: t('peers.title'),
-                    headerBackTitle: t('peers.title')
-                }}
-            />
-            <Stack.Screen
                 name="settings/index"
                 options={{
                     headerShown: true,

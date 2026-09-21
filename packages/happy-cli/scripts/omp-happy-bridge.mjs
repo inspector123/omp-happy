@@ -332,10 +332,6 @@ export default function happyBridgeExtension(pi) {
   let controlMode = process.env[CONTROL_MODE_ENV] === 'remote' ? 'remote' : 'local';
   const pendingAskRequests = new Map();
   const usageTelemetry = createUsageTelemetry();
-  const peerResultHandlers = new Set();
-  const peerMessageHandlers = new Set();
-  const pendingPeerResults = [];
-  const pendingPeerMessages = [];
 
 
 
@@ -348,51 +344,6 @@ export default function happyBridgeExtension(pi) {
     }
     if (connected && socket?.writable) socket.write(line);
     else pendingFrames.push(line);
-  };
-  const callPeerHandler = (handler, value) => {
-    try {
-      handler(value);
-    } catch {
-      // A peer consumer must not interrupt the bridge command stream.
-    }
-  };
-  const dispatchPeerResult = (frame) => {
-    if (peerResultHandlers.size === 0) {
-      pendingPeerResults.push(frame);
-      return;
-    }
-    for (const handler of peerResultHandlers) callPeerHandler(handler, frame);
-  };
-  const dispatchPeerMessage = (message) => {
-    if (peerMessageHandlers.size === 0) {
-      pendingPeerMessages.push(message);
-      return;
-    }
-    for (const handler of peerMessageHandlers) callPeerHandler(handler, message);
-  };
-  const peerHook = {
-    send(request) {
-      send({
-        type: 'peer_send',
-        requestId: request.requestId,
-        to: request.to,
-        body: request.body,
-        ...(typeof request.replyTo === 'string' ? { replyTo: request.replyTo } : {}),
-      });
-    },
-    roster(requestId) {
-      send({ type: 'peer_roster', requestId });
-    },
-    onResult(handler) {
-      if (typeof handler !== 'function') return;
-      peerResultHandlers.add(handler);
-      for (const frame of pendingPeerResults.splice(0)) callPeerHandler(handler, frame);
-    },
-    onMessage(handler) {
-      if (typeof handler !== 'function') return;
-      peerMessageHandlers.add(handler);
-      for (const message of pendingPeerMessages.splice(0)) callPeerHandler(handler, message);
-    },
   };
   const publishUsage = (ctx, options) => {
     if (!ctx) return false;
@@ -504,21 +455,6 @@ export default function happyBridgeExtension(pi) {
 
   const handleCommand = async (command) => {
     if (!command || typeof command !== 'object') return;
-    if (command.type === 'peer_message') {
-      dispatchPeerMessage({
-        id: command.id,
-        from: command.from,
-        fromTitle: command.fromTitle,
-        body: command.body,
-        replyTo: command.replyTo ?? null,
-        ts: command.ts,
-      });
-      return;
-    }
-    if (command.type === 'peer_send_result' || command.type === 'peer_roster_result') {
-      dispatchPeerResult(command);
-      return;
-    }
     if (await sendPromptCommand(pi, command)) {
       return;
     }
@@ -590,7 +526,6 @@ export default function happyBridgeExtension(pi) {
       connected = true;
       buffer = '';
       for (const frame of pendingFrames.splice(0)) socket.write(frame);
-      globalThis.__ompHappyPeer = peerHook;
       if (connectedOnce && latestContext) publishReady(latestContext);
       connectedOnce = true;
     });
@@ -722,7 +657,6 @@ export default function happyBridgeExtension(pi) {
     publishUsage(ctx, { force: true });
     shuttingDown = true;
     clearTimeout(reconnectTimer);
-    if (globalThis.__ompHappyPeer === peerHook) delete globalThis.__ompHappyPeer;
     socket?.end();
   });
 }
