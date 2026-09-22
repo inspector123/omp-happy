@@ -30,7 +30,7 @@ import {
 } from '@/components/MultiTextInput';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+import { KeyboardAvoidingView, useKeyboardState } from 'react-native-keyboard-controller';
 import Constants from 'expo-constants';
 import { useHeaderHeight } from '@/utils/responsive';
 import { t } from '@/text';
@@ -139,10 +139,13 @@ function BottomSheet({
     visible,
     onClose,
     children,
+    keyboardHeight = 0,
 }: {
     visible: boolean;
     onClose: () => void;
     children: React.ReactNode;
+    /** Pixels to lift the sheet above the keyboard (0 = keyboard hidden). */
+    keyboardHeight?: number;
 }) {
     const { theme } = useUnistyles();
     const safeArea = useSafeAreaInsets();
@@ -169,6 +172,11 @@ function BottomSheet({
     // Android: slide-up sheet with backdrop
     const fadeAnim = React.useRef(new Animated.Value(0)).current;
     const slideAnim = React.useRef(new Animated.Value(300)).current;
+    const windowDims = useWindowDimensions();
+    // Modal windows on Android don't resize for the keyboard (edge-to-edge), so
+    // the sheet must translate itself above the keyboard and cap its height.
+    const keyboardLifted = keyboardHeight > 0;
+    const sheetTranslateY = Animated.subtract(slideAnim, keyboardHeight);
 
     React.useEffect(() => {
         if (visible) {
@@ -200,8 +208,11 @@ function BottomSheet({
                         sheetStyles.sheet,
                         {
                             backgroundColor: theme.colors.header.background,
-                            paddingBottom: Math.max(16, safeArea.bottom),
-                            transform: [{ translateY: slideAnim }],
+                            paddingBottom: keyboardLifted ? 16 : Math.max(16, safeArea.bottom),
+                            maxHeight: keyboardLifted
+                                ? Math.max(240, windowDims.height - keyboardHeight - 24)
+                                : sheetStyles.sheet.maxHeight,
+                            transform: [{ translateY: sheetTranslateY }],
                         },
                     ]}
                 >
@@ -525,6 +536,7 @@ function getMachineName(machine: Machine): string {
 type PromptInputProps = {
     placeholder: string;
     onKeyPress?: (e: KeyPressEvent) => boolean;
+    maxHeight?: number;
 };
 const PromptInput = React.memo(React.forwardRef<MultiTextInputHandle, PromptInputProps>(
     function PromptInput(props, ref) {
@@ -539,7 +551,7 @@ const PromptInput = React.memo(React.forwardRef<MultiTextInputHandle, PromptInpu
                 lineHeight={MULTI_TEXT_INPUT_LINE_HEIGHT}
                 paddingTop={COMPOSER_INPUT_VERTICAL_PADDING}
                 paddingBottom={COMPOSER_INPUT_VERTICAL_PADDING}
-                maxHeight={COMPOSER_INPUT_MAX_HEIGHT}
+                maxHeight={props.maxHeight ?? COMPOSER_INPUT_MAX_HEIGHT}
                 onKeyPress={props.onKeyPress}
             />
         );
@@ -550,6 +562,23 @@ function NewSessionScreen() {
     const { theme } = useUnistyles();
     const safeArea = useSafeAreaInsets();
     const headerHeight = useHeaderHeight();
+    const keyboard = useKeyboardState();
+    const windowDims = useWindowDimensions();
+    const keyboardVisible = Platform.OS === 'android' && keyboard.isVisible;
+    // rkc keyboard height includes the gesture-nav inset (same subtraction as
+    // AgentContentView); the visual keyboard top is screen height minus this lift.
+    const keyboardLift = keyboardVisible ? Math.max(0, keyboard.height - safeArea.bottom) : 0;
+    // The keyboard-avoiding container shrinks, but the config card and composer
+    // keep their natural height, so the bottom of the composer (send/image
+    // buttons) gets clipped. Cap the input height so everything fits above the
+    // keyboard; 96 covers the gap, input box chrome, button row, and bottom pad.
+    const composerInputMaxHeight = React.useMemo(() => {
+        if (!keyboardVisible) {
+            return COMPOSER_INPUT_MAX_HEIGHT;
+        }
+        const available = windowDims.height - headerHeight - keyboardLift - 96;
+        return Math.max(72, Math.min(COMPOSER_INPUT_MAX_HEIGHT, Math.round(available)));
+    }, [keyboardVisible, windowDims.height, headerHeight, keyboardLift]);
     const router = useRouter();
     const navigation = useNavigation();
     const navigateToSession = useNavigateToSession();
@@ -1385,6 +1414,7 @@ function NewSessionScreen() {
                     ref={composerInputRef}
                     placeholder="What would you like to work on?"
                     onKeyPress={handleKeyPress}
+                    maxHeight={composerInputMaxHeight}
                 />
             </View>
             <View style={styles.actionButtonsContainer}>
@@ -1510,6 +1540,7 @@ function NewSessionScreen() {
                 <BottomSheet
                     visible={!!activePicker}
                     onClose={() => setActivePicker(null)}
+                    keyboardHeight={keyboardLift}
                 >
                     {activePicker === 'path' ? (
                         <PathPickerContent
@@ -1878,7 +1909,7 @@ const sheetStyles = {
 const pickerStyles = {
     container: {
         paddingHorizontal: 16,
-        paddingBottom: 8,
+        paddingBottom: 16,
     } as const,
     embeddedContainer: {
         width: '100%',
@@ -1923,7 +1954,7 @@ const pickerStyles = {
         paddingHorizontal: 12,
         paddingVertical: 10,
         borderRadius: 12,
-        marginBottom: 8,
+        marginBottom: 12,
     },
     embeddedSearchRow: {
         width: '100%',
@@ -1998,7 +2029,7 @@ const pickerStyles = {
         alignItems: 'center' as const,
         gap: 12,
         paddingHorizontal: 12,
-        paddingVertical: 12,
+        paddingVertical: 14,
         borderRadius: 12,
     },
     embeddedOption: {
