@@ -1,11 +1,6 @@
 import React from 'react';
-import { UsagePanel } from '@/components/usage/UsagePanel';
-import { ItemList } from '@/components/ItemList';
+import { OmpUsagePanel } from '@/components/usage/OmpUsagePanel';
 
-export default function UsageSettingsScreen() {
-    return (
-        <ItemList style={{ paddingTop: 0 }}>
-            <UsagePanel />
-        </ItemList>
-    );
+export default function UsageScreen() {
+    return <OmpUsagePanel />;
 }
