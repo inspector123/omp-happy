@@ -384,6 +384,34 @@ The extension also listens for `task:subagent:lifecycle` and forwards child life
 
 Buffers and deduplication sets are bounded. Ambiguous, duplicate, or unbound child sockets are ignored rather than attached to the wrong delegated task.
 
+#### Choosing a subagent model
+
+OMP 18.3.5 selects task models through agent definitions. Its native `task` schema does not expose a per-call `model` field; passing that extra field can silently leave the worker on another model.
+
+This repository includes [the `gpt-5.5` agent](.omp/agents/gpt-5.5.md), whose frontmatter selects `openai-codex/gpt-5.5`. OMP discovers it when running in this checkout. To make it available from other working directories, link it into the user agent directory:
+
+```bash
+mkdir -p ~/.omp/agent/agents
+ln -s ~/projects/omp-happy/.omp/agents/gpt-5.5.md ~/.omp/agent/agents/gpt-5.5.md
+```
+
+Choose it through the existing native `task` tool:
+
+```json
+{
+  "context": "The assignment's shared context.",
+  "tasks": [{
+    "agent": "gpt-5.5",
+    "task": "Complete the requested assignment.",
+    "solutionSpace": "Describe the decisions the assignment leaves open."
+  }]
+}
+```
+
+For another model, add a uniquely named `.omp/agents/*.md` definition with `name`, `description`, and the desired `provider/model` in `model`, then select that agent name. Live task dispatch rediscovers these files without restarting the chat. An existing `task.agentModelOverrides` entry takes precedence over frontmatter, so check the child's recorded model when verifying a selection. This does not change the parent chat model or replace native task scheduling, steering, or result handling.
+
+The native terminal composer also supports typing `^` to choose a model for a task. Submitted model tags create session-local agent names such as `m1`; this terminal interaction is separate from the companion's chat-model picker.
+
 ## Companion to OMP: prompts and controls
 
 The relay client in `runOmp.ts` receives app messages and converts them into socket commands.
