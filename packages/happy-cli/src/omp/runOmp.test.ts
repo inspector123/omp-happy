@@ -1845,6 +1845,45 @@ describe('runOmp', () => {
     expect(outputMessages[1]?.streamId).not.toBe(outputMessages[2]?.streamId);
   });
 
+  // In the interactive TUI, omp can deliver Claude's text_delta events after
+  // message_end, turn_end, and agent_end for the same message.
+  it.each([
+    { name: 'no delta', before: [] as string[], after: ['Good. ', 'That covers ', 'step 1.'] },
+    { name: 'one delta', before: ['Good. '], after: ['That covers ', 'step 1.'] },
+  ])('mirrors a reply once when deltas arrive after message_end ($name before end)', async ({ before, after }) => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-late-deltas' });
+    await vi.advanceTimersByTimeAsync(1);
+
+    const finalText = 'Good. That covers step 1.';
+    const message = { role: 'assistant', timestamp: 1791480834579, content: [{ type: 'text', text: finalText }] };
+    const delta = (text: string) => mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: { type: 'message_update', message, assistantMessageEvent: { type: 'text_delta', delta: text } },
+    });
+
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_start' } });
+    before.forEach(delta);
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'message_end', message } });
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'turn_end' } });
+    delta(after[0]!);
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_end' } });
+    after.slice(1).forEach(delta);
+    await vi.advanceTimersByTimeAsync(500);
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+
+    const outputMessages = mocks.mockSession.sendAgentMessage.mock.calls
+      .map((call) => call[1])
+      .filter((sent) => sent.type === 'message' && sent.append === true);
+    expect(outputMessages.map((sent) => sent.message).join('')).toBe(finalText);
+    expect(new Set(outputMessages.map((sent) => sent.streamId)).size).toBe(1);
+  });
+
   it('emits one structured advisor message only at message_end', async () => {
     vi.useFakeTimers();
     const runPromise = runOmp({ credentials });

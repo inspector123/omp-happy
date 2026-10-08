@@ -313,6 +313,14 @@ function isAssistantMessage(message: unknown): boolean {
   return isRecord(message) && message.role === 'assistant';
 }
 
+// omp keeps one message object for the whole stream, so its start timestamp
+// (or the provider response id) identifies which message a delta belongs to.
+function assistantMessageKey(message: unknown): string | undefined {
+  if (!isRecord(message)) return undefined;
+  if (typeof message.timestamp === 'number') return `ts:${message.timestamp}`;
+  return asString(message.responseId);
+}
+
 function isUserMessage(message: unknown): boolean {
   return isRecord(message) && message.role === 'user';
 }
@@ -658,6 +666,11 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   const cliStartedAt = Date.now();
   let ignoredResumeBacklog = 0;
   let assistantTextEmitted = false;
+  // In the interactive TUI, omp can deliver Claude's text_delta events after
+  // message_end, turn_end, and even agent_end. message_end mirrors whatever
+  // text has not streamed yet, so later deltas for that message are dropped.
+  const streamedAssistantText = new Map<string, string>();
+  const endedAssistantMessages = new Set<string>();
   let thinking = false;
   let pendingText = '';
   let pendingKind: 'output' | 'thinking' | null = null;
@@ -1255,6 +1268,11 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     if (eventType === 'text_delta') {
       const delta = asString(event.assistantMessageEvent.delta) ?? '';
       if (delta.length > 0) {
+        const key = assistantMessageKey(event.message);
+        if (key) {
+          if (endedAssistantMessages.has(key)) return;
+          streamedAssistantText.set(key, (streamedAssistantText.get(key) ?? '') + delta);
+        }
         assistantTextEmitted = true;
         appendPendingText('output', delta);
       }
@@ -1275,6 +1293,32 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         assistantTextEmitted = true;
         appendPendingText('output', errorMessage);
       }
+    }
+  };
+
+  const mirrorEndedAssistantText = (message: unknown): void => {
+    const text = extractMessageText(message);
+    const key = assistantMessageKey(message);
+    if (!key) {
+      if (!assistantTextEmitted && text.length > 0) {
+        assistantTextEmitted = true;
+        appendPendingText('output', text);
+        flushPendingText();
+      }
+      return;
+    }
+    if (endedAssistantMessages.has(key)) return;
+    const streamed = streamedAssistantText.get(key) ?? '';
+    // If the streamed text diverged from the final text, keep accepting
+    // deltas rather than risk dropping text the phone has not received.
+    if (!text.startsWith(streamed)) return;
+    endedAssistantMessages.add(key);
+    streamedAssistantText.delete(key);
+    const missing = text.slice(streamed.length);
+    if (missing.length > 0) {
+      assistantTextEmitted = true;
+      appendPendingText('output', missing);
+      flushPendingText();
     }
   };
 
@@ -1302,6 +1346,8 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
       case 'agent_start': {
         turnStarted = true;
         assistantTextEmitted = false;
+        streamedAssistantText.clear();
+        endedAssistantMessages.clear();
         pendingText = '';
         pendingKind = null;
         lastPlanJson = '';
@@ -1324,13 +1370,8 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         if (isUserMessage(event.message)) {
           return;
         }
-        if (isAssistantMessage(event.message) && !assistantTextEmitted) {
-          const text = extractMessageText(event.message);
-          if (text.length > 0) {
-            assistantTextEmitted = true;
-            appendPendingText('output', text);
-            flushPendingText();
-          }
+        if (isAssistantMessage(event.message)) {
+          mirrorEndedAssistantText(event.message);
         }
         const advisorNotes = extractAdvisorNotes(event.message);
         if (advisorNotes.length > 0) {
