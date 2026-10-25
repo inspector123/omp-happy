@@ -517,6 +517,8 @@ export const en: TranslationStructure = {
         showArchived: 'Show archived',
         hideArchived: 'Hide archived',
         newSession: 'New session',
+        searchSessions: 'Search sessions',
+        allMachines: 'All machines',
     },
 
     zen: {
@@ -879,6 +881,9 @@ export const en: TranslationStructure = {
         switchedToMode: ({ mode }: { mode: string }) => `Switched to ${mode} mode`,
         unknownEvent: 'Unknown event',
         usageLimitUntil: ({ time }: { time: string }) => `Usage limit reached until ${time}`,
+        ompError: ({ message }: { message: string }) => `Error: ${message}`,
+        ompJobCompleted: 'Background job completed',
+        ompJobFailed: 'Background job failed',
         sentAsGoal: 'Sent as goal',
         queued: 'Queued',
         queuedEditUnavailableTitle: 'Can\'t edit queued message',

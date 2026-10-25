@@ -8,13 +8,44 @@ import {
   formatAskResult,
   getModelSnapshot,
   getThinkingSnapshot,
+  isForwardedCustomEntry,
   resolveModel,
   resolveRequestedModel,
   resolveTuiCommand,
   selectAskTools,
+  selectNewSessionEntries,
   sendPromptCommand,
   setOmpSessionTitle,
 } from './omp-happy-bridge.mjs';
+
+describe('OMP Happy bridge session entry polling', () => {
+  it('initializes the cursor on the first poll and skips history', () => {
+    const entries = [{ id: 'a' }, { id: 'b' }];
+    expect(selectNewSessionEntries(entries, null)).toEqual({ fresh: [], nextCount: 2 });
+  });
+
+  it('returns only entries appended after the last poll', () => {
+    const entries = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+    expect(selectNewSessionEntries(entries, 2)).toEqual({ fresh: [{ id: 'c' }], nextCount: 3 });
+    expect(selectNewSessionEntries(entries, 3)).toEqual({ fresh: [], nextCount: 3 });
+  });
+
+  it('skips history when the entry list shrinks (session reset or switch)', () => {
+    const entries = [{ id: 'x' }];
+    expect(selectNewSessionEntries(entries, 42)).toEqual({ fresh: [], nextCount: 1 });
+  });
+
+  it('tolerates a non-array entry list', () => {
+    expect(selectNewSessionEntries(undefined, 4)).toEqual({ fresh: [], nextCount: 4 });
+  });
+
+  it('forwards only async-result custom messages', () => {
+    expect(isForwardedCustomEntry({ type: 'custom_message', customType: 'async-result' })).toBe(true);
+    expect(isForwardedCustomEntry({ type: 'custom_message', customType: 'skill-prompt' })).toBe(false);
+    expect(isForwardedCustomEntry({ type: 'message', role: 'assistant' })).toBe(false);
+    expect(isForwardedCustomEntry(undefined)).toBe(false);
+  });
+});
 
 describe('OMP Happy bridge models', () => {
   const models = [

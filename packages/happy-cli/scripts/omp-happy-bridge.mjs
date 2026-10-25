@@ -7,6 +7,32 @@ const REMOTE_ASK_TOOL = 'happy_ask';
 const PROTOCOL_VERSION = 1;
 const USAGE_PUBLISH_INTERVAL_MS = 500;
 const OMP_MIN_TOKEN_RATE_DURATION_MS = 100;
+const ENTRY_POLL_INTERVAL_MS = 2_000;
+// Custom messages (e.g. async-result background job deliveries) that the phone
+// should mirror. Everything else appended to the session stays local.
+const FORWARDED_CUSTOM_TYPES = { 'async-result': true };
+
+/**
+ * Returns the session entries appended since the last poll. `lastEntryCount`
+ * is the previous entry count (null before the first poll); a shrunk list
+ * means the session manager was reset or switched, so history is skipped and
+ * only entries appended after the (re)start are mirrored.
+ */
+export function selectNewSessionEntries(entries, lastEntryCount) {
+  if (!Array.isArray(entries)) {
+    return { fresh: [], nextCount: lastEntryCount ?? 0 };
+  }
+  if (lastEntryCount === null || entries.length < lastEntryCount) {
+    return { fresh: [], nextCount: entries.length };
+  }
+  return { fresh: entries.slice(lastEntryCount), nextCount: entries.length };
+}
+
+export function isForwardedCustomEntry(entry) {
+  return Boolean(entry)
+    && entry.type === 'custom_message'
+    && Boolean(FORWARDED_CUSTOM_TYPES[entry.customType]);
+}
 
 function safeStringify(value) {
   const seen = new WeakSet();
@@ -333,7 +359,12 @@ export default function happyBridgeExtension(pi) {
   const pendingAskRequests = new Map();
   const usageTelemetry = createUsageTelemetry();
 
-
+  // Custom messages (e.g. async-result background job deliveries) are appended
+  // straight to the session without flowing through the agent event stream, so
+  // the only extension-visible signal is the session entry list itself. Poll it
+  // and forward new entries the phone should mirror.
+  let entryPollTimer;
+  let lastEntryCount = null;
 
   const send = (frame) => {
     let line;
@@ -354,6 +385,57 @@ export default function happyBridgeExtension(pi) {
   };
   const resetLiveSpeed = () => {
     usageTelemetry.resetSpeed();
+  };
+
+  const pollSessionEntries = () => {
+    const sessionManager = latestContext?.sessionManager;
+    if (!sessionManager || typeof sessionManager.getEntries !== 'function') return;
+    let entries;
+    try {
+      entries = sessionManager.getEntries();
+    } catch {
+      return;
+    }
+    const { fresh, nextCount } = selectNewSessionEntries(entries, lastEntryCount);
+    lastEntryCount = nextCount;
+    for (const entry of fresh) {
+      if (!isForwardedCustomEntry(entry)) continue;
+      send({
+        type: 'agent_event',
+        event: {
+          type: 'custom_message',
+          customType: entry.customType,
+          content: entry.content,
+          details: entry.details,
+        },
+      });
+    }
+  };
+
+  const ensureEntryPolling = (ctx) => {
+    latestContext = ctx;
+    lastEntryCount = null;
+    if (entryPollTimer) return;
+    if (typeof ctx?.setInterval === 'function') {
+      entryPollTimer = ctx.setInterval(() => {
+        try {
+          pollSessionEntries();
+        } catch {
+          // Polling must never break the host session; the next tick retries.
+        }
+      }, ENTRY_POLL_INTERVAL_MS);
+      return;
+    }
+    // Older OMP builds without ctx.setInterval: fall back to a raw unref'd
+    // timer so the poll cannot keep the process alive.
+    entryPollTimer = setInterval(() => {
+      try {
+        pollSessionEntries();
+      } catch {
+        // Polling must never break the host session; the next tick retries.
+      }
+    }, ENTRY_POLL_INTERVAL_MS);
+    entryPollTimer.unref?.();
   };
 
   const setControlMode = (mode) => {
@@ -571,10 +653,12 @@ export default function happyBridgeExtension(pi) {
   pi.on('session_start', async (_event, ctx) => {
     usageTelemetry.reset();
     setControlMode(controlMode);
+    ensureEntryPolling(ctx);
     publishReady(ctx);
   });
   pi.on('session_switch', async (event, ctx) => {
     usageTelemetry.reset();
+    ensureEntryPolling(ctx);
     publishReady(ctx);
     send({ type: 'agent_event', event });
   });

@@ -534,6 +534,8 @@ export const ru: TranslationStructure = {
         showArchived: 'Показать архив',
         hideArchived: 'Скрыть архив',
         newSession: 'Новая сессия',
+        searchSessions: 'Поиск сессий',
+        allMachines: 'Все машины',
     },
 
     zen: {
@@ -869,6 +871,9 @@ export const ru: TranslationStructure = {
         switchedToMode: ({ mode }: { mode: string }) => `Переключено в режим ${mode}`,
         unknownEvent: 'Неизвестное событие',
         usageLimitUntil: ({ time }: { time: string }) => `Лимит использования достигнут до ${time}`,
+        ompError: ({ message }: { message: string }) => `Ошибка: ${message}`,
+        ompJobCompleted: 'Фоновая задача завершена',
+        ompJobFailed: 'Сбой фоновой задачи',
         sentAsGoal: 'Отправлено в качестве цели',
         queued: 'В очереди',
         queuedEditUnavailableTitle: 'Невозможно изменить сообщение в очереди',

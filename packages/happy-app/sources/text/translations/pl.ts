@@ -534,6 +534,8 @@ export const pl: TranslationStructure = {
         showArchived: 'Pokaż zarchiwizowane',
         hideArchived: 'Ukryj zarchiwizowane',
         newSession: 'Nowa sesja',
+        searchSessions: 'Szukaj sesji',
+        allMachines: 'Wszystkie maszyny',
     },
 
     zen: {
@@ -881,6 +883,9 @@ export const pl: TranslationStructure = {
         switchedToMode: ({ mode }: { mode: string }) => `Przełączono na tryb ${mode}`,
         unknownEvent: 'Nieznane zdarzenie',
         usageLimitUntil: ({ time }: { time: string }) => `Osiągnięto limit użycia do ${time}`,
+        ompError: ({ message }: { message: string }) => `Błąd: ${message}`,
+        ompJobCompleted: 'Zadanie w tle ukończone',
+        ompJobFailed: 'Zadanie w tle nie powiodło się',
         sentAsGoal: 'Sent as goal',
         queued: 'W kolejce',
         queuedEditUnavailableTitle: 'Nie można edytować wiadomości w kolejce',

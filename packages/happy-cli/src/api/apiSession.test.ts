@@ -352,6 +352,82 @@ describe('ApiSessionClient v3 messages API migration', () => {
         expect(decryptPayload(thirdBatch[4])).toMatchObject({ content: { data: { index: 55 } } });
     });
 
+    describe('server body limit', () => {
+        const serverBodyLimit = 1024 * 1024;
+        const decryptPosted = () => mockAxiosPost.mock.calls
+            .flatMap(([, body]) => body.messages)
+            .map((message: { content: string }) => decrypt(
+                session.encryptionKey,
+                session.encryptionVariant,
+                decodeBase64(message.content),
+            ));
+        const expectEveryPostUnderLimit = () => {
+            for (const [, body] of mockAxiosPost.mock.calls) {
+                expect(JSON.stringify(body).length).toBeLessThan(serverBodyLimit);
+            }
+        };
+
+        it('shortens an oversized message so it and later messages still reach the server', async () => {
+            const client = new ApiSessionClient('fake-token', session);
+            mockAxiosPost.mockResolvedValue({ data: { messages: [] } });
+            const screenshot = 'A'.repeat(2 * 1024 * 1024);
+
+            client.sendAgentMessage('omp', {
+                type: 'tool-result',
+                callId: 'shot-1',
+                output: { content: [{ type: 'image', data: screenshot, mimeType: 'image/png' }] },
+                id: 'result-1',
+            });
+            client.sendAgentMessage('omp', { type: 'message', message: 'after the screenshot' });
+
+            await waitForCheck(() => {
+                expect(decryptPosted()).toHaveLength(2);
+            });
+            expectEveryPostUnderLimit();
+            const [toolResult, followUp] = decryptPosted();
+            expect(toolResult).toMatchObject({
+                content: { data: { type: 'tool-result', callId: 'shot-1', id: 'result-1' } },
+            });
+            const image = toolResult.content.data.output.content[0];
+            expect(image.mimeType).toBe('image/png');
+            expect(image.data.length).toBeLessThan(screenshot.length);
+            expect(image.data).toContain('characters omitted to fit the sync size limit');
+            expect(followUp).toMatchObject({ content: { data: { type: 'message', message: 'after the screenshot' } } });
+        });
+
+        it('splits pending messages into POSTs that stay under the limit, in order', async () => {
+            const client = new ApiSessionClient('fake-token', session);
+            mockAxiosPost.mockResolvedValue({ data: { messages: [] } });
+            const chunk = 'B'.repeat(400 * 1024);
+
+            for (let index = 0; index < 3; index += 1) {
+                client.sendCodexMessage({ type: 'large', index, chunk });
+            }
+
+            await waitForCheck(() => {
+                expect(decryptPosted()).toHaveLength(3);
+            });
+            expectEveryPostUnderLimit();
+            expect(decryptPosted().map((message) => message.content.data.index)).toEqual([0, 1, 2]);
+            expect(decryptPosted()[2].content.data.chunk).toBe(chunk);
+        });
+
+        it('drops a message that cannot be shortened enough and keeps sending later ones', async () => {
+            const client = new ApiSessionClient('fake-token', session);
+            mockAxiosPost.mockResolvedValue({ data: { messages: [] } });
+            const manyShortLines = Array.from({ length: 4000 }, () => 'C'.repeat(300));
+
+            client.sendCodexMessage({ type: 'unshrinkable', lines: manyShortLines });
+            client.sendCodexMessage({ type: 'next' });
+
+            await waitForCheck(() => {
+                expect(decryptPosted()).toHaveLength(1);
+            });
+            expectEveryPostUnderLimit();
+            expect(decryptPosted()[0]).toMatchObject({ content: { data: { type: 'next' } } });
+        });
+    });
+
     it('retries failed POST and succeeds without dropping queued messages', async () => {
         const client = new ApiSessionClient('fake-token', session);
 

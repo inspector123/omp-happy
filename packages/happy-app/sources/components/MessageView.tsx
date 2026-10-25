@@ -10,6 +10,7 @@ import { ToolView } from "./tools/ToolView";
 import { AgentEvent } from "@/sync/typesRaw";
 import { sync } from '@/sync/sync';
 import { useIsMessageQueued, useIsQueuedMessageEditable, useSetting } from '@/sync/storage';
+import { formatWorkDuration } from '@/hooks/useGroupedMessages';
 import { Option } from './markdown/MarkdownView';
 import { layout } from "./layout";
 import { parseLocalCommandMessage, isUserSlashCommandEcho } from './parseLocalCommandMessage';
@@ -274,6 +275,40 @@ function AgentEventBlock(props: {
       </View>
     );
   }
+  if (props.event.type === 'omp-error') {
+    return (
+      <View style={styles.ompNoticeContainer}>
+        <View style={styles.ompNoticeRow}>
+          <Ionicons name="warning-outline" size={14} color={styles.ompNoticeErrorText.color as string} />
+          <Text style={styles.ompNoticeErrorText}>{t('message.ompError', { message: props.event.message })}</Text>
+        </View>
+      </View>
+    );
+  }
+  if (props.event.type === 'omp-jobs') {
+    return (
+      <View style={styles.ompNoticeContainer}>
+        {props.event.jobs.map((job, index) => (
+          <View key={`${job.jobId}-${index}`} style={styles.ompNoticeContainer}>
+            <View style={styles.ompNoticeRow}>
+              <Ionicons
+                name={job.failed ? 'close-circle-outline' : 'checkmark-circle-outline'}
+                size={14}
+                color={(job.failed ? styles.ompNoticeErrorText.color : styles.agentEventText.color) as string}
+              />
+              <Text style={styles.agentEventText}>
+                {job.failed ? t('message.ompJobFailed') : t('message.ompJobCompleted')}
+                {job.type ? ` [${job.type}]` : ''}
+                {` ${job.jobId}`}
+                {job.durationMs !== undefined ? ` (${formatWorkDuration(job.durationMs)})` : ''}
+              </Text>
+            </View>
+            {job.error ? <Text style={styles.ompNoticeJobErrorText}>{job.error}</Text> : null}
+          </View>
+        ))}
+      </View>
+    );
+  }
   if (props.event.type === 'limit-reached') {
     const formatTime = (timestamp: number): string => {
       try {
@@ -424,6 +459,28 @@ const styles = StyleSheet.create((theme) => ({
   agentEventText: {
     color: theme.colors.agentEventText,
     fontSize: 14,
+  },
+  ompNoticeContainer: {
+    marginHorizontal: 8,
+    alignItems: 'center',
+    paddingVertical: 4,
+    gap: 2,
+  },
+  ompNoticeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  ompNoticeErrorText: {
+    color: theme.colors.gitRemovedText,
+    fontSize: 14,
+    flexShrink: 1,
+  },
+  ompNoticeJobErrorText: {
+    color: theme.colors.gitRemovedText,
+    fontSize: 12,
+    opacity: 0.85,
+    textAlign: 'center',
   },
   toolContainer: {
     marginHorizontal: 8,

@@ -10,6 +10,7 @@ type HiddenFolderSessionListItem =
     | { type: 'header' }
     | { type: 'active-sessions'; sessions: readonly HiddenFolderSessionRow[] }
     | { type: 'archive-toggle'; hidden: boolean }
+    | { type: 'session-search' }
     | { type: 'project-group' }
     | { type: 'session'; session: HiddenFolderSessionRow };
 

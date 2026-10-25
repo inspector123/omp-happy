@@ -1,3 +1,9 @@
+# October 20 — Archive swipe kills the session
+
+- Swiping a session row to archive it now kills the running session process. When the session's runner can't be reached directly, the app asks the daemon on the session's machine to stop the tracked process, then deactivates the session server-side so the row always leaves the active list.
+- The Archive action in the session info screen and the long-press menu follow the same steps.
+- The session list gains a search field and a machine filter row beneath the archived toggle. Searching matches session names, paths, and machine names, and surfaces archived matches even while archived sessions are hidden.
+
 # August 17 — Lower background battery use
 
 - The mobile app now closes its live sync connection while backgrounded and reconnects on return, while desktop and web clients keep their existing connection behavior.

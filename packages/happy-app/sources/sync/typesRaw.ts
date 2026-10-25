@@ -35,6 +35,25 @@ const advisorEventSchema = z.object({
     notes: z.array(advisorNoteSchema),
 });
 
+const ompJobNoticeSchema = z.object({
+    jobId: z.string(),
+    type: z.string().optional(),
+    label: z.string().optional(),
+    durationMs: z.number().optional(),
+    failed: z.boolean().optional(),
+    error: z.string().optional(),
+});
+
+const ompErrorEventSchema = z.object({
+    type: z.literal('omp-error'),
+    message: z.string(),
+});
+
+const ompJobsEventSchema = z.object({
+    type: z.literal('omp-jobs'),
+    jobs: z.array(ompJobNoticeSchema),
+});
+
 const agentEventSchema = z.discriminatedUnion('type', [z.object({
     type: z.literal('switch'),
     mode: z.enum(['local', 'remote'])
@@ -51,7 +70,7 @@ const agentEventSchema = z.discriminatedUnion('type', [z.object({
     subagentId: z.string().refine((value) => isCuid(value)),
     status: z.enum(['running', 'completed', 'error', 'aborted']),
     title: z.string().optional(),
-}), advisorEventSchema]);
+}), advisorEventSchema, ompErrorEventSchema, ompJobsEventSchema]);
 export type AgentEvent = z.infer<typeof agentEventSchema>;
 
 const sessionTextEventSchema = z.object({
@@ -402,6 +421,9 @@ const rawAgentRecordSchema = z.discriminatedUnion('type', [z.object({
         z.object({ type: z.literal('task_started'), id: z.string() }),
         z.object({ type: z.literal('task_complete'), id: z.string() }),
         z.object({ type: z.literal('turn_aborted'), id: z.string() }),
+        // OMP turn errors and background job results
+        ompErrorEventSchema,
+        ompJobsEventSchema,
         // Permissions
         z.object({
             type: z.literal('permission-request'),
@@ -1151,6 +1173,34 @@ export function normalizeRawMessage(id: string, localId: string | null, createdA
                     content: {
                         type: 'advisor',
                         notes: raw.content.data.notes,
+                    },
+                    meta: raw.meta,
+                } satisfies NormalizedMessage;
+            }
+            if (raw.content.data.type === 'omp-error') {
+                return {
+                    id,
+                    localId,
+                    createdAt,
+                    role: 'event',
+                    isSidechain: false,
+                    content: {
+                        type: 'omp-error',
+                        message: raw.content.data.message,
+                    },
+                    meta: raw.meta,
+                } satisfies NormalizedMessage;
+            }
+            if (raw.content.data.type === 'omp-jobs') {
+                return {
+                    id,
+                    localId,
+                    createdAt,
+                    role: 'event',
+                    isSidechain: false,
+                    content: {
+                        type: 'omp-jobs',
+                        jobs: raw.content.data.jobs,
                     },
                     meta: raw.meta,
                 } satisfies NormalizedMessage;

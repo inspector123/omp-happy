@@ -518,6 +518,8 @@ export const es: TranslationStructure = {
         showArchived: 'Mostrar archivadas',
         hideArchived: 'Ocultar archivadas',
         newSession: 'Nueva sesión',
+        searchSessions: 'Buscar sesiones',
+        allMachines: 'Todas las máquinas',
     },
 
     zen: {
@@ -865,6 +867,9 @@ export const es: TranslationStructure = {
         switchedToMode: ({ mode }: { mode: string }) => `Cambiado al modo ${mode}`,
         unknownEvent: 'Evento desconocido',
         usageLimitUntil: ({ time }: { time: string }) => `Límite de uso alcanzado hasta ${time}`,
+        ompError: ({ message }: { message: string }) => `Error: ${message}`,
+        ompJobCompleted: 'Trabajo en segundo plano completado',
+        ompJobFailed: 'Trabajo en segundo plano fallido',
         sentAsGoal: 'Sent as goal',
         queued: 'En cola',
         queuedEditUnavailableTitle: 'No se puede editar el mensaje en cola',

@@ -1,17 +1,19 @@
 import React from 'react';
-import { View, Pressable, FlatList, Platform } from 'react-native';
+import { View, Pressable, FlatList, Platform, TextInput, ScrollView } from 'react-native';
 import { Text } from '@/components/StyledText';
 import { usePathname } from 'expo-router';
 import { SessionListViewItem, SessionRowData } from '@/sync/storage';
+import type { Machine } from '@/sync/storageTypes';
 import { Ionicons } from '@expo/vector-icons';
 import { type SessionState, formatLastSeen, vibingMessages } from '@/utils/sessionUtils';
 import { Avatar } from './Avatar';
 import { ActiveSessionsGroupCompact } from './ActiveSessionsGroupCompact';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useVisibleSessionListViewData } from '@/hooks/useVisibleSessionListViewData';
+import { useVisibleSessionListViewData, useMachineNames } from '@/hooks/useVisibleSessionListViewData';
+import { machineDisplayName } from '@/utils/machineUtils';
 import { Typography } from '@/constants/Typography';
 import { StatusDot } from './StatusDot';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { useIsTablet } from '@/utils/responsive';
 import { requestReview } from '@/utils/requestReview';
 import { UpdateBanner } from './UpdateBanner';
@@ -194,12 +196,134 @@ const stylesheet = StyleSheet.create((theme) => ({
         paddingHorizontal: 12,
         ...Typography.default('semiBold'),
     },
+    searchRow: {
+        paddingHorizontal: 16,
+        paddingTop: 4,
+        paddingBottom: 10,
+        gap: 8,
+    },
+    searchInputWrap: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: theme.colors.surface,
+        borderRadius: 12,
+        paddingHorizontal: 12,
+        height: 40,
+        gap: 8,
+    },
+    searchInput: {
+        flex: 1,
+        fontSize: 15,
+        color: theme.colors.text,
+        paddingVertical: 0,
+        ...Typography.default(),
+    },
+    chipRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingRight: 8,
+    },
+    chip: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 12,
+        height: 30,
+        borderRadius: 15,
+        backgroundColor: theme.colors.surface,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: theme.colors.groupped.sectionTitle,
+    },
+    chipSelected: {
+        backgroundColor: theme.colors.surfaceSelected,
+        borderColor: 'transparent',
+    },
+    chipText: {
+        fontSize: 13,
+        color: theme.colors.textSecondary,
+        ...Typography.default('semiBold'),
+    },
+    chipTextSelected: {
+        color: theme.colors.text,
+    },
 }));
+
+const SessionSearchRow = React.memo(({
+    search,
+    onSearchChange,
+    machines,
+    machineNames,
+    selectedMachineId,
+    onSelectMachine,
+}: {
+    search: string;
+    onSearchChange: (text: string) => void;
+    machines: Machine[];
+    machineNames: Record<string, string>;
+    selectedMachineId: string | null;
+    onSelectMachine: (machineId: string | null) => void;
+}) => {
+    const styles = stylesheet;
+    const { theme } = useUnistyles();
+    return (
+        <View style={styles.searchRow}>
+            <View style={styles.searchInputWrap}>
+                <Ionicons name="search-outline" size={16} color={theme.colors.textSecondary} />
+                <TextInput
+                    style={styles.searchInput}
+                    value={search}
+                    onChangeText={onSearchChange}
+                    placeholder={t('sidebar.searchSessions')}
+                    placeholderTextColor={theme.colors.textSecondary}
+                    autoCorrect={false}
+                    autoCapitalize="none"
+                    returnKeyType="search"
+                />
+                {search.length > 0 && (
+                    <Pressable onPress={() => onSearchChange('')} hitSlop={8}>
+                        <Ionicons name="close-circle" size={16} color={theme.colors.textSecondary} />
+                    </Pressable>
+                )}
+            </View>
+            <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.chipRow}
+            >
+                <Pressable
+                    style={[styles.chip, selectedMachineId === null && styles.chipSelected]}
+                    onPress={() => onSelectMachine(null)}
+                >
+                    <Text style={[styles.chipText, selectedMachineId === null && styles.chipTextSelected]}>
+                        {t('sidebar.allMachines')}
+                    </Text>
+                </Pressable>
+                {machines.map(machine => (
+                    <Pressable
+                        key={machine.id}
+                        style={[styles.chip, selectedMachineId === machine.id && styles.chipSelected]}
+                        onPress={() => onSelectMachine(machine.id)}
+                    >
+                        <Text
+                            style={[styles.chipText, selectedMachineId === machine.id && styles.chipTextSelected]}
+                            numberOfLines={1}
+                        >
+                            {machineNames[machine.id] ?? machineDisplayName(machine)}
+                        </Text>
+                    </Pressable>
+                ))}
+            </ScrollView>
+        </View>
+    );
+});
 
 export function SessionsList() {
     const styles = stylesheet;
     const safeArea = useSafeAreaInsets();
-    const data = useVisibleSessionListViewData();
+    const [search, setSearch] = React.useState('');
+    const [machineFilter, setMachineFilter] = React.useState<string | null>(null);
+    const { machines, machineNames } = useMachineNames();
+    const data = useVisibleSessionListViewData({ search, machineId: machineFilter });
     const pathname = usePathname();
     const isTablet = useIsTablet();
     const [hideInactiveSessions, setHideInactiveSessions] = useSettingMutable('hideInactiveSessions');
@@ -235,6 +359,7 @@ export function SessionsList() {
             case 'header': return `header-${item.title}-${index}`;
             case 'active-sessions': return 'active-sessions';
             case 'archive-toggle': return 'archive-toggle';
+            case 'session-search': return 'session-search';
             case 'project-group': return `project-group-${item.machine.id}-${item.displayPath}-${index}`;
             case 'session': return `session-${item.session.id}`;
         }
@@ -262,6 +387,18 @@ export function SessionsList() {
                     </Pressable>
                 );
 
+            case 'session-search':
+                return (
+                    <SessionSearchRow
+                        search={search}
+                        onSearchChange={setSearch}
+                        machines={machines}
+                        machineNames={machineNames}
+                        selectedMachineId={machineFilter}
+                        onSelectMachine={setMachineFilter}
+                    />
+                );
+
             case 'active-sessions':
                 return (
                     <ActiveSessionsGroupCompact
@@ -277,7 +414,7 @@ export function SessionsList() {
                             {item.displayPath}
                         </Text>
                         <Text style={styles.projectGroupSubtitle}>
-                            {item.machine.metadata?.displayName || item.machine.metadata?.host || item.machine.id}
+                            {machineDisplayName(item.machine)}
                         </Text>
                     </View>
                 );
@@ -302,7 +439,7 @@ export function SessionsList() {
                     />
                 );
         }
-    }, [selectedSessionId, data, toggleArchived]);
+    }, [selectedSessionId, data, toggleArchived, search, machines, machineNames, machineFilter]);
 
 
     // Remove this section as we'll use FlatList for all items now
@@ -324,6 +461,8 @@ export function SessionsList() {
                     renderItem={renderItem}
                     keyExtractor={keyExtractor}
                     extraData={selectedSessionId}
+                    keyboardShouldPersistTaps="handled"
+                    keyboardDismissMode="on-drag"
                     contentContainerStyle={{ paddingBottom: safeArea.bottom + 128, maxWidth: layout.maxWidth }}
                     ListHeaderComponent={HeaderComponent}
                     windowSize={5}

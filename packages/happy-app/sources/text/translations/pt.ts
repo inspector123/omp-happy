@@ -517,6 +517,8 @@ export const pt: TranslationStructure = {
         showArchived: 'Mostrar arquivadas',
         hideArchived: 'Ocultar arquivadas',
         newSession: 'Nova sessão',
+        searchSessions: 'Pesquisar sessões',
+        allMachines: 'Todas as máquinas',
     },
 
     zen: {
@@ -864,6 +866,9 @@ export const pt: TranslationStructure = {
         switchedToMode: ({ mode }: { mode: string }) => `Mudou para o modo ${mode}`,
         unknownEvent: 'Evento desconhecido',
         usageLimitUntil: ({ time }: { time: string }) => `Limite de uso atingido até ${time}`,
+        ompError: ({ message }: { message: string }) => `Erro: ${message}`,
+        ompJobCompleted: 'Trabalho em segundo plano concluído',
+        ompJobFailed: 'Trabalho em segundo plano falhou',
         sentAsGoal: 'Sent as goal',
         queued: 'Na fila',
         queuedEditUnavailableTitle: 'Não é possível editar a mensagem na fila',

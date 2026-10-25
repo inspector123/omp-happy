@@ -463,6 +463,28 @@ export async function machineStopDaemon(machineId: string): Promise<{ message: s
 }
 
 /**
+ * Stop a daemon-tracked session process on a specific machine. The daemon
+ * SIGTERMs the tracked PID (herdr pane / tmux wrapper / spawned process) —
+ * this reaches sessions whose runner socket is dead, where a session RPC
+ * can't be delivered.
+ */
+export async function machineStopSession(machineId: string, sessionId: string): Promise<{ success: boolean; message?: string }> {
+    try {
+        await apiSocket.machineRPC<{ message: string }, { sessionId: string }>(
+            machineId,
+            'stop-session',
+            { sessionId }
+        );
+        return { success: true };
+    } catch (error) {
+        return {
+            success: false,
+            message: error instanceof Error ? error.message : 'Unknown error'
+        };
+    }
+}
+
+/**
  * Execute a bash command on a specific machine
  */
 export async function machineBash(
@@ -875,6 +897,24 @@ export async function sessionArchive(sessionId: string): Promise<{ success: bool
     } catch (error) {
         return { success: false, message: error instanceof Error ? error.message : 'Unknown error' };
     }
+}
+
+/**
+ * Archive a running session by killing it. The kill RPC reaches the runner
+ * when its socket is live; the runner then tears down and archives itself.
+ * When the runner is unreachable (dead or stuck socket), ask the daemon to
+ * stop the tracked process and deactivate the session on the server so the
+ * row still leaves the active list.
+ */
+export async function sessionArchiveWithKill(sessionId: string, machineId?: string | null): Promise<{ success: boolean; message?: string }> {
+    const killResult = await sessionKill(sessionId);
+    if (killResult.success) {
+        return { success: true };
+    }
+    if (machineId) {
+        await machineStopSession(machineId, sessionId);
+    }
+    return sessionArchive(sessionId);
 }
 
 /**

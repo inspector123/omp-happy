@@ -163,6 +163,9 @@ type MirrorEvent = {
   partialResult?: unknown;
   isError?: unknown;
   level?: unknown;
+  customType?: unknown;
+  content?: unknown;
+  details?: unknown;
 };
 
 type BridgeFrameSource = {
@@ -403,6 +406,74 @@ function extractToolError(result: unknown, isErrorFlag?: unknown): boolean {
     return true;
   }
   return isRecord(result) && (result.isError === true || typeof result.error === 'string');
+}
+
+type OmpJobNotice = {
+  jobId: string;
+  type?: string;
+  label?: string;
+  durationMs?: number;
+  failed?: boolean;
+  error?: string;
+};
+
+const OMP_JOB_ERROR_MAX_CHARS = 600;
+
+/**
+ * Parses `<task-result id="…" status="…" …>` blocks (task subagent results)
+ * out of an async-result message body so per-job failure state can be shown
+ * even though `details.jobs` carries no status.
+ */
+function extractAsyncResultFailures(content: unknown): Map<string, { failed: boolean; error?: string }> {
+  const failures = new Map<string, { failed: boolean; error?: string }>();
+  if (typeof content !== 'string') {
+    return failures;
+  }
+  const blockPattern = /<task-result\b([^>]*)>([\s\S]*?)(?:<\/task-result>|$)/g;
+  for (const match of content.matchAll(blockPattern)) {
+    const attrs = match[1] ?? '';
+    const body = match[2] ?? '';
+    const id = /\bid="([^"]*)"/.exec(attrs)?.[1];
+    if (!id) continue;
+    const status = /\bstatus="([^"]*)"/.exec(attrs)?.[1] ?? '';
+    const rawError = /<error>([\s\S]*?)<\/error>/.exec(body)?.[1]?.trim();
+    const error = rawError === undefined
+      ? undefined
+      : rawError.length > OMP_JOB_ERROR_MAX_CHARS
+        ? `${rawError.slice(0, OMP_JOB_ERROR_MAX_CHARS)}…`
+        : rawError;
+    failures.set(id, {
+      failed: /fail|error/i.test(status),
+      ...(error ? { error } : {}),
+    });
+  }
+  return failures;
+}
+
+function extractAsyncResultJobs(details: unknown, content: unknown): OmpJobNotice[] {
+  if (!isRecord(details) || !Array.isArray(details.jobs)) {
+    return [];
+  }
+  const failures = extractAsyncResultFailures(content);
+  return details.jobs.flatMap((job) => {
+    if (!isRecord(job)) return [];
+    const jobId = asString(job.jobId);
+    if (!jobId) return [];
+    const type = asString(job.type);
+    const label = asString(job.label);
+    const durationMs = typeof job.durationMs === 'number' && Number.isFinite(job.durationMs)
+      ? job.durationMs
+      : undefined;
+    const failure = failures.get(jobId);
+    return [{
+      jobId,
+      ...(type !== undefined ? { type } : {}),
+      ...(label !== undefined ? { label } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+      ...(failure?.failed ? { failed: true } : {}),
+      ...(failure?.error ? { error: failure.error } : {}),
+    }];
+  });
 }
 
 
@@ -1332,6 +1403,41 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     session.sendSessionEvent({ type: 'ready' });
   };
 
+  // Assistant turns that ended in a provider error carry no text content, so
+  // the text mirroring above drops them. Surface the errorMessage on the phone
+  // as a dedicated error notice (deduped through the same ended-message set).
+  const forwardAssistantError = (message: unknown): void => {
+    if (!isRecord(message) || message.role !== 'assistant' || message.stopReason !== 'error') {
+      return;
+    }
+    const errorMessage = asString(message.errorMessage);
+    if (!errorMessage) {
+      return;
+    }
+    if (isRecord(message.retryRecovery) && message.retryRecovery.status === 'superseded') {
+      return;
+    }
+    const key = assistantMessageKey(message);
+    if (key && endedAssistantMessages.has(key)) {
+      return;
+    }
+    session.sendAgentMessage('omp', { type: 'omp-error', message: errorMessage });
+  };
+
+  // Background job deliveries (async-result custom messages) never pass through
+  // the agent event stream; the bridge polls session entries and forwards them.
+  const forwardAsyncResultJobs = (event: MirrorEvent): void => {
+    if (asString(event.customType) !== 'async-result') {
+      return;
+    }
+    const jobs = extractAsyncResultJobs(event.details, event.content);
+    if (jobs.length === 0) {
+      return;
+    }
+    flushPendingText();
+    session.sendAgentMessage('omp', { type: 'omp-jobs', jobs });
+  };
+
   const releaseQueuedAfterAbort = (): void => {
     if (!abortInProgress) return;
     abortInProgress = false;
@@ -1371,6 +1477,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
           return;
         }
         if (isAssistantMessage(event.message)) {
+          forwardAssistantError(event.message);
           mirrorEndedAssistantText(event.message);
         }
         const advisorNotes = extractAdvisorNotes(event.message);
@@ -1378,6 +1485,10 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
           flushPendingText();
           session.sendAgentMessage('omp', { type: 'advisor', notes: advisorNotes });
         }
+        return;
+      }
+      case 'custom_message': {
+        forwardAsyncResultJobs(event);
         return;
       }
       case 'tool_execution_start': {

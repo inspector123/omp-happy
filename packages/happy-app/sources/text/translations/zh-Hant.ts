@@ -518,6 +518,8 @@ export const zhHant: TranslationStructure = {
         showArchived: '顯示已封存',
         hideArchived: '隱藏已封存',
         newSession: '新建對話',
+        searchSessions: '搜尋工作階段',
+        allMachines: '所有機器',
     },
 
     zen: {
@@ -865,6 +867,9 @@ export const zhHant: TranslationStructure = {
         switchedToMode: ({ mode }: { mode: string }) => `已切換到 ${mode} 模式`,
         unknownEvent: '未知事件',
         usageLimitUntil: ({ time }: { time: string }) => `使用限制到 ${time}`,
+        ompError: ({ message }: { message: string }) => `錯誤：${message}`,
+        ompJobCompleted: '背景工作已完成',
+        ompJobFailed: '背景工作失敗',
         sentAsGoal: 'Sent as goal',
         queued: '已排隊',
         queuedEditUnavailableTitle: '無法編輯佇列中的訊息',

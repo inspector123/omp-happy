@@ -518,6 +518,8 @@ export const ca: TranslationStructure = {
         showArchived: 'Mostra arxivades',
         hideArchived: 'Amaga arxivades',
         newSession: 'Nova sessió',
+        searchSessions: 'Cerca sessions',
+        allMachines: 'Totes les màquines',
     },
 
     zen: {
@@ -865,6 +867,9 @@ export const ca: TranslationStructure = {
         switchedToMode: ({ mode }: { mode: string }) => `S'ha canviat al mode ${mode}`,
         unknownEvent: 'Esdeveniment desconegut',
         usageLimitUntil: ({ time }: { time: string }) => `Límit d'ús assolit fins a ${time}`,
+        ompError: ({ message }: { message: string }) => `Error: ${message}`,
+        ompJobCompleted: 'Feina en segon pla completada',
+        ompJobFailed: 'Feina en segon pla fallada',
         sentAsGoal: 'Sent as goal',
         queued: 'En cua',
         queuedEditUnavailableTitle: 'No es pot editar el missatge en cua',

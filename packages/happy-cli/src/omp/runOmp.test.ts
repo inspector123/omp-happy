@@ -443,6 +443,110 @@ describe('runOmp', () => {
     await runPromise;
   });
 
+  it('forwards assistant turn errors from message_end as omp-error notices', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-errors' });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.mockSession.sendAgentMessage.mockClear();
+
+    const errorEvent = {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [],
+        stopReason: 'error',
+        errorMessage: 'Connection error.',
+        timestamp: 1792278278435,
+      },
+    };
+    mocks.emitBridgeFrame({ type: 'agent_event', event: errorEvent });
+    // A replayed message_end for the same assistant message must not duplicate
+    // the notice.
+    mocks.emitBridgeFrame({ type: 'agent_event', event: errorEvent });
+
+    expect(mocks.mockSession.sendAgentMessage).toHaveBeenCalledOnce();
+    expect(mocks.mockSession.sendAgentMessage).toHaveBeenCalledWith('omp', {
+      type: 'omp-error',
+      message: 'Connection error.',
+    });
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
+  it('forwards async-result custom messages as omp-jobs notices with failure details', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-jobs' });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.mockSession.sendAgentMessage.mockClear();
+
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'custom_message',
+        customType: 'async-result',
+        content: '<system-notice>\nBackground job CurveFitMap has completed. Resume your work using the result below.\n'
+          + '<task-result id="CurveFitMap" agent="task" status="failed (exit 1)" duration="23m34s">\n'
+          + '<error>[anthropic/claude-opus-5-5] Retry budget exhausted after 10 retries: Connection error.</error>\n'
+          + '<output>\nRetry budget exhausted after 10 retries: Connection error.\n</output>\n'
+          + '</task-result>\n</system-notice>',
+        details: {
+          jobs: [{ jobId: 'CurveFitMap', type: 'task', label: 'CurveFitMap', durationMs: 1414363 }],
+        },
+      },
+    });
+
+    expect(mocks.mockSession.sendAgentMessage).toHaveBeenCalledOnce();
+    expect(mocks.mockSession.sendAgentMessage).toHaveBeenCalledWith('omp', {
+      type: 'omp-jobs',
+      jobs: [{
+        jobId: 'CurveFitMap',
+        type: 'task',
+        label: 'CurveFitMap',
+        durationMs: 1414363,
+        failed: true,
+        error: '[anthropic/claude-opus-5-5] Retry budget exhausted after 10 retries: Connection error.',
+      }],
+    });
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
+  it('ignores non-async-result custom messages', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-custom' });
+    await vi.advanceTimersByTimeAsync(1);
+    mocks.mockSession.sendAgentMessage.mockClear();
+
+    mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: {
+        type: 'custom_message',
+        customType: 'skill-prompt',
+        content: 'some skill prompt',
+        details: { jobs: [{ jobId: 'x' }] },
+      },
+    });
+
+    expect(mocks.mockSession.sendAgentMessage).not.toHaveBeenCalled();
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
   it('keeps a normally exited OMP session visible and resumable', async () => {
     vi.useFakeTimers();
     const runPromise = runOmp({ credentials });

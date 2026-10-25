@@ -11,7 +11,7 @@ import { useSession, useIsDataReady } from '@/sync/storage';
 import { getSessionName, useSessionStatus, formatOSPlatform, formatPathRelativeToHome, getSessionAvatarId, getResumeCommand } from '@/utils/sessionUtils';
 import * as Clipboard from 'expo-clipboard';
 import { Modal } from '@/modal';
-import { sessionArchive, sessionKill, sessionDelete } from '@/sync/ops';
+import { sessionArchiveWithKill, sessionKill, sessionDelete } from '@/sync/ops';
 import { maybeCleanupWorktree } from '@/hooks/useWorktreeCleanup';
 import { useUnistyles } from 'react-native-unistyles';
 import { layout } from '@/components/layout';
@@ -168,10 +168,11 @@ function SessionInfoContent({ session }: { session: Session }) {
         // Prompt for worktree cleanup before killing (needs an active machine connection)
         await maybeCleanupWorktree(session.id, session.metadata?.path, session.metadata?.machineId);
 
-        // Try to kill the CLI process; if it's already dead, force-archive via server
-        const killResult = await sessionKill(session.id);
-        if (!killResult.success) {
-            await sessionArchive(session.id);
+        // Kill the runner; when it's unreachable fall back to the daemon's
+        // tracked-process stop and a server-side archive.
+        const result = await sessionArchiveWithKill(session.id, session.metadata?.machineId);
+        if (!result.success) {
+            throw new HappyError(result.message || t('sessionInfo.failedToArchiveSession'), false);
         }
         // Success - navigate back
         router.back();

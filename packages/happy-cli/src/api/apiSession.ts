@@ -49,8 +49,20 @@ export type AgentMessageData =
     | { type: 'permission-request'; permissionId: string; toolName: string; description: string; options?: unknown; parentToolCallId?: string }
     // Advisor feedback
     | { type: 'advisor'; notes: Array<{ note: string; severity?: 'nit' | 'concern' | 'blocker'; advisor?: string }> }
+    // OMP turn errors and background job results (rendered as notices on the app)
+    | { type: 'omp-error'; message: string }
+    | { type: 'omp-jobs'; jobs: OmpJobNotice[] }
     // Usage/metrics
     | { type: 'token_count';[key: string]: unknown };
+
+export interface OmpJobNotice {
+    jobId: string;
+    type?: string;
+    label?: string;
+    durationMs?: number;
+    failed?: boolean;
+    error?: string;
+}
 
 export type AgentMessageProvider = 'gemini' | 'codex' | 'claude' | 'opencode';
 
@@ -205,6 +217,33 @@ function buildMultipartUploadBody(
         body: Buffer.concat(chunks),
         boundary,
     };
+}
+
+/**
+ * happy-server rejects request bodies above 1 MiB with HTTP 413, and the outbox
+ * retries a failed POST forever, so one oversized message would block every
+ * later message of the session. Each POST keeps its encrypted message content
+ * under this budget; the remaining headroom covers JSON framing and local ids.
+ */
+const MAX_OUTBOX_POST_CONTENT_BYTES = 900 * 1024;
+
+/** String lengths tried, largest first, to fit an oversized message into one POST. */
+const OVERSIZED_MESSAGE_STRING_CAPS = [64 * 1024, 8 * 1024, 1024, 256];
+
+function capLongStrings(value: unknown, maxLength: number): unknown {
+    if (typeof value === 'string') {
+        if (value.length <= maxLength) {
+            return value;
+        }
+        return `${value.slice(0, maxLength)}\n[${value.length - maxLength} characters omitted to fit the sync size limit]`;
+    }
+    if (Array.isArray(value)) {
+        return value.map((item) => capLongStrings(item, maxLength));
+    }
+    if (value !== null && typeof value === 'object') {
+        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, capLongStrings(item, maxLength)]));
+    }
+    return value;
 }
 
 export class ApiSessionClient extends EventEmitter {
@@ -673,7 +712,16 @@ export class ApiSessionClient extends EventEmitter {
         // Preserve enqueue order across batches so server sequence numbers match
         // the original stream order.
         while (this.pendingOutbox.length > 0) {
-            const batchSize = Math.min(this.pendingOutbox.length, ApiSessionClient.MAX_OUTBOX_BATCH_SIZE);
+            let batchSize = 0;
+            let batchBytes = 0;
+            while (batchSize < this.pendingOutbox.length && batchSize < ApiSessionClient.MAX_OUTBOX_BATCH_SIZE) {
+                const messageBytes = this.pendingOutbox[batchSize].content.length;
+                if (batchSize > 0 && batchBytes + messageBytes > MAX_OUTBOX_POST_CONTENT_BYTES) {
+                    break;
+                }
+                batchBytes += messageBytes;
+                batchSize += 1;
+            }
             const batch = this.pendingOutbox.slice(0, batchSize);
 
             const response = await axios.post<V3PostSessionMessagesResponse>(
@@ -696,12 +744,40 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
-    private enqueueMessage(content: unknown, invalidate: boolean = true) {
+    /**
+     * Encrypts content for one outbox entry. Content too large for a single POST
+     * is resent with long strings shortened; null means even the smallest cap
+     * leaves it too large.
+     */
+    private encryptForOutbox(content: unknown): string | null {
         const encrypted = encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, content));
-        this.pendingOutbox.push({
-            content: encrypted,
-            localId: randomUUID()
-        });
+        if (encrypted.length <= MAX_OUTBOX_POST_CONTENT_BYTES) {
+            return encrypted;
+        }
+        const plain: unknown = JSON.parse(JSON.stringify(content));
+        for (const cap of OVERSIZED_MESSAGE_STRING_CAPS) {
+            const shortened = encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, capLongStrings(plain, cap)));
+            if (shortened.length <= MAX_OUTBOX_POST_CONTENT_BYTES) {
+                logger.debug('[API] Shortened oversized outbox message', {
+                    originalBytes: encrypted.length,
+                    sentBytes: shortened.length,
+                    stringCap: cap,
+                });
+                return shortened;
+            }
+        }
+        logger.debug('[API] Dropped outbox message larger than the sync size limit', { bytes: encrypted.length });
+        return null;
+    }
+
+    private enqueueMessage(content: unknown, invalidate: boolean = true) {
+        const encrypted = this.encryptForOutbox(content);
+        if (encrypted !== null) {
+            this.pendingOutbox.push({
+                content: encrypted,
+                localId: randomUUID()
+            });
+        }
         if (invalidate) {
             this.sendSync.invalidate();
         }

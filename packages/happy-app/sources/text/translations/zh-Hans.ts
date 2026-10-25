@@ -519,6 +519,8 @@ export const zhHans: TranslationStructure = {
         showArchived: '显示已归档',
         hideArchived: '隐藏已归档',
         newSession: '新建会话',
+        searchSessions: '搜索会话',
+        allMachines: '所有机器',
     },
 
     zen: {
@@ -866,6 +868,9 @@ export const zhHans: TranslationStructure = {
         switchedToMode: ({ mode }: { mode: string }) => `已切换到 ${mode} 模式`,
         unknownEvent: '未知事件',
         usageLimitUntil: ({ time }: { time: string }) => `使用限制到 ${time}`,
+        ompError: ({ message }: { message: string }) => `错误：${message}`,
+        ompJobCompleted: '后台任务已完成',
+        ompJobFailed: '后台任务失败',
         sentAsGoal: 'Sent as goal',
         queued: '已排队',
         queuedEditUnavailableTitle: '无法编辑队列中的消息',

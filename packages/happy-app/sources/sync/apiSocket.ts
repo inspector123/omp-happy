@@ -156,7 +156,8 @@ class ApiSocket {
             throw new Error(`Session encryption not found for ${sessionId}`);
         }
         
-        const result = await this.socket!.emitWithAck('rpc-call', {
+        const socket = await this.connectedSocket();
+        const result = await socket.emitWithAck('rpc-call', {
             method: `${sessionId}:${method}`,
             params: await sessionEncryption.encryptRaw(params)
         });
@@ -176,7 +177,8 @@ class ApiSocket {
             throw new Error(`Machine encryption not found for ${machineId}`);
         }
 
-        const result = await this.socket!.emitWithAck('rpc-call', {
+        const socket = await this.connectedSocket();
+        const result = await socket.emitWithAck('rpc-call', {
             method: `${machineId}:${method}`,
             params: await machineEncryption.encryptRaw(params)
         });
@@ -201,10 +203,38 @@ class ApiSocket {
     }
 
     async emitWithAck<T = any>(event: string, data: any): Promise<T> {
+        const socket = await this.connectedSocket();
+        return await socket.emitWithAck(event, data);
+    }
+
+    /**
+     * Mobile disconnects the socket while the app is not active, and system
+     * pickers (documents, photos) briefly background it. Calls made right
+     * after a picker returns reconnect instead of failing on a null socket.
+     */
+    private async connectedSocket(): Promise<Socket> {
         if (!this.socket) {
+            this.connect();
+        }
+        const socket = this.socket;
+        if (!socket) {
             throw new Error('Socket not connected');
         }
-        return await this.socket.emitWithAck(event, data);
+        if (socket.connected) {
+            return socket;
+        }
+        await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+                socket.off('connect', onConnect);
+                reject(new Error('Socket not connected'));
+            }, 15000);
+            const onConnect = () => {
+                clearTimeout(timer);
+                resolve();
+            };
+            socket.once('connect', onConnect);
+        });
+        return socket;
     }
 
     //

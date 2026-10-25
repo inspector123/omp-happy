@@ -519,6 +519,8 @@ export const ja: TranslationStructure = {
         showArchived: 'アーカイブを表示',
         hideArchived: 'アーカイブを非表示',
         newSession: '新しいセッション',
+        searchSessions: 'セッションを検索',
+        allMachines: 'すべてのマシン',
     },
 
     zen: {
@@ -866,6 +868,9 @@ export const ja: TranslationStructure = {
         switchedToMode: ({ mode }: { mode: string }) => `${mode}モードに切り替えました`,
         unknownEvent: '不明なイベント',
         usageLimitUntil: ({ time }: { time: string }) => `${time}まで使用制限中`,
+        ompError: ({ message }: { message: string }) => `エラー: ${message}`,
+        ompJobCompleted: 'バックグラウンドジョブが完了しました',
+        ompJobFailed: 'バックグラウンドジョブが失敗しました',
         sentAsGoal: 'Sent as goal',
         queued: 'キューに追加済み',
         queuedEditUnavailableTitle: 'キュー内のメッセージを編集できません',
