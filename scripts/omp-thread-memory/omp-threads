@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Search every omp session's conversation from the shell. `omp-threads help` lists commands.
+exec bun "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cli.ts" "$@"
