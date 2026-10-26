@@ -62,7 +62,7 @@ import { isRunningOnMac } from '@/utils/platform';
 import { getNewSessionSidebarLayout } from '@/utils/newSessionSidebarLayout';
 import { getAgentPickerItems, getModePickerItems } from '@/utils/newSessionPickerItems';
 import { resolveAgentDefaultConfig } from '@/sync/agentDefaults';
-import { listOmpModels } from '@/utils/ompModels';
+import { getCachedOmpModels, refreshOmpModels } from '@/utils/ompModels';
 
 // Agent icon assets
 const agentIcons = {
@@ -673,8 +673,9 @@ function NewSessionScreen() {
         }
 
         let cancelled = false;
-        setRemoteOmpModels([]);
-        void listOmpModels(selectedMachineId, '/')
+        const cachedModels = getCachedOmpModels(selectedMachineId);
+        setRemoteOmpModels(cachedModels ?? []);
+        void refreshOmpModels(selectedMachineId, '/')
             .then((models) => {
                 if (!cancelled) {
                     setRemoteOmpModels(models);
