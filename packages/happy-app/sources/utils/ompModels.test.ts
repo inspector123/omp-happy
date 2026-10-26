@@ -2,6 +2,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/sync/ops', () => ({ machineBash: vi.fn() }));
 
+vi.mock('react-native-mmkv', () => {
+    const stores = new Map<string, Map<string, string>>();
+    class MMKV {
+        private store: Map<string, string>;
+        constructor(options?: { id?: string }) {
+            const id = options?.id ?? 'default';
+            if (!stores.has(id)) {
+                stores.set(id, new Map());
+            }
+            this.store = stores.get(id)!;
+        }
+        getString(key: string) {
+            return this.store.get(key);
+        }
+        set(key: string, value: string) {
+            this.store.set(key, value);
+        }
+    }
+    return { MMKV };
+});
+
 import { machineBash } from '@/sync/ops';
 import { getCachedOmpModels, parseOmpDefaultModel, parseOmpModelCatalog, refreshOmpModels } from './ompModels';
 
@@ -24,9 +45,31 @@ function failedResult(stderr: string) {
     return { success: false, stdout: '', stderr, exitCode: 1 };
 }
 
+/** Routes the mocked machine RPC by command: `stat` stamp (null = stat fails), catalog fetch, roles. */
+function mockMachineBashHandlers(handlers: {
+    stat?: string | null;
+    catalog?: () => Promise<{ success: boolean; stdout: string; stderr: string; exitCode: number }>;
+}) {
+    mockedMachineBash.mockImplementation((_machineId, command) => {
+        if (command.startsWith('stat -c')) {
+            return Promise.resolve(handlers.stat === undefined || handlers.stat === null
+                ? failedResult('stat failed')
+                : { success: true, stdout: handlers.stat, stderr: '', exitCode: 0 });
+        }
+        if (command === 'omp models --json') {
+            return handlers.catalog ? handlers.catalog() : Promise.resolve(catalogResult(CATALOG_MODELS));
+        }
+        return Promise.resolve(rolesResult('x/y'));
+    });
+}
+
+function ompModelsCallCount() {
+    return mockedMachineBash.mock.calls.filter((call) => call[1] === 'omp models --json').length;
+}
+
 beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
-    mockedMachineBash.mockClear();
+    mockedMachineBash.mockReset();
 });
 
 afterEach(() => {
@@ -69,33 +112,52 @@ describe('OMP model catalog parsing', () => {
     });
 });
 
-describe('OMP model refresh with cache and retries', () => {
-    it('caches a successful refresh and serves later calls without refetching', async () => {
-        mockedMachineBash.mockImplementation((_machineId, command) => (
-            command === 'omp models --json'
-                ? Promise.resolve(catalogResult(CATALOG_MODELS))
-                : Promise.resolve(rolesResult('x/y'))
-        ));
+describe('OMP model refresh with persisted cache and catalog stamp', () => {
+    it('fetches once, persists, and serves later calls without invoking omp', async () => {
+        mockMachineBashHandlers({ stat: '1793047988 7675904' });
 
         const models = await refreshOmpModels('machine-cache', '/');
         expect(models.map((model) => model.key)).toEqual(['default', 'a/one', 'b/two']);
         expect(getCachedOmpModels('machine-cache')).toEqual(models);
+        expect(ompModelsCallCount()).toBe(1);
 
-        mockedMachineBash.mockClear();
         await expect(refreshOmpModels('machine-cache', '/')).resolves.toEqual(models);
-        expect(mockedMachineBash).not.toHaveBeenCalled();
+        expect(ompModelsCallCount()).toBe(1);
+    });
+
+    it('serves the persisted list without invoking omp while the catalog is unchanged', async () => {
+        mockMachineBashHandlers({ stat: '1793047988 7675904' });
+        const models = await refreshOmpModels('machine-unchanged', '/');
+
+        await vi.advanceTimersByTimeAsync(61_000);
+        await expect(refreshOmpModels('machine-unchanged', '/')).resolves.toEqual(models);
+        expect(ompModelsCallCount()).toBe(1);
+    });
+
+    it('re-runs the CLI when the catalog stamp changed', async () => {
+        mockMachineBashHandlers({ stat: '1793047988 7675904' });
+        await refreshOmpModels('machine-refreshed', '/');
+
+        await vi.advanceTimersByTimeAsync(61_000);
+        mockMachineBashHandlers({
+            stat: '1793054466 7675905',
+            catalog: () => Promise.resolve(catalogResult([{ selector: 'c/three', name: 'Three' }])),
+        });
+        const models = await refreshOmpModels('machine-refreshed', '/');
+        expect(models.map((model) => model.key)).toEqual(['default', 'c/three']);
+        expect(ompModelsCallCount()).toBe(2);
     });
 
     it('retries with a fresh RPC when the first attempt hangs past the timeout', async () => {
         let catalogCalls = 0;
-        mockedMachineBash.mockImplementation((_machineId, command) => {
-            if (command === 'omp models --json') {
+        mockMachineBashHandlers({
+            stat: '1793047988 7675904',
+            catalog: () => {
                 catalogCalls += 1;
                 return catalogCalls === 1
                     ? new Promise<never>(() => {})
                     : Promise.resolve(catalogResult(CATALOG_MODELS));
-            }
-            return Promise.resolve(rolesResult('x/y'));
+            },
         });
 
         const pending = refreshOmpModels('machine-retry', '/');
@@ -109,24 +171,26 @@ describe('OMP model refresh with cache and retries', () => {
     });
 
     it('serves stale cached models when a later refresh keeps failing', async () => {
-        mockedMachineBash.mockImplementation((_machineId, command) => (
-            command === 'omp models --json'
-                ? Promise.resolve(catalogResult(CATALOG_MODELS))
-                : Promise.resolve(rolesResult('x/y'))
-        ));
+        mockMachineBashHandlers({ stat: '1793047988 7675904' });
         const models = await refreshOmpModels('machine-stale', '/');
 
         await vi.advanceTimersByTimeAsync(61_000);
-        mockedMachineBash.mockImplementation(() => Promise.resolve(failedResult('boom')));
+        mockMachineBashHandlers({
+            stat: '1793054466 7675905',
+            catalog: () => Promise.resolve(failedResult('boom')),
+        });
         await expect(refreshOmpModels('machine-stale', '/')).resolves.toEqual(models);
     });
 
     it('throws after exhausting retries when no cache exists', async () => {
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-        mockedMachineBash.mockImplementation(() => Promise.resolve(failedResult('boom')));
+        mockMachineBashHandlers({
+            stat: '1793047988 7675904',
+            catalog: () => Promise.resolve(failedResult('boom')),
+        });
 
         await expect(refreshOmpModels('machine-none', '/')).rejects.toThrow('boom');
-        expect(mockedMachineBash).toHaveBeenCalledTimes(4);
+        expect(ompModelsCallCount()).toBe(2);
         expect(getCachedOmpModels('machine-none')).toBeNull();
         warn.mockRestore();
     });

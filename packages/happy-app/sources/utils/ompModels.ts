@@ -1,4 +1,5 @@
 import { machineBash } from '@/sync/ops';
+import { MMKV } from 'react-native-mmkv';
 
 export type OmpModelOption = {
     key: string;
@@ -80,19 +81,60 @@ export async function listOmpModels(machineId: string, cwd: string): Promise<Omp
     return [defaultOption, ...parseOmpModelCatalog(catalogResult.stdout)];
 }
 
-// `omp models --json` regularly takes 5+ seconds (the CLI retries provider
-// checks), and the phone's socket to the server reconnects every few tens of
-// seconds. A single RPC whose ack lands in a reconnect window is lost and the
-// socket.io ack promise then never settles — so the fetch needs a timeout,
-// retries, and a cache the picker can show while a refresh is in flight.
+// The OMP catalog is refreshed on this machine by the user running
+// `omp models refresh`; listing through the CLI (`omp models --json`) is slow
+// (it re-checks providers) and the phone's socket to the server reconnects
+// every few tens of seconds, so an ack lost in a reconnect window leaves the
+// socket.io ack promise pending forever. The app therefore persists the last
+// fetched list and only re-runs the CLI when the catalog file's stat stamp
+// changed — a plain `stat` RPC, no omp invocation.
 const MODEL_FETCH_TIMEOUT_MS = 10_000;
 const MODEL_FETCH_MAX_ATTEMPTS = 2;
 const MODEL_CACHE_TTL_MS = 60_000;
+const CATALOG_STAT_COMMAND = "stat -c '%Y %s' ~/.omp/agent/models.db";
 
-const modelCache = new Map<string, { models: OmpModelOption[]; fetchedAt: number }>();
+type OmpModelCacheEntry = {
+    models: OmpModelOption[];
+    fetchedAt: number;
+    catalogStamp: string | null;
+};
+
+const ompModelStorage = new MMKV({ id: 'omp-model-cache' });
+const OMP_MODEL_CACHE_KEY = 'omp-model-cache-v1';
+const modelCache = new Map<string, OmpModelCacheEntry>();
+
+function loadPersistedCache(): Record<string, OmpModelCacheEntry> {
+    const raw = ompModelStorage.getString(OMP_MODEL_CACHE_KEY);
+    if (!raw) {
+        return {};
+    }
+    try {
+        return JSON.parse(raw) as Record<string, OmpModelCacheEntry>;
+    } catch {
+        return {};
+    }
+}
+
+function persistCacheEntry(machineId: string, entry: OmpModelCacheEntry) {
+    const cache = loadPersistedCache();
+    cache[machineId] = entry;
+    ompModelStorage.set(OMP_MODEL_CACHE_KEY, JSON.stringify(cache));
+}
+
+function hydrateCacheEntry(machineId: string): OmpModelCacheEntry | null {
+    let entry = modelCache.get(machineId) ?? null;
+    if (!entry) {
+        const persisted = loadPersistedCache()[machineId];
+        if (persisted?.models?.length) {
+            entry = persisted;
+            modelCache.set(machineId, entry);
+        }
+    }
+    return entry;
+}
 
 export function getCachedOmpModels(machineId: string): OmpModelOption[] | null {
-    return modelCache.get(machineId)?.models ?? null;
+    return hydrateCacheEntry(machineId)?.models ?? null;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -111,12 +153,18 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
     return timed;
 }
 
-async function fetchOmpModelsWithRetry(machineId: string, cwd: string): Promise<OmpModelOption[]> {
+async function fetchOmpModelsWithRetry(
+    machineId: string,
+    cwd: string,
+    catalogStamp: string | null,
+): Promise<OmpModelOption[]> {
     let lastError: unknown;
     for (let attempt = 1; attempt <= MODEL_FETCH_MAX_ATTEMPTS; attempt++) {
         try {
             const models = await withTimeout(listOmpModels(machineId, cwd), MODEL_FETCH_TIMEOUT_MS, 'OMP model list');
-            modelCache.set(machineId, { models, fetchedAt: Date.now() });
+            const entry: OmpModelCacheEntry = { models, fetchedAt: Date.now(), catalogStamp };
+            modelCache.set(machineId, entry);
+            persistCacheEntry(machineId, entry);
             return models;
         } catch (error) {
             lastError = error;
@@ -126,18 +174,28 @@ async function fetchOmpModelsWithRetry(machineId: string, cwd: string): Promise<
 }
 
 /**
- * Returns the machine's OMP models, serving a cached list when one is fresh
- * (or when the refresh fails but an older list exists) so the picker does not
- * fall back to "default model" while the catalog is slow or the socket is
- * bouncing.
+ * Returns the machine's OMP models. Serves the persisted list whenever it is
+ * fresh or the catalog file is unchanged since it was fetched; the CLI only
+ * runs after the user refreshed the catalog (stat stamp changed) or when no
+ * list exists yet.
  */
 export async function refreshOmpModels(machineId: string, cwd: string): Promise<OmpModelOption[]> {
-    const cached = modelCache.get(machineId);
+    const cached = hydrateCacheEntry(machineId);
     if (cached && Date.now() - cached.fetchedAt < MODEL_CACHE_TTL_MS) {
         return cached.models;
     }
+
+    const statResult = await machineBash(machineId, CATALOG_STAT_COMMAND, '/');
+    const catalogStamp = statResult.success ? statResult.stdout.trim() : null;
+    if (cached && catalogStamp !== null && catalogStamp === cached.catalogStamp) {
+        const entry: OmpModelCacheEntry = { ...cached, fetchedAt: Date.now() };
+        modelCache.set(machineId, entry);
+        persistCacheEntry(machineId, entry);
+        return cached.models;
+    }
+
     try {
-        return await fetchOmpModelsWithRetry(machineId, cwd);
+        return await fetchOmpModelsWithRetry(machineId, cwd, catalogStamp);
     } catch (error) {
         if (cached) {
             return cached.models;
