@@ -4,6 +4,8 @@ This repository connects the native OMP terminal application to the OMP companio
 
 This document covers the native Pi extension bridge. It does not describe the older generic ACP integration in `scripts/omp-run.sh`.
 
+To set up a new computer, follow [`OMP-HAPPY-SETUP.md`](OMP-HAPPY-SETUP.md) from top to bottom; its "Checklist for a new OMP computer" lists every step in order. This document explains how the pieces work once they are installed.
+
 ## Mental model
 
 The companion is a remote interface, not a remote OMP runtime:
@@ -102,12 +104,13 @@ The relevant paths are:
 
 ## Prerequisites
 
-- Node.js and pnpm.
+- Node.js 20.19 or newer and pnpm 10. With Node installed, `corepack enable` provides the pnpm version pinned in `package.json`.
 - A working native `omp` installation.
 - OMP's model-provider credentials configured on the computer.
 - An OMP companion app connected to a Happy-compatible relay.
 - This fork's CLI built locally.
-- Tmux if phone-started sessions must remain attachable from a desktop terminal.
+- herdr (recommended) or tmux if phone-started sessions must remain attachable from a desktop terminal. Install herdr with `curl -fsSL https://herdr.dev/install.sh | sh` (it installs to `~/.local/bin`), then run `herdr integration install omp` so herdr can report OMP's working/blocked/idle state.
+- `bun` on `PATH` for the cross-session thread-memory extension (`curl -fsSL https://bun.sh/install | bash`). Put `~/.bun/bin` and `~/.local/bin` on `PATH` in a file that non-interactive shells also read (for zsh, `~/.zshenv`), and in the daemon's systemd unit, so agents and SSH commands can run `omp-threads`.
 
 Build the repository:
 
@@ -140,7 +143,14 @@ export HAPPY_SERVER_URL="https://your-relay.example"
 pnpm cli auth login
 ```
 
-Choose **Mobile Authentication**, then approve the displayed QR code in the companion app connected to the same relay.
+Choose **Mobile Authentication**, then approve the displayed QR code in the companion app connected to the same relay. Pressing `1` selects Mobile Authentication directly and `2` selects the web flow. That is useful under tmux or when an agent drives the login, where the selector can stay blank until the first key press.
+
+The CLI currently writes `$HAPPY_HOME_DIR/access.key` readable by other local users. Restrict it after logging in:
+
+```bash
+chmod 700 "$HAPPY_HOME_DIR"
+chmod 600 "$HAPPY_HOME_DIR"/access.key "$HAPPY_HOME_DIR"/settings.json
+```
 
 The native OMP command also calls the automatic authentication/setup path when credentials are missing, but explicit login is easier to diagnose. There is no dedicated `login.sh` in this repository.
 
@@ -151,6 +161,8 @@ pnpm cli auth status
 ```
 
 Keep `HAPPY_HOME_DIR` and `HAPPY_SERVER_URL` identical when logging in, starting the daemon, launching OMP, and starting any desktop client. Relay identities and encrypted records are server-specific.
+
+Give the relay a stable address. A LAN IP handed out by the router can change, and the Android app bundles the server URL at build time, so a changed IP means rebuilding the app as well as editing every shell and service. Reserve the server's IP in the router (DHCP reservation) or use a hostname that keeps pointing at it.
 
 ## Starting a native mirrored session
 
@@ -191,22 +203,25 @@ node packages/happy-cli/bin/happy.mjs omp --help
 - RPC and RPC-UI modes
 - help and version requests
 
-Invoke it directly, or define a shell function that survives native OMP updates:
+Invoke it directly, or export the companion settings once and define a shell function that survives native OMP updates. Every bridged launch and the daemon must use the same values, so define them in one place rather than repeating the URL inside the function:
 
 ```bash
+export OMP_HAPPY_REPO="$HOME/src/omp-happy"
+export HAPPY_HOME_DIR="$HOME/.omp-happy"
+export HAPPY_SERVER_URL="https://your-relay.example"
+export HAPPY_WEBAPP_URL="$HAPPY_SERVER_URL"
+
 omp() {
   local real_omp="$HOME/.bun/bin/omp"
   [[ -x "$real_omp" ]] || real_omp="$HOME/.local/bin/omp"
 
   OMP_HAPPY_REAL_BIN="$real_omp" \
-    HAPPY_OMP_CLI="$HOME/src/omp-happy/packages/happy-cli/bin/happy.mjs" \
-    HAPPY_HOME_DIR="$HOME/.omp-happy" \
-    HAPPY_SERVER_URL="https://your-relay.example" \
-    "$HOME/src/omp-happy/packages/happy-cli/scripts/omp-happy-launcher.sh" "$@"
+    HAPPY_OMP_CLI="$OMP_HAPPY_REPO/packages/happy-cli/bin/happy.mjs" \
+    "$OMP_HAPPY_REPO/packages/happy-cli/scripts/omp-happy-launcher.sh" "$@"
 }
 ```
 
-Replace `$HOME/src/omp-happy` and the relay URL with the actual values. Do not overwrite the native OMP binary with this launcher: `omp update` owns that binary path.
+Replace the repository path and relay URL with the actual values, and use the same URL in the daemon's systemd unit. Do not overwrite the native OMP binary with this launcher: `omp update` owns that binary path.
 
 ## Native launch sequence
 
