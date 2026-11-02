@@ -137,20 +137,22 @@ export function getCachedOmpModels(machineId: string): OmpModelOption[] | null {
     return hydrateCacheEntry(machineId)?.models ?? null;
 }
 
+// React Native swaps the global Promise for the `promise` package, which has
+// no Promise.withResolvers; use the constructor form.
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-    const { promise: timed, resolve, reject } = Promise.withResolvers<T>();
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    promise.then(
-        (value) => {
-            clearTimeout(timer);
-            resolve(value);
-        },
-        (error) => {
-            clearTimeout(timer);
-            reject(error);
-        },
-    );
-    return timed;
+    return new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+        promise.then(
+            (value) => {
+                clearTimeout(timer);
+                resolve(value);
+            },
+            (error) => {
+                clearTimeout(timer);
+                reject(error);
+            },
+        );
+    });
 }
 
 async function fetchOmpModelsWithRetry(
