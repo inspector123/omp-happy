@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openThreadDb } from "./db.ts";
@@ -220,6 +220,72 @@ test("a deleted session stays searchable but leaves the recent list, and a moved
 	const found = searchThreads(db, { query: "pelican" }).threads.map(hit => `${hit.session.id}:${hit.session.missing}`);
 	expect(found.sort()).toEqual(["ffff-1:0", "ffff-2:1"]);
 	expect(db.query<{ n: number }, []>("SELECT count(*) AS n FROM sessions WHERE id = 'ffff-1'").get()).toEqual({ n: 1 });
+});
+
+test("deleteThread erases transcript files, subagent transcripts, and every index row", async () => {
+	const main = new SessionFile(join(root, "-work-app", "2026-10-03T10-00_eeee-5.jsonl"), "eeee-5", "/work/app", "Pelican launch")
+		.user("pelican launch plan")
+		.assistant("planned")
+		.write();
+	const sub = new SessionFile(join(root, "-work-app", "2026-10-03T10-00_eeee-5", "Scout.jsonl"), "ffff-6", "/work/app")
+		.user("scout the pelican colony")
+		.write();
+	const bystander = new SessionFile(join(root, "-work-app", "kept.jsonl"), "aaaa-7", "/work/app")
+		.user("pelican archive plan")
+		.write();
+	await indexer.syncAll();
+	expect(searchThreads(db, { query: "pelican", subagents: true }).threads).toHaveLength(3);
+
+	// Deleting a subagent row removes only its own transcript.
+	expect(sessionRow(sub).agent).toBe("Scout");
+	expect(indexer.deleteThread(sessionRow(sub))).toEqual({ files: [sub], turns: 1 });
+	expect(existsSync(sub)).toBe(false);
+	expect(existsSync(main)).toBe(true);
+	expect(searchThreads(db, { query: "pelican", subagents: true }).threads.map(hit => hit.session.id).sort()).toEqual([
+		"aaaa-7",
+		"eeee-5",
+	]);
+
+	// Deleting the main session takes its remaining rows and the transcript directory with it.
+	expect(indexer.deleteThread(sessionRow(main))).toEqual({
+		files: [main, `${join(root, "-work-app", "2026-10-03T10-00_eeee-5")}/`],
+		turns: 1,
+	});
+	expect(existsSync(main)).toBe(false);
+	expect(existsSync(join(root, "-work-app", "2026-10-03T10-00_eeee-5"))).toBe(false);
+	expect(searchThreads(db, { query: "pelican", subagents: true }).threads.map(hit => hit.session.id)).toEqual(["aaaa-7"]);
+	expect(db.query<{ n: number }, []>("SELECT count(*) AS n FROM sessions WHERE id IN ('eeee-5', 'ffff-6')").get()).toEqual({ n: 0 });
+});
+
+test("a private session and its subagents leave the index, stay out on later syncs and rebuilds, and come back when unset", async () => {
+	const main = new SessionFile(join(root, "-work-app", "2026-10-04T10-00_gggg-8.jsonl"), "gggg-8", "/work/app")
+		.user("osprey bank password reset")
+		.assistant("reset done");
+	main.write();
+	const sub = new SessionFile(join(root, "-work-app", "2026-10-04T10-00_gggg-8", "Scout.jsonl"), "hhhh-9", "/work/app")
+		.user("osprey account lookup")
+		.write();
+	await indexer.syncAll();
+	expect(searchThreads(db, { query: "osprey", subagents: true }).threads).toHaveLength(2);
+
+	expect(indexer.setPrivate("gggg-8", true)).toEqual({ turns: 2 });
+	expect(searchThreads(db, { query: "osprey", subagents: true }).threads).toHaveLength(0);
+
+	// New turns, another process's full sync, and a reopened index all keep it out.
+	main.user("osprey card number").assistant("stored").write();
+	await indexer.syncFile(main.path);
+	await indexer.syncAll();
+	db.close();
+	db = openThreadDb(join(dir, "threads.db"));
+	indexer = new ThreadIndexer(db, root);
+	await indexer.syncAll();
+	expect(indexer.isPrivate("gggg-8")).toBe(true);
+	expect(db.query<{ n: number }, []>("SELECT count(*) AS n FROM sessions WHERE id IN ('gggg-8', 'hhhh-9')").get()).toEqual({ n: 0 });
+	expect(existsSync(main.path) && existsSync(sub)).toBe(true);
+
+	indexer.setPrivate("gggg-8", false);
+	await indexer.syncAll();
+	expect(searchThreads(db, { query: "osprey", subagents: true }).threads).toHaveLength(2);
 });
 
 test("redacts credentials before they reach the index", async () => {

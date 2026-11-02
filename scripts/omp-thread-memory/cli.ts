@@ -22,6 +22,7 @@ Usage:
   omp-threads deep <regex> [--case]     regex over raw session files including tool output (ripgrep or grep -P)
   omp-threads recent                    most recently active threads
   omp-threads show <session-id-or-prefix> [--turns N] [--around TURN]
+  omp-threads delete <session-id-or-prefix>  erase a thread: transcript files and index rows
   omp-threads stats
 
 Filters: --cwd <substring, or . for this directory>  --since <30m|12h|7d|2w|date>
@@ -123,6 +124,26 @@ try {
 			const fresh = resolveThread(db, target.id).find(row => row.sid === target.sid) ?? target;
 			const around = Number(flags.get("around") ?? 0);
 			console.log(formatThread(db, fresh, { turns: Number(flags.get("turns") ?? 3), around: around > 0 ? around : undefined }, now));
+			break;
+		}
+		case "delete": {
+			if (!text) throw new Error("Usage: omp-threads delete <session-id-or-prefix>");
+			const matches = resolveThread(db, text);
+			const exact = matches.find(row => row.id === text || row.file === text);
+			if (matches.length === 0) throw new Error(`No indexed thread matches "${text}".`);
+			if (!exact && matches.length > 1) {
+				console.log(
+					[`"${text}" matches ${matches.length} threads; give one full session id or file path:`, ...matches.map(row => `- ${describeThread(row, now)}`)].join("\n"),
+				);
+				process.exitCode = 1;
+				break;
+			}
+			const target = exact ?? matches[0];
+			if (!target) break;
+			const removed = indexer.deleteThread(target);
+			console.log(
+				`Deleted ${removed.turns} turns from ${removed.files.length} files:\n${removed.files.map(file => `- ${tildify(file)}`).join("\n")}`,
+			);
 			break;
 		}
 		case "stats": {

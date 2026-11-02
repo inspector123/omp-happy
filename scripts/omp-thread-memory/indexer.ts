@@ -1,5 +1,5 @@
 import type { Database, Statement } from "bun:sqlite";
-import { closeSync, fstatSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readSync, rmSync, statSync } from "node:fs";
 import type { Stats } from "node:fs";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
@@ -489,6 +489,7 @@ export class ThreadIndexer {
 	readonly #upsertTurn: Statement<null, [number, number, number, number, string, string, string, string, string, number, string]>;
 	readonly #getMeta: Statement<{ value: string }, [string]>;
 	readonly #setMeta: Statement<null, [string, string]>;
+	readonly #isPrivate: Statement<{ id: string }, [string, string]>;
 
 	constructor(db: Database, root: string) {
 		this.db = db;
@@ -528,6 +529,7 @@ export class ThreadIndexer {
 		);
 		this.#getMeta = db.query("SELECT value FROM meta WHERE key = ?");
 		this.#setMeta = db.query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value");
+		this.#isPrivate = db.query("SELECT id FROM private_threads WHERE id IN (?1, ?2) AND id <> ''");
 	}
 
 	getMeta(key: string): string | undefined {
@@ -546,6 +548,31 @@ export class ThreadIndexer {
 			return true;
 		});
 		return run.immediate();
+	}
+
+	isPrivate(sessionId: string): boolean {
+		return this.#isPrivate.get(sessionId, sessionId) !== null;
+	}
+
+	/**
+	 * Marks a session (and its subagents) private: its index rows are erased now and it is never
+	 * indexed again, by this or any other process. Transcript files stay so the session can resume.
+	 * Turning it off lets the next sync index the whole session again.
+	 */
+	setPrivate(sessionId: string, enabled: boolean): { turns: number } {
+		if (!sessionId) throw new Error("This session has no id yet; send a message first.");
+		return this.db.transaction(() => {
+			if (!enabled) {
+				this.db.query("DELETE FROM private_threads WHERE id = ?").run(sessionId);
+				return { turns: 0 };
+			}
+			this.db.query("INSERT OR IGNORE INTO private_threads (id, at) VALUES (?, ?)").run(sessionId, Date.now());
+			const rows = this.db
+				.query<{ sid: number; turn_count: number }, [string]>("SELECT sid, turn_count FROM sessions WHERE id = ?1 OR root_id = ?1")
+				.all(sessionId);
+			for (const row of rows) this.#removeSession(row.sid);
+			return { turns: rows.reduce((sum, row) => sum + row.turn_count, 0) };
+		}).immediate();
 	}
 
 	/**
@@ -569,6 +596,10 @@ export class ThreadIndexer {
 			}
 			const head = readHead(fd);
 			if (!head) return result;
+			if (this.#isPrivate.get(head.id, describePath(this.root, file).rootId)) {
+				if (known) this.db.transaction(() => this.#removeSession(known.sid)).immediate();
+				return result;
+			}
 			const sid = this.#prepareRow(file, stat, head);
 			let pos = this.#byFile.get(file)?.offset ?? 0;
 			let span = CHUNK_BYTES;
@@ -738,5 +769,36 @@ export class ThreadIndexer {
 			}
 		});
 		run.immediate();
+	}
+
+	/**
+	 * Erases a thread for good: the transcript files on disk plus every index row, so search and
+	 * resume can no longer find it. A main session takes its subagent transcripts with it; a
+	 * subagent row deletes only its own file. Files already gone are fine; missing rows (files
+	 * deleted out from under the index) can be purged the same way.
+	 */
+	deleteThread(session: SessionRow): { files: string[]; turns: number } {
+		const family = session.agent || session.id === ""
+			? [session]
+			: this.db
+				.query<SessionRow, [number, string]>("SELECT * FROM sessions WHERE sid = ?1 OR (root_id = ?2 AND agent <> '')")
+				.all(session.sid, session.id);
+		this.db.transaction(() => {
+			for (const row of family) this.#removeSession(row.sid);
+		}).immediate();
+		const files: string[] = [];
+		for (const row of family) {
+			files.push(row.file);
+			rmSync(row.file, { force: true });
+		}
+		// Subagent transcripts live in a sibling directory named after the main file.
+		if (!session.agent) {
+			const dir = session.file.endsWith(".jsonl") ? session.file.slice(0, -".jsonl".length) : session.file;
+			if (existsSync(dir)) {
+				rmSync(dir, { recursive: true });
+				files.push(`${dir}/`);
+			}
+		}
+		return { files, turns: family.reduce((sum, row) => sum + row.turn_count, 0) };
 	}
 }

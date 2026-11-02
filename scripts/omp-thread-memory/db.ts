@@ -176,6 +176,8 @@ export function openThreadDb(path: string): Database {
 		});
 		migrate.immediate();
 	}
+	// Outside SCHEMA so index rebuilds (which drop every SCHEMA table) never forget a private flag.
+	db.exec("CREATE TABLE IF NOT EXISTS private_threads (id TEXT PRIMARY KEY, at INTEGER NOT NULL)");
 	chmodSync(path, 0o600);
 	return db;
 }
