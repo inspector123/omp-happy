@@ -16,7 +16,9 @@ import { Fastify } from '../types';
 import { db } from '@/storage/db';
 import { s3client, s3bucket, isLocalStorage, getLocalFilesDir, putLocalFile } from '@/storage/files';
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+// Agent-presented videos need more headroom than chat photos. The CLI mirrors
+// this cap as ATTACHMENT_MAX_ENCRYPTED_BYTES in happy-cli/src/api/apiSession.ts.
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 const PRESIGNED_TTL_SECONDS = 15 * 60; // 15 minutes (design spec)
 
 // Per-user, per-process token bucket for request-upload. Best-effort flood
@@ -103,7 +105,7 @@ export function attachmentRoutes(app: Fastify) {
         }
 
         if (size > MAX_FILE_SIZE) {
-            return reply.code(413).send({ error: 'File too large (max 10MB)' });
+            return reply.code(413).send({ error: 'File too large (max 50MB)' });
         }
 
         // Always .enc — encrypted opaque blobs, never trust client filename for path.
@@ -179,7 +181,7 @@ export function attachmentRoutes(app: Fastify) {
 
         const body = request.body as Buffer;
         if (body.length > MAX_FILE_SIZE) {
-            return reply.code(413).send({ error: 'File too large (max 10MB)' });
+            return reply.code(413).send({ error: 'File too large (max 50MB)' });
         }
 
         const ref = `sessions/${sessionId}/attachments/${attachmentFile}`;

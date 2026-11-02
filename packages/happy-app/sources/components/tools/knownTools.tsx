@@ -656,6 +656,20 @@ export const knownTools = {
         }).partial().passthrough(),
         result: z.object({}).partial().passthrough()
     },
+    'present_media': {
+        title: (opts: { metadata: Metadata | null, tool: ToolCall }) => {
+            const count = Array.isArray(opts.tool.input?.paths) ? opts.tool.input.paths.length : 0;
+            return count > 1 ? `Shared ${count} files` : 'Shared a file';
+        },
+        icon: (size: number = 24, color: string = '#000') => <Ionicons name="images-outline" size={size} color={color} />,
+        noStatus: true,
+        // PresentMediaView renders per-file failures and OMP error text itself.
+        hideDefaultError: true,
+        input: z.object({
+            paths: z.array(z.string()).describe('Image or video file paths shown to the user')
+        }).partial().passthrough(),
+        result: z.object({}).partial().passthrough()
+    },
     // Gemini internal tools - should be hidden (minimal)
     'search': {
         title: t('tools.names.search'),

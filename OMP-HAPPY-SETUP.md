@@ -298,6 +298,63 @@ printf '%s\n' "$HAPPY_HOME_DIR"
 
 Correct the endpoint or home. Do not delete keys or force a new login as the first troubleshooting step.
 
+### Linking over SSH or without a camera: tmux and the `happy://` link
+
+Use this when the new computer is reached over SSH, its terminal is too small for the QR code, or the phone cannot scan the screen. The login command waits for approval, so run it inside tmux where it survives a dropped SSH connection and its output can be copied.
+
+On the new computer, after OMP is installed and the repository is built:
+
+```bash
+tmux new-session -s happy-login
+```
+
+Inside that tmux session:
+
+```bash
+cd "$OMP_HAPPY_REPO"
+export HAPPY_HOME_DIR="$HOME/.omp-happy"
+export HAPPY_SERVER_URL="http://192.168.0.215:40004"   # the exact origin the phone app uses
+export HAPPY_WEBAPP_URL="$HAPPY_SERVER_URL"
+export PATH="$PATH:$HOME/.local/bin:$HOME/.bun/bin"
+
+pnpm cli auth login
+```
+
+Choose **Mobile Authentication** with the arrow keys and Enter. Under the QR code the CLI prints `Or manually enter this URL:` followed by a link of the form:
+
+```text
+happy://terminal?<base64url public key>
+```
+
+Leave the command running. Detach with `Ctrl-b d` if needed; reattach later with `tmux attach -t happy-login`.
+
+Copy the link out of the pane. The link is long and the terminal wraps it, so do not select it by hand. From a second shell on the same computer (or another SSH session):
+
+```bash
+tmux capture-pane -p -J -S - -t happy-login | grep -o 'happy://terminal?[A-Za-z0-9_-]*' | tail -1
+```
+
+`-J` joins the wrapped lines back into one, and `-S -` includes the full scrollback. Check that the result is one unbroken line beginning with `happy://terminal?`.
+
+Get that line onto the phone in any private way (a message to yourself, a notes app, a password manager). The link carries only a temporary public key and is useless once the login finishes, but do not post it publicly while the login is waiting.
+
+In the already-signed-in companion app:
+
+1. Open **Settings**.
+2. Tap **Enter URL manually** (the same button also appears on the empty home screen).
+3. Paste the whole `happy://terminal?…` link and confirm.
+4. Approve the connection request.
+
+Back in tmux, the login command reports success and exits. Then verify and close the tmux session:
+
+```bash
+pnpm cli auth status
+tmux kill-session -t happy-login
+```
+
+If the app reports an invalid link, the copy was truncated or picked up an extra character; capture it again. If the app and computer still disagree after approval, compare the server URL in the app with `HAPPY_SERVER_URL` as described above. A new link is generated each time `auth login` starts, so an old copied link never works for a new attempt.
+
+
 ## 6. Start the OMP daemon
 
 The daemon keeps the OMP computer visible to the companion and accepts requests to create sessions.
@@ -564,7 +621,58 @@ Expected: active/connected, and the computer appears online in the companion.
 5. Detach (herdr's detach keybinding, or `Ctrl-b d` for tmux).
 6. Send another companion prompt and confirm the session continues.
 
+## 12. Extras on each OMP computer
+
+### Cross-session thread memory
+
+Thread memory lets an agent in one session search and load the work of every other OMP session on the same computer. It is an OMP extension in this repository; install it on every OMP computer after step 2. It needs `bun` on `PATH` (native OMP already requires it).
+
+```bash
+cd "$OMP_HAPPY_REPO/scripts/omp-thread-memory"
+./install.sh          # links the extension and the omp-threads CLI, then indexes existing sessions in the background
+./install.sh status   # shows both links and index statistics
+```
+
+It creates:
+
+```text
+~/.omp/agent/extensions/thread-memory.ts   symlink to this checkout
+~/.local/bin/omp-threads                    shell CLI: omp-threads search|show|delete|stats
+~/.omp/agent/thread-memory/threads.db       the index (rebuildable from session files)
+```
+
+New OMP sessions load it; sessions already running pick it up only after a restart. Agents get `thread_search`, `thread_open`, and `thread_private` tools plus a `/threads` command. Run `./install.sh uninstall` to remove the links; the index is kept.
+
+Private chats: when a conversation involves passwords, keys, tokens, financial, medical, or other personal data, or the user asks not to be remembered, the agent is instructed to call `thread_private`. That erases the session (and its subagents) from the index and keeps it out of every later sync and rebuild. The transcript file stays so the session can be resumed. Calling `thread_private` with `private: false` makes it searchable again. To erase the transcript as well, run `omp-threads delete <session id>`.
+
+### Showing images and videos in the app
+
+The OMP bridge extension (loaded automatically by `happy omp`) gives agents a `present_media` tool. The agent passes image or video file paths on this computer; each file is encrypted, uploaded to the Happy server, and shown in the chat. Images open full screen on tap, videos play with native controls, and a **Save** button opens the phone's share sheet (or a browser download on web).
+
+- Formats: `.png .jpg .jpeg .gif .webp .bmp .mp4 .m4v .mov .webm`.
+- Size: up to 50 MB per file. Larger videos are re-encoded by the agent (it is told to make a 720p ffmpeg copy).
+- Nothing extra to install on a new OMP computer beyond building the CLI in step 2.
+- The server must run this repository's version (its attachment limit is 50 MB), and the phone needs an app build from this repository; older app builds show the call as a plain tool card.
+- Agents sometimes call it through OMP's device route (`write xd://present_media`); the CLI maps that back to `present_media`, so both render as media.
+
+### Checklist for a new OMP computer
+
+1. Native `omp` works on its own (step 1).
+2. Clone, `pnpm install`, `pnpm -C packages/happy-cli build` (step 2).
+3. Link the computer to the companion account: QR code, or the tmux plus `happy://` link method in step 5.
+4. Start the daemon, preferably as the systemd user service (step 6), with `HAPPY_SERVER_URL` set to the same origin the phone uses.
+5. Install thread memory (this section).
+6. Run the acceptance check (step 11), then ask an agent in a new phone-started session to show you an image with `present_media`.
+
 ## Troubleshooting
+
+### Server restarts in a loop with `RuntimeError: Aborted()` during "Running migrations"
+
+The embedded PGlite database refused to start, usually `PANIC: could not locate a valid checkpoint record`. This happens when a second process opened the server's `server-data/pglite` directory while the server was running. Only the server process may ever open that directory.
+
+1. Stop the restart loop: `systemctl --user stop omp-happy-server`.
+2. Copy the whole directory before anything else: `cp -a server-data/pglite server-data/pglite.backup-$(date +%F_%H-%M)`.
+3. Do not reset the server or delete the directory as a first step; that loses every account and session. The write-ahead log is normally still complete and the database can be repaired by replaying it from the last good redo point. This was done once on 2026-10-31 with PostgreSQL 17's `pg_controldata` and `pg_waldump`; the one-off scripts (with that incident's WAL positions hard-coded) are in the git-ignored `tmp/pglite-recover/` folder on the original server computer only.
 
 ### Health works locally but not from the phone
 

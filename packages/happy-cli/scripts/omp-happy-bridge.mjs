@@ -1,9 +1,15 @@
 import { createConnection } from 'node:net';
+import { homedir } from 'node:os';
+import { isAbsolute, resolve } from 'node:path';
 
 const SOCKET_ENV = 'OMP_HAPPY_BRIDGE_SOCKET';
 const CONTROL_MODE_ENV = 'OMP_HAPPY_CONTROL_MODE';
 const LOCAL_ASK_TOOL = 'ask';
 const REMOTE_ASK_TOOL = 'happy_ask';
+const PRESENT_MEDIA_TOOL = 'present_media';
+// Covers encrypting and uploading a 50 MB video over a slow uplink; a wrapper
+// that never answers (older build, crashed) must not hang the agent forever.
+const PRESENT_MEDIA_TIMEOUT_MS = 5 * 60_000;
 const PROTOCOL_VERSION = 1;
 const USAGE_PUBLISH_INTERVAL_MS = 500;
 const OMP_MIN_TOKEN_RATE_DURATION_MS = 100;
@@ -292,6 +298,31 @@ export async function setOmpSessionTitle(pi, ctx, value) {
   return title;
 }
 
+export function resolveMediaPath(cwd, rawPath) {
+  const trimmed = rawPath.trim();
+  const expanded = trimmed === '~' || trimmed.startsWith('~/')
+    ? `${homedir()}${trimmed.slice(1)}`
+    : trimmed;
+  return isAbsolute(expanded) ? expanded : resolve(cwd, expanded);
+}
+
+export function formatPresentMediaResult(result) {
+  const media = Array.isArray(result?.media) ? result.media : [];
+  const errors = Array.isArray(result?.errors) ? result.errors : [];
+  const lines = [];
+  if (media.length > 0) {
+    lines.push(`Presented ${media.length} file(s) to the user in the Happy app: ${media.map((item) => item.name).join(', ')}`);
+  }
+  for (const failure of errors) {
+    lines.push(`Failed to present ${failure.path}: ${failure.error}`);
+  }
+  return {
+    content: [{ type: 'text', text: lines.join('\n') || 'No files were presented.' }],
+    details: { media, errors },
+    ...(media.length === 0 ? { isError: true } : {}),
+  };
+}
+
 export async function sendPromptCommand(pi, command) {
   if (!command || typeof command !== 'object' || command.type !== 'prompt' || typeof command.text !== 'string') {
     return false;
@@ -357,6 +388,7 @@ export default function happyBridgeExtension(pi) {
   let pendingEditorRestore;
   let controlMode = process.env[CONTROL_MODE_ENV] === 'remote' ? 'remote' : 'local';
   const pendingAskRequests = new Map();
+  const pendingPresentRequests = new Map();
   const usageTelemetry = createUsageTelemetry();
 
   // Custom messages (e.g. async-result background job deliveries) are appended
@@ -510,6 +542,41 @@ export default function happyBridgeExtension(pi) {
         };
       },
     });
+    pi.registerTool({
+      name: PRESENT_MEDIA_TOOL,
+      label: 'Present media',
+      description: [
+        'Show image or video files to the user in the Happy app, where they can view, play, and download them.',
+        'Use this whenever the user should see a screenshot, chart, photo, generated image, or video; reading an image file does not display it to the user.',
+        'Supported: .png .jpg .jpeg .gif .webp .bmp .mp4 .m4v .mov .webm, up to 50 MB each. If a video is larger, re-encode a smaller copy first (for example ffmpeg -i in.mp4 -vf scale=-2:720 -c:v libx264 -crf 28 -preset fast -c:a aac -b:a 96k out.mp4) and present that.',
+      ].join(' '),
+      parameters: z.object({
+        paths: z.array(z.string().min(1)).min(1).max(10)
+          .describe('Image or video file paths, absolute or relative to the working directory.'),
+      }),
+      async execute(toolCallId, params, signal) {
+        const cwd = latestContext?.cwd ?? process.cwd();
+        const paths = params.paths.map((path) => resolveMediaPath(cwd, path));
+        if (signal?.aborted) throw new Error('Present media request aborted');
+        const result = await new Promise((resolve, reject) => {
+          const finish = (callback) => {
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', abort);
+            pendingPresentRequests.delete(toolCallId);
+            callback();
+          };
+          const abort = () => finish(() => reject(new Error('Present media request aborted')));
+          const timer = setTimeout(
+            () => finish(() => reject(new Error('Happy did not confirm the upload within 5 minutes'))),
+            PRESENT_MEDIA_TIMEOUT_MS,
+          );
+          signal?.addEventListener('abort', abort, { once: true });
+          pendingPresentRequests.set(toolCallId, (value) => finish(() => resolve(value)));
+          send({ type: 'present_media', id: toolCallId, paths });
+        });
+        return formatPresentMediaResult(result);
+      },
+    });
   }
 
 
@@ -597,6 +664,14 @@ export default function happyBridgeExtension(pi) {
       }
       pendingAskRequests.delete(command.id);
       pending.resolve(command.answers && typeof command.answers === 'object' ? command.answers : {});
+    }
+    if (command.type === 'present_media_result' && typeof command.id === 'string') {
+      const resolvePresent = pendingPresentRequests.get(command.id);
+      if (!resolvePresent) {
+        send({ type: 'bridge_error', message: `No pending present_media request: ${command.id}` });
+        return;
+      }
+      resolvePresent(command);
     }
   };
 

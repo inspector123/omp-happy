@@ -24,6 +24,7 @@ import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
 import { createOmpConfigCommandRunner, persistOmpDefaultModel } from './ompModelConfig';
+import { presentMediaFiles } from './presentMedia';
 
 const KEEPALIVE_INTERVAL_MS = 2_000;
 const MIRROR_FLUSH_DELAY_MS = 150;
@@ -58,7 +59,8 @@ type BridgeFrame =
   | BridgeAbortedFrame
   | BridgeAskRequestFrame
   | BridgeChangeTitleFrame
-  | BridgeTuiCommandReadyFrame;
+  | BridgeTuiCommandReadyFrame
+  | BridgePresentMediaFrame;
 
 type BridgeReadyFrame = {
   type: 'ready';
@@ -140,6 +142,12 @@ type BridgeTuiCommandReadyFrame = {
   command: string;
 };
 
+type BridgePresentMediaFrame = {
+  type: 'present_media';
+  id: string;
+  paths: string[];
+};
+
 
 type PendingPtyPrompt = {
   id: string;
@@ -215,11 +223,42 @@ export interface RunOmpOptions {
 
 interface BridgeServer {
   send(frame: unknown): boolean;
+  /** Writes a frame to the exact connection that sent a request (root or subagent bridge). */
+  reply(source: BridgeFrameSource, frame: unknown): boolean;
   close(): Promise<void>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+/**
+ * OMP exposes extension tools as devices: the model calls `write` with
+ * `path: "xd://<tool>"` and JSON `content`, and the result carries the inner
+ * tool's output under `details.xdev`. Rewrite those events to the real tool
+ * so the app renders present_media, change_title, etc. with their own views.
+ */
+export function unwrapXdevToolEvent(event: MirrorEvent): MirrorEvent {
+  if (event.type !== 'tool_execution_start' && event.type !== 'tool_execution_end') return event;
+  if (event.toolName !== 'write') return event;
+  const details = isRecord(event.result) && isRecord(event.result.details) ? event.result.details : undefined;
+  const xdev = details && isRecord(details.xdev) ? details.xdev : undefined;
+  if (event.type === 'tool_execution_end') {
+    if (!xdev || typeof xdev.tool !== 'string') return event;
+    return {
+      ...event,
+      toolName: xdev.tool,
+      result: { ...(event.result as Record<string, unknown>), details: xdev.inner ?? {} },
+    };
+  }
+  const path = isRecord(event.args) ? asString(event.args.path) : undefined;
+  if (!path?.startsWith('xd://')) return event;
+  const content = isRecord(event.args) ? event.args.content : undefined;
+  let input: unknown = content;
+  if (typeof content === 'string') {
+    try { input = JSON.parse(content); } catch { input = { content }; }
+  }
+  return { ...event, toolName: path.slice('xd://'.length), args: isRecord(input) ? input : {} };
 }
 
 function normalizeBridgeToolName(toolName: string): string {
@@ -576,6 +615,9 @@ async function startBridgeServer(
 
       if (
         connection.primary
+        // Subagent sessions load the same extension; their present_media
+        // tool call blocks until this connection receives the result.
+        || frame.type === 'present_media'
         || (
           connection.childRegistryName
           && (frame.type === 'agent_event' || frame.type === 'subagent_lifecycle')
@@ -633,6 +675,15 @@ async function startBridgeServer(
       if (primarySocket?.writable) primarySocket.write(line);
       else outgoing.push(line);
       return true;
+    },
+    reply(source: BridgeFrameSource, frame: unknown): boolean {
+      for (const [socket, connection] of connections) {
+        if (connection.connectionId !== source.connectionId) continue;
+        if (!socket.writable) return false;
+        socket.write(`${JSON.stringify(frame)}\n`);
+        return true;
+      }
+      return false;
     },
     async close(): Promise<void> {
       for (const socket of connections.keys()) socket.destroy();
@@ -1077,7 +1128,8 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
   };
 
-  const translateChildEvent = (state: ChildMirrorState, event: MirrorEvent): void => {
+  const translateChildEvent = (state: ChildMirrorState, rawEvent: MirrorEvent): void => {
+    const event = unwrapXdevToolEvent(rawEvent);
     if (state.stopped || state.discarded || !state.binding) return;
     const bridgeKey = state.binding.sessionSubagent;
     switch (event.type) {
@@ -1447,7 +1499,8 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     }
   };
 
-  const handleBridgeEvent = (event: MirrorEvent): void => {
+  const handleBridgeEvent = (rawEvent: MirrorEvent): void => {
+    const event = unwrapXdevToolEvent(rawEvent);
     switch (event.type) {
       case 'agent_start': {
         turnStarted = true;
@@ -1659,6 +1712,17 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   };
 
   const handleBridgeFrame = (frame: BridgeFrame, source: BridgeFrameSource): void => {
+    if (frame.type === 'present_media') {
+      const paths = Array.isArray(frame.paths)
+        ? frame.paths.filter((path): path is string => typeof path === 'string' && path.length > 0)
+        : [];
+      void presentMediaFiles(paths, (data, name) => session.uploadAttachment(data, name))
+        .then((result) => {
+          log(`Presented ${result.media.length} media file(s), ${result.errors.length} failed`);
+          bridgeServer?.reply(source, { type: 'present_media_result', id: frame.id, ...result });
+        });
+      return;
+    }
     if (!source.primary) {
       handleChildBridgeFrame(frame, source);
       return;

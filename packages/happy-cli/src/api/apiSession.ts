@@ -90,6 +90,12 @@ type V3PostSessionMessagesResponse = {
     }>;
 };
 
+/** Server-side cap on one encrypted attachment blob (happy-server attachmentRoutes MAX_FILE_SIZE). */
+export const ATTACHMENT_MAX_ENCRYPTED_BYTES = 50 * 1024 * 1024;
+/** NaCl secretbox nonce (24) + Poly1305 tag (16) added by encryptBlob. */
+export const ATTACHMENT_ENCRYPTION_OVERHEAD_BYTES = 40;
+/** Largest plaintext file that still fits under the server cap once encrypted. */
+export const ATTACHMENT_MAX_PLAINTEXT_BYTES = ATTACHMENT_MAX_ENCRYPTED_BYTES - ATTACHMENT_ENCRYPTION_OVERHEAD_BYTES;
 
 type AttachmentUploadResult = {
     ref: string;
@@ -495,7 +501,7 @@ export class ApiSessionClient extends EventEmitter {
                     'Content-Type': `multipart/form-data; boundary=${boundary}`,
                 },
                 timeout: 60000,
-                maxBodyLength: 10 * 1024 * 1024,
+                maxBodyLength: ATTACHMENT_MAX_ENCRYPTED_BYTES + 64 * 1024,
             });
             return;
         }
@@ -509,22 +515,30 @@ export class ApiSessionClient extends EventEmitter {
         await axios.put(uploadUrl, Buffer.from(encrypted), {
             headers,
             timeout: 60000,
-            maxBodyLength: 10 * 1024 * 1024,
+            maxBodyLength: ATTACHMENT_MAX_ENCRYPTED_BYTES,
         });
+    }
+
+    /**
+     * Encrypt and upload one attachment blob with this session's blob key.
+     * Returns the server ref that app clients pass to request-download.
+     */
+    async uploadAttachment(data: Uint8Array, name: string): Promise<string> {
+        const blobKey = await this.getBlobKey();
+        const encrypted = encryptBlob(data, blobKey);
+        const upload = await this.requestAttachmentUpload(name, encrypted.length);
+        await this.uploadEncryptedAttachmentBlob(upload, encrypted);
+        return upload.ref;
     }
 
     async uploadLocalImageAttachmentEnvelope(
         attachment: LocalImageAttachment,
         opts: Pick<CreateEnvelopeOptions, 'id' | 'time' | 'claudeUuid' | 'codexItemId'> = {},
     ): Promise<SessionEnvelope> {
-        const blobKey = await this.getBlobKey();
-        const encrypted = encryptBlob(attachment.data, blobKey);
-        const upload = await this.requestAttachmentUpload(attachment.name, encrypted.length);
-        await this.uploadEncryptedAttachmentBlob(upload, encrypted);
-
+        const ref = await this.uploadAttachment(attachment.data, attachment.name);
         return createEnvelope('user', {
             t: 'file',
-            ref: upload.ref,
+            ref,
             name: attachment.name,
             size: attachment.data.length,
             mimeType: attachment.mimeType,

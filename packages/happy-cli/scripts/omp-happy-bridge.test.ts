@@ -1,8 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer, type Socket } from 'node:net';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as z from 'zod';
 
 // The bridge is intentionally plain ESM because native OMP loads it directly.
 // @ts-expect-error TypeScript has no declaration for the runtime extension module.
-import {
+import happyBridgeExtension, {
   calculateOmpTokensPerSecond,
   createUsageTelemetry,
   formatAskResult,
@@ -364,5 +369,116 @@ describe('OMP Happy bridge usage telemetry', () => {
       5_000,
     )).toBe(true);
     expect(telemetry.takeFrame(ctx, { force: true, now: 5_000 })?.tokensPerSecond).toBe(0);
+  });
+});
+
+describe('OMP Happy bridge present_media tool', () => {
+  type WrapperFrame = { type: string; id: string; paths: string[] };
+  type PresentToolResult = {
+    content: Array<{ type: 'text'; text: string }>;
+    details: { media: unknown[]; errors: unknown[] };
+    isError?: true;
+  };
+  type PresentTool = {
+    name: string;
+    execute(toolCallId: string, params: { paths: string[] }, signal?: AbortSignal): Promise<PresentToolResult>;
+  };
+  type Handler = (event: unknown, ctx: unknown) => Promise<void>;
+
+  const cleanups: Array<() => Promise<void>> = [];
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0)) await cleanup();
+    vi.unstubAllEnvs();
+  });
+
+  async function startWrapper(onFrame: (frame: WrapperFrame, socket: Socket) => void) {
+    const dir = await mkdtemp(join(tmpdir(), 'omp-bridge-present-'));
+    const socketPath = join(dir, 'bridge.sock');
+    const sockets: Socket[] = [];
+    const server = createServer((socket) => {
+      sockets.push(socket);
+      let pending = '';
+      socket.setEncoding('utf8');
+      socket.on('data', (chunk) => {
+        pending += chunk;
+        const lines = pending.split('\n');
+        pending = lines.pop() ?? '';
+        for (const line of lines) if (line.trim()) onFrame(JSON.parse(line) as WrapperFrame, socket);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+    cleanups.push(async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(dir, { recursive: true, force: true });
+    });
+    return socketPath;
+  }
+
+  function loadPresentTool(socketPath: string): PresentTool {
+    vi.stubEnv('OMP_HAPPY_BRIDGE_SOCKET', socketPath);
+    const tools: PresentTool[] = [];
+    let shutdown: Handler | undefined;
+    happyBridgeExtension({
+      zod: z,
+      registerTool: (tool: PresentTool) => tools.push(tool),
+      events: { on: () => {} },
+      on: (name: string, handler: Handler) => {
+        if (name === 'session_shutdown') shutdown = handler;
+      },
+    });
+    // Session shutdown closes the extension socket so the test server can stop.
+    cleanups.unshift(async () => { await shutdown?.({}, {}); });
+    const tool = tools.find((candidate) => candidate.name === 'present_media');
+    if (!tool) throw new Error('present_media was not registered');
+    return tool;
+  }
+
+  it('sends resolved absolute paths to the wrapper and returns its uploaded media', async () => {
+    const frames: WrapperFrame[] = [];
+    const uploaded = { path: join(process.cwd(), 'shot.png'), name: 'shot.png', mimeType: 'image/png', kind: 'image', size: 3, ref: 'sessions/s/attachments/a.enc' };
+    const socketPath = await startWrapper((frame, socket) => {
+      frames.push(frame);
+      if (frame.type !== 'present_media') return;
+      socket.write(`${JSON.stringify({
+        type: 'present_media_result',
+        id: frame.id,
+        media: [uploaded],
+        errors: [{ path: frame.paths[1], error: 'Not a regular file' }],
+      })}\n`);
+    });
+    const tool = loadPresentTool(socketPath);
+
+    const result = await tool.execute('call-1', { paths: ['shot.png', '/abs/dir'] });
+
+    expect(frames).toEqual([{ type: 'present_media', id: 'call-1', paths: [join(process.cwd(), 'shot.png'), '/abs/dir'] }]);
+    expect(result.isError).toBeUndefined();
+    expect(result.details.media).toEqual([uploaded]);
+    expect(result.content[0].text).toContain('Presented 1 file(s) to the user in the Happy app: shot.png');
+    expect(result.content[0].text).toContain('Failed to present /abs/dir: Not a regular file');
+  });
+
+  it('reports an error result when the wrapper could present nothing', async () => {
+    const socketPath = await startWrapper((frame, socket) => {
+      if (frame.type !== 'present_media') return;
+      socket.write(`${JSON.stringify({ type: 'present_media_result', id: frame.id, media: [], errors: [{ path: frame.paths[0], error: 'ENOENT' }] })}\n`);
+    });
+    const tool = loadPresentTool(socketPath);
+
+    const result = await tool.execute('call-2', { paths: ['~/missing.mp4'] });
+
+    expect(result.isError).toBe(true);
+    expect(result.details.errors).toEqual([{ path: join(homedir(), 'missing.mp4'), error: 'ENOENT' }]);
+  });
+
+  it('rejects when the agent aborts while the upload is pending', async () => {
+    const socketPath = await startWrapper(() => {});
+    const tool = loadPresentTool(socketPath);
+    const controller = new AbortController();
+
+    const pending = tool.execute('call-3', { paths: ['/tmp/a.png'] }, controller.signal);
+    controller.abort();
+
+    await expect(pending).rejects.toThrow('Present media request aborted');
   });
 });

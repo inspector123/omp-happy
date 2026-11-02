@@ -19,6 +19,7 @@ import { GeminiEditView } from './GeminiEditView';
 import { GeminiExecuteView } from './GeminiExecuteView';
 import { DelegateView } from './DelegateView';
 import { FileView } from './FileView';
+import { PresentMediaView } from './PresentMediaView';
 
 export type ToolViewProps = {
     tool: ToolCall;
@@ -53,6 +54,8 @@ export const toolViewRegistry: Record<string, ToolViewComponent> = {
     delegate_task: DelegateView,
     // File attachment events
     file: FileView,
+    // omp agent showing image/video files to the user
+    present_media: PresentMediaView,
 };
 
 export const toolFullViewRegistry: Record<string, ToolViewComponent> = {
@@ -91,3 +94,4 @@ export { GeminiEditView } from './GeminiEditView';
 export { GeminiExecuteView } from './GeminiExecuteView';
 export { DelegateView } from './DelegateView';
 export { FileView } from './FileView';
+export { PresentMediaView } from './PresentMediaView';

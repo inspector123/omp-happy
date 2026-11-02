@@ -60,7 +60,8 @@ function warnAttachmentImageDiagnostic(reason: string, message?: string) {
     }));
 }
 
-async function loadAttachmentDataUri(sessionId: string, ref: string): Promise<string | null> {
+/** Download and decrypt one session attachment. Null on any failure (logged). */
+export async function loadAttachmentBytes(sessionId: string, ref: string): Promise<Uint8Array | null> {
     const credentials = sync.getCredentials();
     if (!credentials) {
         warnAttachmentImageDiagnostic('no-credentials');
@@ -100,8 +101,13 @@ async function loadAttachmentDataUri(sessionId: string, ref: string): Promise<st
         warnAttachmentImageDiagnostic('decrypt-returned-null');
         return null;
     }
-    const mime = detectImageMime(decrypted);
-    return `data:${mime};base64,${encodeBase64(decrypted)}`;
+    return decrypted;
+}
+
+async function loadAttachmentDataUri(sessionId: string, ref: string): Promise<string | null> {
+    const decrypted = await loadAttachmentBytes(sessionId, ref);
+    if (!decrypted) return null;
+    return `data:${detectImageMime(decrypted)};base64,${encodeBase64(decrypted)}`;
 }
 
 export type AttachmentImageState = {

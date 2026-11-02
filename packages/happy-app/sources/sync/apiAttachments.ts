@@ -18,7 +18,7 @@ import {
 import { getServerUrl } from './serverConfig';
 import { appendFormFile, uploadBinaryFile } from './uploadFormFile';
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // mirrors happy-server attachmentRoutes MAX_FILE_SIZE
 
 /**
  * URLs under the attachment API are served by the Happy server itself. Always
