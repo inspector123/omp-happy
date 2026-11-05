@@ -9,6 +9,8 @@ import { layout } from '../layout';
 import { useLocalSetting } from '@/sync/storage';
 import { StyleSheet } from 'react-native-unistyles';
 import { t } from '@/text';
+import { ImagePreview } from '../media/ImagePreview';
+import { splitToolResultImages } from '@/utils/toolResultImages';
 
 interface ToolFullViewProps {
     tool: ToolCall;
@@ -22,6 +24,7 @@ export function ToolFullView({ tool, metadata, messages = [] }: ToolFullViewProp
     const screenWidth = useWindowDimensions().width;
     const devModeEnabled = (useLocalSetting('devModeEnabled') || __DEV__);
     console.log('ToolFullView', devModeEnabled);
+    const output = React.useMemo(() => splitToolResultImages(tool.result), [tool.result]);
 
     return (
         <ScrollView style={[styles.container, { paddingHorizontal: screenWidth > 700 ? 16 : 0 }]}>
@@ -60,8 +63,13 @@ export function ToolFullView({ tool, metadata, messages = [] }: ToolFullViewProp
                                 <Ionicons name="log-out" size={20} color="#34C759" />
                                 <Text style={styles.sectionTitle}>{t('tools.fullView.output')}</Text>
                             </View>
+                            {output.images.map((image, index) => (
+                                <View key={index} style={styles.imageCard}>
+                                    <ImagePreview uri={image.uri} name={image.mimeType} />
+                                </View>
+                            ))}
                             <CodeView
-                                code={typeof tool.result === 'string' ? tool.result : JSON.stringify(tool.result, null, 2)}
+                                code={typeof output.rest === 'string' ? output.rest : JSON.stringify(output.rest, null, 2)}
                             />
                         </View>
                     )}
@@ -186,6 +194,13 @@ const styles = StyleSheet.create((theme) => ({
     emptyOutputSubtext: {
         fontSize: 14,
         color: theme.colors.textSecondary,
+    },
+    imageCard: {
+        borderWidth: 1,
+        borderColor: theme.colors.divider,
+        borderRadius: 8,
+        overflow: 'hidden',
+        marginBottom: 12,
     },
 }));
 
