@@ -7,6 +7,14 @@ import Fuse from 'fuse.js';
 import { sessionRipgrep } from './ops';
 import { AsyncLock } from '@/utils/lock';
 
+/**
+ * Folder, relative to the session's working directory, where the CLI stores files picked in
+ * the app (`registerFileUploadHandlers` in happy-cli). It is hidden and git-ignored, so the
+ * normal listing skips it and it is listed separately, newest first.
+ */
+const UPLOADS_DIRECTORY = '.happy-uploads';
+const UPLOADS_LIST_ARGS = ['--files', '--hidden', '--no-ignore', '--sortr', 'modified', '--glob', '!.gitignore', UPLOADS_DIRECTORY];
+
 export interface FileItem {
     fileName: string;
     filePath: string;
@@ -87,12 +95,12 @@ class FileSearchCache {
 
             console.log(`FileSearchCache: Refreshing file cache for session ${sessionId}...`);
 
-            // Use ripgrep to get all files in the project
-            const response = await sessionRipgrep(
-                sessionId,
-                ['--files', '--follow'],
-                undefined
-            );
+            // Use ripgrep to get all files in the project, plus the uploads folder.
+            // Sessions that have no uploads folder yet return no uploads.
+            const [response, uploads] = await Promise.all([
+                sessionRipgrep(sessionId, ['--files', '--follow'], undefined),
+                sessionRipgrep(sessionId, UPLOADS_LIST_ARGS, undefined),
+            ]);
 
             if (!response.success || !response.stdout) {
                 console.error('FileSearchCache: Failed to fetch files', response.error);
@@ -100,9 +108,9 @@ class FileSearchCache {
                 return;
             }
 
-            // Parse the output into file items
-            const filePaths = response.stdout
-                .split('\n')
+            // Recent uploads come first, so an empty "@" query suggests them.
+            const uploadPaths = uploads.success && uploads.stdout ? uploads.stdout.split('\n') : [];
+            const filePaths = [...new Set([...uploadPaths, ...response.stdout.split('\n')])]
                 .filter(path => path.trim().length > 0);
 
             // Clear existing files

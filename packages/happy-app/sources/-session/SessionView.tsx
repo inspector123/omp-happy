@@ -23,6 +23,7 @@ import { VoiceAssistantStatusBar } from '@/components/VoiceAssistantStatusBar';
 import { useDraft } from '@/hooks/useDraft';
 import { useImagePicker } from '@/hooks/useImagePicker';
 import { useFileUpload } from '@/hooks/useFileUpload';
+import { appendFileMentions } from '@/utils/fileMention';
 import { Modal } from '@/modal';
 import { voiceHooks } from '@/realtime/hooks/voiceHooks';
 import { getCurrentVoiceConversationId, getCurrentVoiceSessionDurationSeconds, startRealtimeSession, stopRealtimeSession } from '@/realtime/RealtimeSession';
@@ -200,9 +201,26 @@ export const SessionView = React.memo((props: { id: string }) => {
             isConnected,
         };
     }, [session, isDataReady]);
+    // A forked chat links back to the chat it was forked from: dismissTo pops
+    // back when the original is under this screen and replaces it otherwise.
+    const parentSessionId = session?.metadata?.parentSessionId;
     const headerRight = session && deviceType === 'phone' && Platform.OS !== 'web'
         ? (
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                {parentSessionId ? (
+                    <Pressable
+                        onPress={() => router.dismissTo(`/session/${encodeURIComponent(parentSessionId)}`)}
+                        hitSlop={10}
+                        accessibilityRole="button"
+                        accessibilityLabel="Back to the original chat"
+                    >
+                        <Ionicons
+                            name="return-up-back-outline"
+                            size={25}
+                            color={theme.colors.header.tint}
+                        />
+                    </Pressable>
+                ) : null}
                 <Pressable
                     onPress={() => router.push(`/session/${sessionId}/subagents`)}
                     hitSlop={10}
@@ -388,6 +406,8 @@ type ChatComposerHandle = {
     clearMessage: () => void;
     /** Replace the composer text (e.g. pulling a queued message back for editing) and focus the input. */
     setMessage: (text: string) => void;
+    /** Append `@` mentions of uploaded files to the composer text and focus the input. */
+    appendFileMentions: (paths: string[]) => void;
 };
 
 type ChatComposerProps = Omit<
@@ -436,6 +456,10 @@ const ChatComposer = React.memo(function ChatComposer(props: ChatComposerProps) 
         },
         setMessage: (text: string) => {
             applyDraft(text);
+            inputHandleRef.current?.focus();
+        },
+        appendFileMentions: (paths: string[]) => {
+            applyDraft(appendFileMentions(inputHandleRef.current?.getText() ?? '', paths));
             inputHandleRef.current?.focus();
         },
     }), [applyDraft, clearDraft]);
@@ -516,14 +540,13 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
     const alwaysShowContextSize = useSetting('alwaysShowContextSize');
     const experiments = useSetting('experiments');
     const expResumeSession = useSetting('expResumeSession');
-    const { canResume, resumeSession, resumingSession } = useSessionQuickActions(session);
+    const { canResume, resumeSession, resumingSession, canFork, forkSession } = useSessionQuickActions(session);
     const isDisconnected = !sessionStatus.isConnected;
     const resumeCommandBlock = getResumeCommandBlock(session);
 
     // Image attachments are a standard composer capability. Agent-specific
     // support is checked by Sync.sendMessage before upload.
     const { selectedImages, pickImages, removeImage, clearImages, addImages } = useImagePicker(sessionId);
-    const { pickAndUploadFiles, isUploadingFile } = useFileUpload(sessionId);
     const selectedImagesRef = React.useRef(selectedImages);
     selectedImagesRef.current = selectedImages;
     const sendInFlightRef = React.useRef(false);
@@ -533,6 +556,13 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
     // clear it without subscribing to it (which would re-render the whole
     // SessionViewLoaded tree on every keystroke).
     const composerHandleRef = React.useRef<ChatComposerHandle | null>(null);
+
+    // Picking files uploads them to the computer and mentions them in the
+    // message, so sending it hands the files to the agent.
+    const handleFilesUploaded = React.useCallback((paths: string[]) => {
+        composerHandleRef.current?.appendFileMentions(paths);
+    }, []);
+    const { pickAndUploadFiles, isUploadingFile } = useFileUpload(sessionId, handleFilesUploaded);
 
     // Draft confirmation happens before the outbox mutation. The sync layer
     // rechecks editability at removal time in case a POST won the race.
@@ -909,6 +939,7 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
             compactSnapcompactDisabled={compactPending || sessionStatus.state === 'thinking'}
             onGoalPress={showGoalActions}
             goalControlDisabled={goalControlPending}
+            onForkPress={canFork && flavor === 'omp' ? forkSession : undefined}
             metadata={session.metadata}
             connectionStatus={connectionStatus}
             blockSend={false}

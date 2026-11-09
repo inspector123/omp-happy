@@ -1,3 +1,15 @@
+# November 9 — Fork an OMP chat with another model
+
+- OMP chats can be forked into a new chat from the composer's settings menu or the chat's info screen. You pick the model the new chat uses; the original chat is not changed, and a back arrow in the forked chat's header returns to it.
+- The forked chat shows the copied conversation and a notice naming the original chat and the model. Its title starts with `Fork:`.
+- Replies no longer repeat their last lines, and reasoning no longer spills into the next turn, when the agent starts another turn right after answering (for example after a todo reminder).
+
+# November 6 — Mention uploaded files
+
+- Files picked with the file button are now mentioned in the message box (for example `@.happy-uploads/report.pdf`) instead of being listed in a Success dialog, so sending the message hands them to the agent. Failed files are still reported in an alert.
+- Typing `@` lists recent uploads first, and suggested paths that contain spaces are quoted so OMP reads them correctly.
+- The CLI stores picked files in a hidden, git-ignored `.happy-uploads/` folder in the session's working directory instead of the folder's top level.
+
 # October 20 — Archive swipe kills the session
 
 - Swiping a session row to archive it now kills the running session process. When the session's runner can't be reached directly, the app asks the daemon on the session's machine to stop the tracked process, then deactivates the session server-side so the row always leaves the active list.

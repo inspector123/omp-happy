@@ -233,12 +233,12 @@ const ChatListInternal = React.memo((props: {
 
     const keyExtractor = useCallback((item: DisplayItem) => item.id, []);
 
-    // Long-press → fork-from-this-message. Uses the same canFork gate as
-    // the rest of the fork affordances: ridden by the expResumeSession
-    // experiments toggle, requires a Claude session with claudeSessionId
-    // and a machine that's online. Active OR inactive — fork works either
-    // way (the on-disk JSONL exists in both cases).
-    const { canFork } = useSessionQuickActions(session!, {});
+    // Long-press → duplicate-from-this-message. Uses the same canDuplicate
+    // gate as the session actions: ridden by the expResumeSession experiments
+    // toggle, requires a Claude or Codex session that can list rewind points
+    // and a machine that's online. Active OR inactive — it works either way
+    // (the on-disk transcript exists in both cases).
+    const { canDuplicate } = useSessionQuickActions(session!, {});
 
     const handleForkFromMessage = useCallback((messageId: string, rewindPointId: string | undefined, messageText: string) => {
         Modal.show({
@@ -288,11 +288,11 @@ const ChatListInternal = React.memo((props: {
                 message={item.message}
                 metadata={props.metadata}
                 sessionId={props.sessionId}
-                onForkFromUserMessage={canFork ? handleForkFromMessage : undefined}
+                onForkFromUserMessage={canDuplicate ? handleForkFromMessage : undefined}
                 onEditQueuedMessage={handleEditQueuedMessage}
             />
         );
-    }, [props.metadata, props.sessionId, canFork, handleForkFromMessage, handleEditQueuedMessage, collapsedGroups, handleToggleGroup]);
+    }, [props.metadata, props.sessionId, canDuplicate, handleForkFromMessage, handleEditQueuedMessage, collapsedGroups, handleToggleGroup]);
 
     // In an inverted FlatList, offset 0 is the newest end (visual bottom);
     // offset grows as the user scrolls up into older messages.

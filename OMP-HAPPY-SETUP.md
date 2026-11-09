@@ -655,6 +655,24 @@ The OMP bridge extension (loaded automatically by `happy omp`) gives agents a `p
 - The server must run this repository's version (its attachment limit is 50 MB), and the phone needs an app build from this repository; older app builds show the call as a plain tool card.
 - Agents sometimes call it through OMP's device route (`write xd://present_media`); the CLI maps that back to `present_media`, so both render as media.
 
+### Sending files from the phone
+
+The file button next to the photo button copies files from the phone into the session's working directory on the computer, in a hidden `.happy-uploads/` folder. A `.gitignore` inside that folder keeps the files out of git, so they never show up as changes in a repository.
+
+- When the copy finishes, the message box gets an `@` mention of each file, such as `@.happy-uploads/report.pdf`. Paths containing spaces are quoted, for example `@".happy-uploads/IMG (1).jpg"`.
+- When the message reaches an idle OMP agent, OMP reads every `@` mention: images are attached as images, text files are included, and folders are listed. A message sent while the agent is still working is queued without that step, so the agent sees only the path and opens the file itself.
+- Typing `@` lists the most recent uploads first.
+
+### Forking a chat to try another model
+
+A fork copies an OMP chat into a new chat so one step can go to a different model. The original chat is left exactly as it was, so you can go back to it when the fork is done.
+
+- Open the composer's settings menu (the gear) and choose **Fork into a new chat**, or use **Fork session** on the chat's info screen. Pick a model and tap **Fork with …**.
+- The computer starts `omp --fork` on the same machine and folder, with the chosen model, and records that model in the new session so it stays if the fork is resumed later. Choosing a model here does not change OMP's default model.
+- The new chat is titled `Fork: <original title>`. It shows the copied conversation (the newest 300 messages, long tool output shortened), then a notice that names the original chat and the model. The agent has the whole conversation either way.
+- The back arrow at the top right of a forked chat returns to the original chat. The original's info screen does not list its forks; find them in the chat list by their `Fork:` title.
+- Forking needs the computer online and a CLI and app built from this repository. Forking from a specific earlier message is only available for Claude and Codex chats.
+
 ### Checklist for a new OMP computer
 
 1. Native `omp` works on its own (step 1).

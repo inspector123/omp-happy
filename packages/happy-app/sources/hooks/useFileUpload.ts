@@ -9,6 +9,7 @@ import {
     sessionFinishFileUpload,
     sessionStartFileUpload,
 } from '@/sync/ops';
+import { fileSearchCache } from '@/sync/suggestionFile';
 import { t } from '@/text';
 
 export const FILE_UPLOAD_CHUNK_SIZE = 256 * 1024;
@@ -25,7 +26,11 @@ async function readChunk(asset: DocumentPicker.DocumentPickerAsset, offset: numb
     });
 }
 
-/** Copies one picked file into the computer's session workspace without using attachment storage. */
+/**
+ * Copies one picked file into the session's working directory on the computer, without using
+ * attachment storage, and returns its path relative to that directory. Current CLI versions
+ * store uploads in the git-ignored `.happy-uploads` folder.
+ */
 export async function uploadPickedFile(sessionId: string, asset: DocumentPicker.DocumentPickerAsset): Promise<string> {
     const size = asset.file?.size ?? asset.size;
     if (size === undefined || !Number.isSafeInteger(size) || size < 0) {
@@ -61,7 +66,11 @@ export async function uploadPickedFile(sessionId: string, asset: DocumentPicker.
     }
 }
 
-export function useFileUpload(sessionId: string) {
+/**
+ * Picks files on the phone and copies them to the computer. `onUploaded` receives the paths of
+ * the files that arrived; failed files are reported in an alert.
+ */
+export function useFileUpload(sessionId: string, onUploaded: (paths: string[]) => void) {
     const [isUploadingFile, setIsUploadingFile] = useState(false);
     const uploadInFlight = useRef(false);
 
@@ -93,13 +102,15 @@ export function useFileUpload(sessionId: string) {
             setIsUploadingFile(false);
         }
 
-        const uploaded = uploadedPaths.map((path) => `./${path}`);
-        if (failures.length > 0) {
-            Modal.alert(t('common.error'), [...uploaded, ...failures].join('\n'));
-        } else {
-            Modal.alert(t('common.success'), uploaded.join('\n'));
+        if (uploadedPaths.length > 0) {
+            // The next @ search re-lists files so the new uploads show up.
+            fileSearchCache.clearCache(sessionId);
+            onUploaded(uploadedPaths);
         }
-    }, [sessionId]);
+        if (failures.length > 0) {
+            Modal.alert(t('common.error'), failures.join('\n'));
+        }
+    }, [sessionId, onUploaded]);
 
     return { pickAndUploadFiles, isUploadingFile };
 }

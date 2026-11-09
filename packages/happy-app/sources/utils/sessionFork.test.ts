@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import type { Session } from '@/sync/storageTypes';
 import { getSessionForkSource } from './sessionFork';
 
 describe('getSessionForkSource', () => {
@@ -37,6 +38,22 @@ describe('getSessionForkSource', () => {
             directory: '/tmp/project',
             codexThreadId: '019ccca5-726b-7c61-b914-16de27dfab6e',
         });
+    });
+
+    it('returns an OMP fork source only when the session has an OMP session id', () => {
+        // Fork eligibility reads only the id and metadata, so the fixture leaves out the rest of Session.
+        const ompSession = (id: string, ompSessionId?: string) => ({
+            id,
+            metadata: { flavor: 'omp', machineId: 'machine-1', path: '/tmp/project', ompSessionId },
+        }) as unknown as Session;
+        expect(getSessionForkSource(ompSession('happy-omp', '01a1c1a0-9491-767b-8070-5258777c5b50'))).toEqual({
+            kind: 'omp',
+            sessionId: 'happy-omp',
+            machineId: 'machine-1',
+            directory: '/tmp/project',
+            ompSessionId: '01a1c1a0-9491-767b-8070-5258777c5b50',
+        });
+        expect(getSessionForkSource(ompSession('happy-omp-new'))).toBeNull();
     });
 
     it('returns null when required fork metadata is missing', () => {

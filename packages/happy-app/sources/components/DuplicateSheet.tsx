@@ -51,7 +51,11 @@ export const DuplicateSheet = React.memo(function DuplicateSheet(props: Duplicat
         [windowSize.width, windowSize.height],
     );
 
-    const source = React.useMemo(() => session ? getSessionForkSource(session) : null, [
+    // Only Claude and Codex list rewind points; OMP chats fork through OmpForkSheet.
+    const source = React.useMemo(() => {
+        const forkSource = session ? getSessionForkSource(session) : null;
+        return forkSource?.kind === 'omp' ? null : forkSource;
+    }, [
         session?.id,
         session?.metadata?.flavor,
         session?.metadata?.machineId,

@@ -60,6 +60,8 @@ interface AgentInputProps {
     compactSnapcompactDisabled?: boolean;
     onGoalPress?: () => void;
     goalControlDisabled?: boolean;
+    /** Opens the fork sheet: continue in a new chat with a chosen model while this chat stays as it is. */
+    onForkPress?: () => void;
     metadata?: Metadata | null;
     onAbort?: () => void | Promise<void>;
     showAbortButton?: boolean;
@@ -1384,6 +1386,37 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                                 </Text>
                                             </Pressable>
                                         </View>
+                                        {props.onForkPress && (
+                                            <Pressable
+                                                accessibilityRole="button"
+                                                accessibilityLabel="Fork into a new chat"
+                                                onPress={() => {
+                                                    hapticsLight();
+                                                    setShowSettings(false);
+                                                    requestAnimationFrame(() => {
+                                                        props.onForkPress?.();
+                                                    });
+                                                }}
+                                                style={({ pressed }) => ({
+                                                    flexDirection: 'row',
+                                                    alignItems: 'center',
+                                                    gap: 12,
+                                                    paddingHorizontal: 16,
+                                                    paddingVertical: 10,
+                                                    backgroundColor: pressed ? theme.colors.surfacePressed : 'transparent',
+                                                })}
+                                            >
+                                                <Ionicons name="git-branch-outline" size={18} color={theme.colors.radio.active} />
+                                                <View style={{ flex: 1 }}>
+                                                    <Text style={{ fontSize: 14, color: theme.colors.text, ...Typography.default() }}>
+                                                        Fork into a new chat
+                                                    </Text>
+                                                    <Text style={{ fontSize: 11, color: theme.colors.textSecondary, ...Typography.default() }}>
+                                                        Pick a model for the new chat. This chat stays as it is.
+                                                    </Text>
+                                                </View>
+                                            </Pressable>
+                                        )}
                                     </>
                                 )}
                             </FloatingOverlay>

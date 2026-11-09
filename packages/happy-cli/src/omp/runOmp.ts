@@ -10,7 +10,7 @@ import { createId } from '@paralleldrive/cuid2';
 import { createEnvelope, type SessionEvent } from '@slopus/happy-wire';
 
 import { ApiClient } from '@/api/api';
-import type { ApiSessionClient } from '@/api/apiSession';
+import type { AgentMessageData, ApiSessionClient } from '@/api/apiSession';
 import type { Session as ApiSession, UserMessage } from '@/api/types';
 import { decodeBase64, encodeBase64 } from '@/api/encryption';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
@@ -45,6 +45,7 @@ const CONFIG_OVERLAY_FILE = 'omp-happy-config.overlay.yml';
 const MAX_BUFFERED_CHILD_EVENTS = 256;
 const MAX_CHILD_TEXT_CHARS = 256 * 1024;
 const MAX_SEEN_CHILD_MESSAGES = 128;
+const MAX_ENDED_ASSISTANT_MESSAGES = 256;
 const ROOT_BRIDGE_KEY = '$root';
 
 type RunMode = 'local' | 'remote';
@@ -60,7 +61,8 @@ type BridgeFrame =
   | BridgeAskRequestFrame
   | BridgeChangeTitleFrame
   | BridgeTuiCommandReadyFrame
-  | BridgePresentMediaFrame;
+  | BridgePresentMediaFrame
+  | BridgeHistoryFrame;
 
 type BridgeReadyFrame = {
   type: 'ready';
@@ -146,6 +148,14 @@ type BridgePresentMediaFrame = {
   type: 'present_media';
   id: string;
   paths: string[];
+};
+
+/** The forked session's conversation, from `buildBranchHistory` in the bridge extension. */
+type BridgeHistoryFrame = {
+  type: 'history';
+  id: string;
+  items: unknown[];
+  omitted: number;
 };
 
 
@@ -408,6 +418,17 @@ function extractMessageText(message: unknown): string {
     .join('');
 }
 
+function extractMessageThinking(message: unknown): string {
+  if (!isRecord(message) || !Array.isArray(message.content)) {
+    return '';
+  }
+  return message.content
+    .map((block) => (isRecord(block) && block.type === 'thinking'
+      ? asString(block.thinking) ?? asString(block.text) ?? ''
+      : ''))
+    .join('');
+}
+
 function appendBoundedChildText(current: string, addition: string): string {
   const remaining = MAX_CHILD_TEXT_CHARS - current.length;
   return remaining > 0 ? current + addition.slice(0, remaining) : current;
@@ -445,6 +466,60 @@ function extractToolError(result: unknown, isErrorFlag?: unknown): boolean {
     return true;
   }
   return isRecord(result) && (result.isError === true || typeof result.error === 'string');
+}
+
+export type ForkBackfillMessage =
+  | { kind: 'user'; text: string }
+  | { kind: 'agent'; body: AgentMessageData };
+
+/**
+ * Turns the history a forked OMP session reports into the messages its new Happy
+ * chat shows: user text, assistant text, and tool calls with their results, named
+ * and shaped the way the live mirror sends them. Calls the live mirror hides
+ * (`happy_ask`, `todo`) are left out with their results, and so are results whose
+ * call is not in the history.
+ */
+export function buildForkBackfillMessages(items: unknown, createId: () => string): ForkBackfillMessage[] {
+  if (!Array.isArray(items)) return [];
+  const messages: ForkBackfillMessage[] = [];
+  const replayedCalls = new Set<string>();
+  for (const item of items) {
+    if (!isRecord(item)) continue;
+    if (item.role === 'user') {
+      const text = asString(item.text)?.trim();
+      if (text) messages.push({ kind: 'user', text });
+    } else if (item.role === 'assistant') {
+      const text = asString(item.text) ?? '';
+      if (text.trim()) messages.push({ kind: 'agent', body: { type: 'message', message: text } });
+      for (const call of Array.isArray(item.toolCalls) ? item.toolCalls : []) {
+        if (!isRecord(call)) continue;
+        const callId = asString(call.id);
+        const event = unwrapXdevToolEvent({ type: 'tool_execution_start', toolName: call.name, args: call.arguments });
+        const rawName = asString(event.toolName);
+        if (!callId || !rawName || rawName === 'happy_ask' || rawName === 'todo') continue;
+        const name = normalizeBridgeToolName(rawName);
+        replayedCalls.add(callId);
+        messages.push({
+          kind: 'agent',
+          body: { type: 'tool-call', callId, name, input: normalizeBridgeToolInput(name, event.args), id: createId() },
+        });
+      }
+    } else if (item.role === 'toolResult') {
+      const callId = asString(item.toolCallId);
+      if (!callId || !replayedCalls.has(callId)) continue;
+      messages.push({
+        kind: 'agent',
+        body: {
+          type: 'tool-result',
+          callId,
+          output: { content: [{ type: 'text', text: asString(item.text) ?? '' }] },
+          id: createId(),
+          isError: item.isError === true,
+        },
+      });
+    }
+  }
+  return messages;
 }
 
 type OmpJobNotice = {
@@ -715,6 +790,9 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     machineId: settings.machineId,
     startedBy: opts.startedBy,
     sandbox: settings.sandboxConfig,
+    // Lineage from the daemon's spawn RPC (set by the app's fork flow).
+    parentSessionId: process.env.HAPPY_FORKED_FROM_SESSION_ID || undefined,
+    forkedFromMessageId: process.env.HAPPY_FORKED_FROM_MESSAGE_ID || undefined,
   });
   const reconnectSessionId = process.env.HAPPY_RECONNECT_SESSION_ID;
   const reconnectKeyBase64 = process.env.HAPPY_RECONNECT_ENCRYPTION_KEY;
@@ -784,14 +862,26 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
   const resumedSession = (opts.extraArgs ?? []).some(
     (arg) => arg === '--resume' || arg.startsWith('--resume='),
   );
+  // A chat forked from another OMP session (`--fork`) starts with that session's
+  // conversation, which is replayed into this new Happy chat once the bridge is
+  // ready. `forkReplay` holds what the closing notice names: the source chat's
+  // title and the fork's model.
+  const forkedSession = (opts.extraArgs ?? []).some(
+    (arg) => arg === '--fork' || arg.startsWith('--fork='),
+  );
+  let forkReplay: { sourceTitle?: string; modelName?: string } | null = null;
   const RESUME_BACKLOG_WINDOW_MS = 4000;
   const cliStartedAt = Date.now();
   let ignoredResumeBacklog = 0;
   let assistantTextEmitted = false;
-  // In the interactive TUI, omp can deliver Claude's text_delta events after
-  // message_end, turn_end, and even agent_end. message_end mirrors whatever
-  // text has not streamed yet, so later deltas for that message are dropped.
+  // In the interactive TUI, omp can deliver text_delta and thinking_delta events
+  // after message_end, turn_end, agent_end, and even after the next run's
+  // agent_start (a todo reminder continues the agent within milliseconds).
+  // message_end mirrors whatever has not streamed yet and records the message
+  // as ended, so later deltas for it are dropped. Ended keys outlive the run
+  // that produced them, up to MAX_ENDED_ASSISTANT_MESSAGES.
   const streamedAssistantText = new Map<string, string>();
+  const streamedAssistantThinking = new Map<string, string>();
   const endedAssistantMessages = new Set<string>();
   let thinking = false;
   let pendingText = '';
@@ -1404,6 +1494,11 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     if (eventType === 'thinking_delta') {
       const delta = asString(event.assistantMessageEvent.delta) ?? '';
       if (delta.length > 0) {
+        const key = assistantMessageKey(event.message);
+        if (key) {
+          if (endedAssistantMessages.has(key)) return;
+          streamedAssistantThinking.set(key, (streamedAssistantThinking.get(key) ?? '') + delta);
+        }
         appendPendingText('thinking', delta);
       }
       return;
@@ -1436,13 +1531,23 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
     // deltas rather than risk dropping text the phone has not received.
     if (!text.startsWith(streamed)) return;
     endedAssistantMessages.add(key);
+    if (endedAssistantMessages.size > MAX_ENDED_ASSISTANT_MESSAGES) {
+      const oldest = endedAssistantMessages.values().next().value;
+      if (oldest !== undefined) endedAssistantMessages.delete(oldest);
+    }
     streamedAssistantText.delete(key);
+    const thinkingText = extractMessageThinking(message);
+    const streamedThinking = streamedAssistantThinking.get(key) ?? '';
+    streamedAssistantThinking.delete(key);
+    if (thinkingText.startsWith(streamedThinking)) {
+      appendPendingText('thinking', thinkingText.slice(streamedThinking.length));
+    }
     const missing = text.slice(streamed.length);
     if (missing.length > 0) {
       assistantTextEmitted = true;
       appendPendingText('output', missing);
-      flushPendingText();
     }
+    flushPendingText();
   };
 
   const completeTurn = (): void => {
@@ -1506,7 +1611,7 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         turnStarted = true;
         assistantTextEmitted = false;
         streamedAssistantText.clear();
-        endedAssistantMessages.clear();
+        streamedAssistantThinking.clear();
         pendingText = '';
         pendingKind = null;
         lastPlanJson = '';
@@ -1743,11 +1848,52 @@ export async function runOmp(opts: RunOmpOptions): Promise<void> {
         ...(Array.isArray(frame.thoughtLevels) ? { thoughtLevels: frame.thoughtLevels } : {}),
         ...(typeof frame.currentThoughtLevel === 'string' ? { currentThoughtLevelCode: frame.currentThoughtLevel } : {}),
       }));
-      if (typeof frame.title === 'string') {
-        updateSessionTitle(frame.title);
+      let title = frame.title;
+      if (forkedSession && !forkReplay) {
+        forkReplay = {
+          sourceTitle: frame.title,
+          modelName: frame.models?.find((model) => model.code === frame.currentModel)?.value ?? frame.currentModel,
+        };
+        if (title && !title.startsWith('Fork: ')) {
+          title = `Fork: ${title}`;
+          bridgeServer?.send({ type: 'set_title', title });
+        }
+        // `omp --model` applies only in memory; the fork file still ends with the
+        // source's model_change. Selecting the running model records it, so a
+        // later resume of the fork keeps this model. This does not touch the
+        // global default that persistSelectedModel writes.
+        if (frame.currentModel) {
+          bridgeServer?.send({ type: 'set_model', spec: frame.currentModel });
+        }
+        bridgeServer?.send({ type: 'get_history', id: randomUUID() });
+      }
+      if (typeof title === 'string') {
+        updateSessionTitle(title);
       }
       settleBridgeReady();
       bridgeServer?.send({ type: 'set_control_mode', mode: runMode });
+      return;
+    }
+    if (frame.type === 'history') {
+      if (!forkReplay) return;
+      const messages = buildForkBackfillMessages(frame.items, randomUUID);
+      for (const message of messages) {
+        if (message.kind === 'user') {
+          session.sendSessionProtocolMessage(createEnvelope('user', { t: 'text', text: message.text }));
+        } else {
+          session.sendAgentMessage('omp', message.body);
+        }
+      }
+      const forkedFrom = forkReplay.sourceTitle ? `"${forkReplay.sourceTitle}"` : 'another chat';
+      const model = forkReplay.modelName ? ` with ${forkReplay.modelName}` : '';
+      const omitted = frame.omitted > 0
+        ? ` The agent also has ${frame.omitted} older messages that are not shown here.`
+        : '';
+      session.sendSessionProtocolMessage(createEnvelope('agent', {
+        t: 'service',
+        text: `Forked from ${forkedFrom}${model}. The original chat is unchanged.${omitted}`,
+      }));
+      log(`Replayed ${messages.length} messages from the forked OMP session (${frame.omitted} older left out)`);
       return;
     }
     if (frame.type === 'usage') {

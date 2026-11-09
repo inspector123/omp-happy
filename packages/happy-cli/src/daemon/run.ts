@@ -29,6 +29,7 @@ import { detectCLIAvailability } from '@/utils/detectCLI';
 import { buildResumeLaunch } from '@/resume/handleResumeCommand';
 import { detectResumeSupport } from '@/resume/localHappyAgentAuth';
 import { encodeBase64, decodeBase64, decrypt } from '@/api/encryption';
+import { buildOmpSessionArgs } from './ompSessionArgs';
 
 /** Shell-escape a string for safe interpolation into tmux commands. */
 function shellescape(s: string): string {
@@ -426,10 +427,8 @@ export async function startDaemon(): Promise<void> {
               await ensureHerdrServerRunning();
               const shimPath = await ensureHerdrOmpShim();
               const cliPath = join(projectPath(), 'dist', 'index.mjs');
-              const resumeFragment = options.resumeOmpSessionId
-                ? ` --resume ${shellescape(options.resumeOmpSessionId)}`
-                : '';
-              const fullCommand = `${shimPath} --no-warnings --no-deprecation ${cliPath} omp --yolo --started-by daemon${resumeFragment}`;
+              const ompArgs = buildOmpSessionArgs(options).map((arg) => ` ${shellescape(arg)}`).join('');
+              const fullCommand = `${shimPath} --no-warnings --no-deprecation ${cliPath} omp --yolo --started-by daemon${ompArgs}`;
               const herdrLabel = `happy-${Date.now()}-omp`;
               logger.debug(`[DAEMON RUN] Attempting to spawn OMP session in herdr: ${herdrLabel}`);
 
@@ -501,12 +500,10 @@ export async function startDaemon(): Promise<void> {
           const agent = isOmp ? 'omp' : (options.agent === 'gemini' ? 'gemini' : (options.agent === 'codex' ? 'codex' : (options.agent === 'openclaw' ? 'openclaw' : 'claude')));
           const resumeId = agent === 'claude'
             ? options.resumeClaudeSessionId
-            : (agent === 'codex'
-              ? options.resumeCodexThreadId
-              : (agent === 'omp' ? options.resumeOmpSessionId : undefined));
-          const resumeFragment = resumeId
-            ? ` --resume ${shellescape(resumeId)}`
-            : '';
+            : (agent === 'codex' ? options.resumeCodexThreadId : undefined);
+          const resumeFragment = isOmp
+            ? buildOmpSessionArgs(options).map((arg) => ` ${shellescape(arg)}`).join('')
+            : (resumeId ? ` --resume ${shellescape(resumeId)}` : '');
           const launchSubcommand = isOmp
             ? 'omp --yolo --started-by daemon'
             : `${agent} --happy-starting-mode remote --started-by daemon`;
@@ -596,10 +593,7 @@ export async function startDaemon(): Promise<void> {
           // Construct arguments for the CLI - support claude, codex, gemini, openclaw, omp
           let args: string[];
           if (options.agent === 'omp') {
-            args = ['omp', '--yolo', '--started-by', 'daemon'];
-            if (options.resumeOmpSessionId) {
-              args.push('--resume', options.resumeOmpSessionId);
-            }
+            args = ['omp', '--yolo', '--started-by', 'daemon', ...buildOmpSessionArgs(options)];
           } else {
             let agentCommand: string;
             switch (options.agent) {

@@ -167,6 +167,13 @@ export interface SpawnSessionOptions {
     resumeCodexThreadId?: string;
     /** If set, the daemon resumes this omp session (ACP session/load). */
     resumeOmpSessionId?: string;
+    /**
+     * If set, the daemon starts omp with `--fork <id>`: OMP copies that session into a
+     * new one, so the new chat continues the conversation and the source stays unchanged.
+     */
+    forkOmpSessionId?: string;
+    /** Model the spawned omp session starts with, as an OMP model code such as `zlocal/glm-5.3-flash`. */
+    ompModel?: string;
     /** Happy session id this fork was branched from (lineage). */
     parentSessionId?: string;
     /** Happy message id used as the rewind point (only set for "duplicate"). */
@@ -230,7 +237,7 @@ export interface ResumeSessionOptions {
  */
 export async function machineSpawnNewSession(options: SpawnSessionOptions): Promise<SpawnSessionResult> {
 
-    const { machineId, directory, approvedNewDirectoryCreation = false, token, agent, resumeClaudeSessionId, resumeCodexThreadId, resumeOmpSessionId, parentSessionId, forkedFromMessageId } = options;
+    const { machineId, directory, approvedNewDirectoryCreation = false, token, agent, resumeClaudeSessionId, resumeCodexThreadId, resumeOmpSessionId, forkOmpSessionId, ompModel, parentSessionId, forkedFromMessageId } = options;
 
     try {
         const result = await apiSocket.machineRPC<SpawnSessionResult, {
@@ -242,12 +249,14 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
             resumeClaudeSessionId?: string,
             resumeCodexThreadId?: string,
             resumeOmpSessionId?: string,
+            forkOmpSessionId?: string,
+            ompModel?: string,
             parentSessionId?: string,
             forkedFromMessageId?: string,
         }>(
             machineId,
             'spawn-happy-session',
-            { type: 'spawn-in-directory', directory, approvedNewDirectoryCreation, token, agent, resumeClaudeSessionId, resumeCodexThreadId, resumeOmpSessionId, parentSessionId, forkedFromMessageId }
+            { type: 'spawn-in-directory', directory, approvedNewDirectoryCreation, token, agent, resumeClaudeSessionId, resumeCodexThreadId, resumeOmpSessionId, forkOmpSessionId, ompModel, parentSessionId, forkedFromMessageId }
         );
         return result;
     } catch (error) {
@@ -962,13 +971,23 @@ type CodexForkSource = {
     codexThreadId: string;
 };
 
+type OmpForkSource = {
+    kind: 'omp';
+    sessionId: string;
+    machineId: string;
+    directory: string;
+    ompSessionId: string;
+};
+
 // Forking source description used by forkAndSpawn.
-export type ForkSource = ClaudeForkSource | CodexForkSource;
+export type ForkSource = ClaudeForkSource | CodexForkSource | OmpForkSource;
 
 type ForkOptions = {
     cutAfterUuid?: string;
     cutAfterItemId?: string;
     forkedFromMessageId?: string;
+    /** OMP only: model the forked chat starts with. Omitted keeps the source session's model. */
+    ompModel?: string;
 };
 
 /**
@@ -987,6 +1006,27 @@ export async function forkAndSpawn(
     source: ForkSource,
     opts: ForkOptions = {},
 ): Promise<SpawnSessionResult> {
+    if (source.kind === 'omp') {
+        // `omp --fork` copies the source session at startup, so there is no copy RPC.
+        const spawnResult = await machineSpawnNewSession({
+            machineId: source.machineId,
+            directory: source.directory,
+            agent: 'omp',
+            approvedNewDirectoryCreation: false,
+            forkOmpSessionId: source.ompSessionId,
+            ompModel: opts.ompModel,
+            parentSessionId: source.sessionId,
+        });
+        if (spawnResult.type === 'success') {
+            try {
+                await sync.refreshSessions();
+            } catch {
+                // Refresh is best-effort; broadcast sync will still hydrate.
+            }
+        }
+        return spawnResult;
+    }
+
     if (source.kind === 'codex') {
         const forkResult = opts.cutAfterItemId
             ? await codexDuplicateThread({

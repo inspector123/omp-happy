@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'fs/promises';
+import { execFileSync } from 'child_process';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { decodeBase64, decrypt, encodeBase64, encrypt } from '../../api/encryption';
 import { RpcHandlerManager } from '../../api/rpc/RpcHandlerManager';
-import { registerFileUploadHandlers } from './registerFileUploadHandlers';
+import { registerFileUploadHandlers, UPLOADS_DIRECTORY } from './registerFileUploadHandlers';
 
 const encryptionKey = new Uint8Array(32).fill(7);
 const temporaryDirectories: string[] = [];
@@ -35,15 +36,17 @@ afterEach(async () => {
 });
 
 describe('workspace file upload RPC', () => {
-    it('assembles chunks into a plaintext file without replacing an existing file', async () => {
+    it('assembles chunks into the uploads folder without replacing an existing file', async () => {
         const { directory, call } = await createHarness();
-        await writeFile(join(directory, 'report.txt'), 'existing');
+        const uploadsDirectory = join(directory, UPLOADS_DIRECTORY);
+        await mkdir(uploadsDirectory);
+        await writeFile(join(uploadsDirectory, 'report.txt'), 'existing');
 
         const start = await call<{ success: boolean; uploadId: string; path: string }>('startFileUpload', {
             name: '../report.txt',
             size: 11,
         });
-        expect(start).toMatchObject({ success: true, path: 'report (1).txt' });
+        expect(start).toMatchObject({ success: true, path: `${UPLOADS_DIRECTORY}/report (1).txt` });
 
         await expect(call('appendFileUpload', {
             uploadId: start.uploadId,
@@ -57,11 +60,29 @@ describe('workspace file upload RPC', () => {
         })).resolves.toMatchObject({ success: true, received: 11 });
         await expect(call('finishFileUpload', { uploadId: start.uploadId })).resolves.toMatchObject({
             success: true,
-            path: 'report (1).txt',
+            path: `${UPLOADS_DIRECTORY}/report (1).txt`,
         });
 
-        await expect(readFile(join(directory, 'report.txt'), 'utf8')).resolves.toBe('existing');
-        await expect(readFile(join(directory, 'report (1).txt'), 'utf8')).resolves.toBe('hello world');
-        expect((await readdir(directory)).filter((name) => name.includes('.happy-upload-'))).toEqual([]);
+        await expect(readFile(join(uploadsDirectory, 'report.txt'), 'utf8')).resolves.toBe('existing');
+        await expect(readFile(join(directory, start.path), 'utf8')).resolves.toBe('hello world');
+        expect((await readdir(uploadsDirectory)).filter((name) => name.includes('.happy-upload-'))).toEqual([]);
+    });
+
+    it('keeps uploads out of git in a repository working directory', async () => {
+        const { directory, call } = await createHarness();
+        execFileSync('git', ['init', '-q'], { cwd: directory });
+
+        const start = await call<{ success: boolean; uploadId: string; path: string }>('startFileUpload', {
+            name: 'photo.jpg',
+            size: 3,
+        });
+        await call('appendFileUpload', { uploadId: start.uploadId, offset: 0, content: Buffer.from('jpg').toString('base64') });
+        await expect(call('finishFileUpload', { uploadId: start.uploadId })).resolves.toMatchObject({
+            success: true,
+            path: `${UPLOADS_DIRECTORY}/photo.jpg`,
+        });
+
+        const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: directory, encoding: 'utf8' });
+        expect(status).toBe('');
     });
 });

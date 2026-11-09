@@ -1529,6 +1529,75 @@ describe('runOmp', () => {
     await runPromise;
   });
 
+  it('replays a forked session into the new chat, marks it as a fork, and closes with a notice', async () => {
+    vi.useFakeTimers();
+
+    const runPromise = runOmp({ credentials, extraArgs: ['--fork', 'omp-source', '--model', 'zlocal/glm-5.3-flash'] });
+    await settleMicrotasks();
+    mocks.emitBridgeFrame({
+      type: 'ready',
+      protocolVersion: 1,
+      sessionId: 'omp-fork',
+      title: 'Book Karat interview',
+      models: [{ code: 'zlocal/glm-5.3-flash', value: 'GLM 5.3 Flash' }],
+      currentModel: 'zlocal/glm-5.3-flash',
+    });
+    await vi.advanceTimersByTimeAsync(1);
+
+    const commands = () => mocks.mockBridgeSocket.write.mock.calls.map(([line]) => JSON.parse(line as string));
+    expect(commands()).toContainEqual({ type: 'set_title', title: 'Fork: Book Karat interview' });
+    expect(commands()).toContainEqual({ type: 'set_model', spec: 'zlocal/glm-5.3-flash' });
+    expect(mocks.mockPersistOmpDefaultModel).not.toHaveBeenCalled();
+    const historyRequests = commands().filter((command) => command.type === 'get_history');
+    expect(historyRequests).toHaveLength(1);
+
+    mocks.emitBridgeFrame({
+      type: 'history',
+      id: historyRequests[0].id,
+      omitted: 2,
+      items: [
+        { role: 'user', text: 'Which slots are left?' },
+        {
+          role: 'assistant',
+          text: 'Checking the calendar.',
+          toolCalls: [
+            { id: 'call-cal', name: 'bash', arguments: { command: 'cal' } },
+            { id: 'call-todo', name: 'todo', arguments: { ops: [] } },
+          ],
+        },
+        { role: 'toolResult', toolCallId: 'call-cal', toolName: 'bash', text: 'November 2026', isError: false },
+        { role: 'toolResult', toolCallId: 'call-todo', toolName: 'todo', text: 'Updated', isError: false },
+      ],
+    });
+    // A bridge reconnect republishes ready; the history must not be requested again.
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-fork', title: 'Fork: Book Karat interview' });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(commands().filter((command) => command.type === 'get_history')).toHaveLength(1);
+
+    const agentBodies = mocks.mockSession.sendAgentMessage.mock.calls.map((call) => call[1]);
+    expect(agentBodies).toContainEqual({ type: 'message', message: 'Checking the calendar.' });
+    expect(agentBodies).toContainEqual(expect.objectContaining({ type: 'tool-call', callId: 'call-cal', name: 'execute', input: { command: 'cal' } }));
+    expect(agentBodies).toContainEqual(expect.objectContaining({
+      type: 'tool-result',
+      callId: 'call-cal',
+      output: { content: [{ type: 'text', text: 'November 2026' }] },
+      isError: false,
+    }));
+    expect(agentBodies.filter((body) => body.callId === 'call-todo')).toEqual([]);
+    const envelopes = mocks.mockSession.sendSessionProtocolMessage.mock.calls.map((call) => call[0]);
+    expect(envelopes.map((envelope) => [envelope.role, envelope.ev])).toEqual([
+      ['user', { t: 'text', text: 'Which slots are left?' }],
+      ['agent', {
+        t: 'service',
+        text: 'Forked from "Book Karat interview" with GLM 5.3 Flash. The original chat is unchanged. The agent also has 2 older messages that are not shown here.',
+      }],
+    ]);
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+  });
+
 
   it('routes phone images and model selection through the extension bridge', async () => {
     vi.useFakeTimers();
@@ -1986,6 +2055,49 @@ describe('runOmp', () => {
       .filter((sent) => sent.type === 'message' && sent.append === true);
     expect(outputMessages.map((sent) => sent.message).join('')).toBe(finalText);
     expect(new Set(outputMessages.map((sent) => sent.streamId)).size).toBe(1);
+  });
+
+  // A todo reminder can start the next run before the previous reply's last
+  // deltas arrive; those deltas must not be shown a second time.
+  it('keeps a finished reply and its reasoning whole when the next run starts before its late deltas', async () => {
+    vi.useFakeTimers();
+    const runPromise = runOmp({ credentials });
+    await settleMicrotasks();
+    mocks.emitBridgeFrame({ type: 'ready', protocolVersion: 1, sessionId: 'omp-late-deltas-next-run' });
+    await vi.advanceTimersByTimeAsync(1);
+
+    const finalThinking = 'Need the accommodation answer first.';
+    const finalText = 'Nothing is booked yet. What should I answer?';
+    const message = {
+      role: 'assistant',
+      timestamp: 1794271839815,
+      content: [{ type: 'thinking', thinking: finalThinking }, { type: 'text', text: finalText }],
+    };
+    const update = (type: 'text_delta' | 'thinking_delta', delta: string) => mocks.emitBridgeFrame({
+      type: 'agent_event',
+      event: { type: 'message_update', message, assistantMessageEvent: { type, delta } },
+    });
+
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_start' } });
+    update('thinking_delta', 'Need the ');
+    update('text_delta', 'Nothing is booked yet. ');
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'message_end', message } });
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_end' } });
+    mocks.emitBridgeFrame({ type: 'agent_event', event: { type: 'agent_start' } });
+    update('thinking_delta', 'accommodation answer first.');
+    update('text_delta', 'What should I answer?');
+    await vi.advanceTimersByTimeAsync(500);
+
+    child.emitExit(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await runPromise;
+
+    const sent = mocks.mockSession.sendAgentMessage.mock.calls.map((call) => call[1]);
+    const output = sent.filter((item) => item.type === 'message' && item.append === true);
+    const reasoning = sent.filter((item) => item.type === 'thinking');
+    expect(output.map((item) => item.message).join('')).toBe(finalText);
+    expect(reasoning.map((item) => item.text).join('')).toBe(finalThinking);
+    expect(new Set(reasoning.map((item) => item.streamId)).size).toBe(1);
   });
 
   it('emits one structured advisor message only at message_end', async () => {

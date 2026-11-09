@@ -8,6 +8,7 @@ import * as z from 'zod';
 // The bridge is intentionally plain ESM because native OMP loads it directly.
 // @ts-expect-error TypeScript has no declaration for the runtime extension module.
 import happyBridgeExtension, {
+  buildBranchHistory,
   calculateOmpTokensPerSecond,
   createUsageTelemetry,
   formatAskResult,
@@ -49,6 +50,54 @@ describe('OMP Happy bridge session entry polling', () => {
     expect(isForwardedCustomEntry({ type: 'custom_message', customType: 'skill-prompt' })).toBe(false);
     expect(isForwardedCustomEntry({ type: 'message', role: 'assistant' })).toBe(false);
     expect(isForwardedCustomEntry(undefined)).toBe(false);
+  });
+});
+
+describe('OMP Happy bridge fork history', () => {
+  const message = (role: string, fields: Record<string, unknown>) => ({ type: 'message', message: { role, ...fields } });
+
+  it('keeps the conversation the app shows and drops thinking, image data and bookkeeping', () => {
+    const history = buildBranchHistory([
+      { type: 'model_change', model: 'zlocal/glm-5.3-flash' },
+      message('user', { content: [{ type: 'text', text: 'What is in this?' }, { type: 'image', data: 'iVBORw0KGgo', mimeType: 'image/png' }] }),
+      message('assistant', {
+        content: [
+          { type: 'thinking', thinking: 'private reasoning' },
+          { type: 'text', text: 'Reading it.' },
+          { type: 'toolCall', id: 'call-1', name: 'read', arguments: { path: 'a.png' } },
+        ],
+      }),
+      message('toolResult', { toolCallId: 'call-1', toolName: 'read', content: [{ type: 'text', text: 'Read image file' }, { type: 'image', data: 'AAAA' }] }),
+      { type: 'custom_message', customType: 'async-result', content: 'job done' },
+      message('assistant', { content: [{ type: 'thinking', thinking: 'only thinking' }] }),
+    ]);
+
+    expect(history).toEqual({
+      omitted: 0,
+      items: [
+        { role: 'user', text: 'What is in this?\n\n[1 image]' },
+        { role: 'assistant', text: 'Reading it.', toolCalls: [{ id: 'call-1', name: 'read', arguments: { path: 'a.png' } }] },
+        { role: 'toolResult', toolCallId: 'call-1', toolName: 'read', text: 'Read image file\n\n[1 image]', isError: false },
+      ],
+    });
+  });
+
+  it('keeps only the newest messages and cuts long tool output and arguments', () => {
+    const longOutput = 'x'.repeat(5_000);
+    const clipped = `${'x'.repeat(2_000)}\n… [3000 more characters]`;
+    const history = buildBranchHistory([
+      message('user', { content: 'first' }),
+      message('assistant', { content: [{ type: 'toolCall', id: 'call-2', name: 'write', arguments: { path: 'f.txt', content: longOutput } }] }),
+      message('toolResult', { toolCallId: 'call-2', toolName: 'write', content: [{ type: 'text', text: longOutput }], isError: true }),
+    ], 2);
+
+    expect(history).toEqual({
+      omitted: 1,
+      items: [
+        { role: 'assistant', text: '', toolCalls: [{ id: 'call-2', name: 'write', arguments: { path: 'f.txt', content: clipped } }] },
+        { role: 'toolResult', toolCallId: 'call-2', toolName: 'write', text: clipped, isError: true },
+      ],
+    });
   });
 });
 

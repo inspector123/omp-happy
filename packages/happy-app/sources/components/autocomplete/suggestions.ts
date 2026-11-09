@@ -2,6 +2,7 @@ import { CommandSuggestion, FileMentionSuggestion } from '@/components/AgentInpu
 import * as React from 'react';
 import { searchFiles, FileItem } from '@/sync/suggestionFile';
 import { searchCommands, CommandItem } from '@/sync/suggestionCommands';
+import { formatFileMention } from '@/utils/fileMention';
 
 export async function getCommandSuggestions(sessionId: string, query: string): Promise<{
     key: string;
@@ -45,7 +46,7 @@ export async function getFileMentionSuggestions(sessionId: string, query: string
         // Convert FileItem to suggestion format
         return files.map((file: FileItem) => ({
             key: `file-${file.fullPath}`,
-            text: `@${file.fullPath}`,
+            text: formatFileMention(file.fullPath),
             component: () => React.createElement(FileMentionSuggestion, {
                 fileName: file.fileName,
                 filePath: file.filePath,

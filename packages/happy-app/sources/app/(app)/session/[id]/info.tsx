@@ -135,6 +135,7 @@ function SessionInfoContent({ session }: { session: Session }) {
     const {
         canShowResume,
         canFork,
+        canDuplicate,
         forking,
         forkSession,
         openDuplicateSheet,
@@ -392,7 +393,7 @@ function SessionInfoContent({ session }: { session: Session }) {
                             loading={forking}
                         />
                     )}
-                    {canFork && (
+                    {canDuplicate && (
                         <Item
                             title={t('session.duplicateAction')}
                             subtitle={t('session.duplicateSubtitle')}

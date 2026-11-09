@@ -16,7 +16,16 @@ export type CodexForkSource = {
     codexThreadId: string;
 };
 
-export type ForkSource = ClaudeForkSource | CodexForkSource;
+/** An OMP chat forks through `omp --fork`, which copies its session file into a new one. */
+export type OmpForkSource = {
+    kind: 'omp';
+    sessionId: string;
+    machineId: string;
+    directory: string;
+    ompSessionId: string;
+};
+
+export type ForkSource = ClaudeForkSource | CodexForkSource | OmpForkSource;
 
 function nonEmpty(value: unknown): value is string {
     return typeof value === 'string' && value.trim().length > 0;
@@ -40,6 +49,20 @@ export function getSessionForkSource(session: Session): ForkSource | null {
             machineId,
             directory,
             codexThreadId,
+        };
+    }
+
+    if (session.metadata?.flavor === 'omp') {
+        const ompSessionId = session.metadata?.ompSessionId;
+        if (!nonEmpty(ompSessionId)) {
+            return null;
+        }
+        return {
+            kind: 'omp',
+            sessionId: session.id,
+            machineId,
+            directory,
+            ompSessionId,
         };
     }
 

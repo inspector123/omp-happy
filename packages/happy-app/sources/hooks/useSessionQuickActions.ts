@@ -17,6 +17,7 @@ import { getSessionForkSource } from '@/utils/sessionFork';
 import { useRouter } from 'expo-router';
 import { useSession } from '@/sync/storage';
 import { DuplicateSheet } from '@/components/DuplicateSheet';
+import { OmpForkSheet } from '@/components/OmpForkSheet';
 
 export interface SessionActionItem {
     id: string;
@@ -121,7 +122,8 @@ export function useSessionQuickActions(
     // Fork eligibility — separate from resume because fork works on both
     // active AND inactive provider sessions. The user-facing toggle is the same
     // expResumeSession experiment so all three flows (resume / fork /
-    // duplicate) ride a single switch on settings/features.
+    // duplicate) ride a single switch on settings/features. OMP forks are a
+    // standard feature of this app and skip the experiment.
     const forkSource = React.useMemo(() => getSessionForkSource(session), [
         session.id,
         session.metadata?.flavor,
@@ -129,13 +131,17 @@ export function useSessionQuickActions(
         session.metadata?.path,
         session.metadata?.claudeSessionId,
         session.metadata?.codexThreadId,
+        session.metadata?.ompSessionId,
     ]);
     const canFork = Boolean(
-        expResumeSession
+        (expResumeSession || forkSource?.kind === 'omp')
         && forkSource
         && machine
         && isMachineOnline(machine),
     );
+    // Duplicating from an earlier message needs provider rewind points, which
+    // only Claude and Codex can list.
+    const canDuplicate = canFork && forkSource?.kind !== 'omp';
 
     const openDetails = React.useCallback(() => {
         router.push(`/session/${session.id}/info`);
@@ -258,17 +264,19 @@ export function useSessionQuickActions(
         navigateToSession(result.sessionId);
     });
 
+    // An OMP fork first asks which model the new chat should use.
     const forkSession = React.useCallback(() => {
+        if (forkSource?.kind === 'omp') {
+            Modal.show({ component: OmpForkSheet, props: { sessionId: session.id } });
+            return;
+        }
         performFork();
-    }, [performFork]);
+    }, [forkSource?.kind, performFork, session.id]);
 
     const openDuplicateSheet = React.useCallback(() => {
-        if (!canFork) return;
-        Modal.show({
-            component: DuplicateSheet,
-            props: { sessionId: session.id },
-        } as any);
-    }, [canFork, session.id]);
+        if (!canDuplicate) return;
+        Modal.show({ component: DuplicateSheet, props: { sessionId: session.id } });
+    }, [canDuplicate, session.id]);
 
     const canCopySessionMetadata = __DEV__ || devModeEnabled;
 
@@ -286,6 +294,8 @@ export function useSessionQuickActions(
 
         if (canFork) {
             items.push({ id: 'fork', icon: 'git-branch-outline', label: t('session.forkAction'), onPress: forkSession });
+        }
+        if (canDuplicate) {
             items.push({ id: 'duplicate', icon: 'time-outline', label: t('session.duplicateAction'), onPress: openDuplicateSheet });
         }
 
@@ -301,6 +311,7 @@ export function useSessionQuickActions(
         archiveSession,
         canRename,
         canCopySessionMetadata,
+        canDuplicate,
         canFork,
         copySessionMetadata,
         copySessionMetadataAndLogs,
@@ -334,6 +345,7 @@ export function useSessionQuickActions(
         canResume: resumeAvailability.canResume,
         canShowResume: resumeAvailability.canShowResume,
         canFork,
+        canDuplicate,
         copySessionMetadata,
         copySessionMetadataAndLogs,
         forkSession,

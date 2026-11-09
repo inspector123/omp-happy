@@ -142,6 +142,13 @@ export interface SpawnSessionOptions {
      * so the new Happy session continues a prior omp conversation.
      */
     resumeOmpSessionId?: string;
+    /**
+     * If set, the daemon starts omp with `--fork <id>`: OMP copies that session into a new
+     * session file and the new Happy session continues there. The source session is not changed.
+     */
+    forkOmpSessionId?: string;
+    /** Model the spawned omp session starts with (`omp --model`), for example `zlocal/glm-5.3-flash`. */
+    ompModel?: string;
     /** Happy session id this fork was branched from (lineage). */
     parentSessionId?: string;
     /** Happy message id used as the rewind point (only set for "duplicate"). */

@@ -17,6 +17,12 @@ const ENTRY_POLL_INTERVAL_MS = 2_000;
 // Custom messages (e.g. async-result background job deliveries) that the phone
 // should mirror. Everything else appended to the session stays local.
 const FORWARDED_CUSTOM_TYPES = { 'async-result': true };
+// A forked chat replays the copied conversation into its new Happy session.
+// These caps keep that replay small: the newest messages only, long text cut.
+const HISTORY_MAX_MESSAGES = 300;
+const HISTORY_MAX_TEXT_CHARS = 20_000;
+const HISTORY_MAX_TOOL_TEXT_CHARS = 2_000;
+const HISTORY_MAX_ARGUMENT_DEPTH = 6;
 
 /**
  * Returns the session entries appended since the last poll. `lastEntryCount`
@@ -38,6 +44,80 @@ export function isForwardedCustomEntry(entry) {
   return Boolean(entry)
     && entry.type === 'custom_message'
     && Boolean(FORWARDED_CUSTOM_TYPES[entry.customType]);
+}
+
+function clipText(text, maxChars) {
+  return text.length > maxChars
+    ? `${text.slice(0, maxChars)}\n… [${text.length - maxChars} more characters]`
+    : text;
+}
+
+function readMessageContent(content) {
+  if (typeof content === 'string') return { text: content, images: 0 };
+  if (!Array.isArray(content)) return { text: '', images: 0 };
+  let text = '';
+  let images = 0;
+  for (const block of content) {
+    if (block?.type === 'text' && typeof block.text === 'string') text += block.text;
+    if (block?.type === 'image') images += 1;
+  }
+  return { text, images };
+}
+
+function withImageNote(text, images) {
+  if (images === 0) return text;
+  const note = images === 1 ? '[1 image]' : `[${images} images]`;
+  return text.trim() ? `${text}\n\n${note}` : note;
+}
+
+function clipArguments(value, depth = 0) {
+  if (typeof value === 'string') return clipText(value, HISTORY_MAX_TOOL_TEXT_CHARS);
+  if (!value || typeof value !== 'object' || depth >= HISTORY_MAX_ARGUMENT_DEPTH) return value;
+  if (Array.isArray(value)) return value.map((item) => clipArguments(item, depth + 1));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clipArguments(item, depth + 1)]));
+}
+
+/**
+ * The current branch of an OMP session as the Happy app shows it: user text,
+ * assistant text, tool calls and tool results. Thinking, image data and
+ * bookkeeping entries are left out, long text is cut, and only the newest
+ * messages are kept, so a forked chat can show its copied history cheaply.
+ * `omitted` counts the older messages that were left out.
+ */
+export function buildBranchHistory(entries, maxMessages = HISTORY_MAX_MESSAGES) {
+  const items = [];
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const message = entry?.type === 'message' ? entry.message : undefined;
+    if (!message || typeof message !== 'object') continue;
+    if (message.role === 'user') {
+      const { text, images } = readMessageContent(message.content);
+      const shown = withImageNote(text, images);
+      if (shown.trim()) items.push({ role: 'user', text: clipText(shown, HISTORY_MAX_TEXT_CHARS) });
+    } else if (message.role === 'assistant') {
+      const blocks = Array.isArray(message.content) ? message.content : [];
+      const text = blocks
+        .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+        .map((block) => block.text)
+        .join('');
+      const toolCalls = blocks
+        .filter((block) => block?.type === 'toolCall' && typeof block.id === 'string' && typeof block.name === 'string')
+        .map((block) => ({ id: block.id, name: block.name, arguments: clipArguments(block.arguments) }));
+      if (text.trim() || toolCalls.length > 0) {
+        items.push({ role: 'assistant', text: clipText(text, HISTORY_MAX_TEXT_CHARS), toolCalls });
+      }
+    } else if (message.role === 'toolResult' && typeof message.toolCallId === 'string') {
+      const { text, images } = readMessageContent(message.content);
+      items.push({
+        role: 'toolResult',
+        toolCallId: message.toolCallId,
+        toolName: typeof message.toolName === 'string' ? message.toolName : '',
+        text: clipText(withImageNote(text, images), HISTORY_MAX_TOOL_TEXT_CHARS),
+        isError: message.isError === true,
+      });
+    }
+  }
+  const omitted = Math.max(0, items.length - maxMessages);
+  return { items: items.slice(omitted), omitted };
 }
 
 function safeStringify(value) {
@@ -672,6 +752,11 @@ export default function happyBridgeExtension(pi) {
         return;
       }
       resolvePresent(command);
+    }
+    if (command.type === 'get_history' && typeof command.id === 'string') {
+      const sessionManager = latestContext?.sessionManager;
+      const branch = typeof sessionManager?.getBranch === 'function' ? sessionManager.getBranch() : [];
+      send({ type: 'history', id: command.id, ...buildBranchHistory(branch) });
     }
   };
 

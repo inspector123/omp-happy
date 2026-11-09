@@ -1,11 +1,18 @@
 import { createHash, randomUUID, type Hash } from 'crypto';
-import { open, link, stat, unlink, type FileHandle } from 'fs/promises';
+import { open, link, mkdir, stat, unlink, writeFile, type FileHandle } from 'fs/promises';
 import { basename, extname, join } from 'path';
 import { RpcHandlerManager } from '../../api/rpc/RpcHandlerManager';
 import { validatePath } from './pathSecurity';
 
 const UPLOAD_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_FILENAME_ATTEMPTS = 10_000;
+
+/**
+ * Folder, relative to the session's working directory, that receives files picked in the app.
+ * Keeping them out of the project root avoids clutter and accidental commits. The app lists
+ * this folder in its @ file search (`suggestionFile.ts` in happy-app).
+ */
+export const UPLOADS_DIRECTORY = '.happy-uploads';
 
 type StartFileUploadRequest = {
     name: string;
@@ -67,7 +74,17 @@ function numberedFileName(fileName: string, attempt: number): string {
     return `${stem} (${attempt})${extension}`;
 }
 
-/** Registers the chunked RPC path used to copy phone files into a session workspace. */
+async function ensureUploadsDirectory(directory: string): Promise<void> {
+    await mkdir(directory, { recursive: true });
+    try {
+        // `*` also matches this .gitignore, so git shows nothing from the folder.
+        await writeFile(join(directory, '.gitignore'), '*\n', { flag: 'wx' });
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+}
+
+/** Registers the chunked RPC path used to copy phone files into a session's uploads folder. */
 export function registerFileUploadHandlers(rpcHandlerManager: RpcHandlerManager, workingDirectory: string): void {
     const uploads = new Map<string, FileUploadState>();
     const reservedDestinations = new Set<string>();
@@ -101,8 +118,11 @@ export function registerFileUploadHandlers(rpcHandlerManager: RpcHandlerManager,
         }
 
         try {
+            const uploadsDirectory = join(workingDirectory, UPLOADS_DIRECTORY);
+            await ensureUploadsDirectory(uploadsDirectory);
             for (let attempt = 0; attempt < MAX_FILENAME_ATTEMPTS; attempt += 1) {
-                const relativePath = numberedFileName(fileName, attempt);
+                const destinationName = numberedFileName(fileName, attempt);
+                const relativePath = `${UPLOADS_DIRECTORY}/${destinationName}`;
                 const validation = validatePath(relativePath, workingDirectory);
                 if (!validation.valid || !validation.resolvedPath) {
                     return { success: false, error: validation.error ?? 'Invalid destination path' };
@@ -111,7 +131,7 @@ export function registerFileUploadHandlers(rpcHandlerManager: RpcHandlerManager,
                 if (reservedDestinations.has(destinationPath) || await fileExists(destinationPath)) continue;
 
                 const uploadId = randomUUID();
-                const temporaryPath = join(workingDirectory, `.${relativePath}.happy-upload-${uploadId}`);
+                const temporaryPath = join(uploadsDirectory, `.${destinationName}.happy-upload-${uploadId}`);
                 const handle = await open(temporaryPath, 'wx');
                 const placeholderTimeout = undefined;
                 const upload: FileUploadState = {
