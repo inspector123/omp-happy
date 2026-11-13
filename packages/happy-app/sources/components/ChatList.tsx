@@ -381,6 +381,11 @@ const ChatListInternal = React.memo((props: {
                 ref={flatListRef}
                 data={displayItems}
                 inverted={true}
+                // FlatList turns this on by default on Android. Under Fabric it throws
+                // "Invalid clipping state" from ReactScrollView.onSizeChanged when the
+                // keyboard resizes the list while its cells are changing, which crashed
+                // the app on opening a chat.
+                removeClippedSubviews={false}
                 keyExtractor={keyExtractor}
                 maintainVisibleContentPosition={pinned ? undefined : MVCP_WHILE_UNPINNED}
                 keyboardShouldPersistTaps="handled"
