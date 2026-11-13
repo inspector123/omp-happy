@@ -118,6 +118,8 @@ import { AgentState, TodoItem, TodoItemsSchema } from "../storageTypes";
 import { MessageMeta } from "../typesMessageMeta";
 import { parseMessageAsEvent } from "./messageToEvent";
 
+type ToolResultContent = Extract<Extract<NormalizedMessage, { role: 'agent' }>['content'][number], { type: 'tool-result' }>;
+
 type ReducerMessage = {
     id: string;
     localId?: string | null;
@@ -151,6 +153,9 @@ export type ReducerState = {
     toolIdToMessageId: Map<string, string>; // toolId/permissionId -> messageId (since they're the same now)
     sidechainToolIdToMessageId: Map<string, string>; // (subagentId, toolId) -> sidechain messageId
     permissions: Map<string, StoredPermission>; // Store permission details by ID for quick lookup
+    // Tool results that arrived before their tool call (live updates can be
+    // applied out of server order); applied when the call shows up.
+    pendingToolResults: Map<string, { content: ToolResultContent; createdAt: number }>;
     localIds: Map<string, string>;
     messageIds: Map<string, string>; // originalId -> internalId
     streamIds: Map<string, string>; // agent stream ID -> canonical rendered message ID
@@ -182,6 +187,7 @@ export function createReducer(): ReducerState {
         toolIdToMessageId: new Map(),
         sidechainToolIdToMessageId: new Map(),
         permissions: new Map(),
+        pendingToolResults: new Map(),
         messages: new Map(),
         localIds: new Map(),
         messageIds: new Map(),
@@ -343,6 +349,76 @@ function updateLatestTodos(state: ReducerState, value: unknown, timestamp: numbe
             timestamp,
         };
     }
+}
+
+function applyToolResult(state: ReducerState, c: ToolResultContent, createdAt: number, changed: Set<string>) {
+    const messageId = state.toolIdToMessageId.get(c.tool_use_id);
+    const message = messageId ? state.messages.get(messageId) : undefined;
+    if (!messageId || !message?.tool) {
+        return;
+    }
+    if (message.tool.inlineRequest?.permission?.id === c.tool_use_id) {
+        message.tool.inlineRequest.state = c.is_error ? 'error' : 'completed';
+        message.tool.inlineRequest.result = c.content;
+        message.tool.inlineRequest.completedAt = createdAt;
+        message.tool.inlineRequest.permission = {
+            ...message.tool.inlineRequest.permission,
+            status: c.is_error ? 'denied' : 'approved',
+        };
+        changed.add(messageId);
+        return;
+    }
+
+    if (message.tool.state !== 'running') {
+        return;
+    }
+
+    // Update tool state and result
+    message.tool.state = c.is_error ? 'error' : 'completed';
+    message.tool.result = c.content;
+    message.tool.completedAt = createdAt;
+
+    // Update permission data if provided by backend
+    if (c.permissions) {
+        // Merge with existing permission to preserve decision field from agentState
+        if (message.tool.permission) {
+            // Preserve existing decision if not provided in tool result
+            const existingDecision = message.tool.permission.decision;
+            message.tool.permission = {
+                ...message.tool.permission,
+                id: c.tool_use_id,
+                status: c.permissions.result === 'approved' ? 'approved' : 'denied',
+                date: c.permissions.date,
+                mode: c.permissions.mode,
+                allowedTools: c.permissions.allowedTools,
+                decision: c.permissions.decision || existingDecision
+            };
+        } else {
+            message.tool.permission = {
+                id: c.tool_use_id,
+                status: c.permissions.result === 'approved' ? 'approved' : 'denied',
+                date: c.permissions.date,
+                mode: c.permissions.mode,
+                allowedTools: c.permissions.allowedTools,
+                decision: c.permissions.decision
+            };
+        }
+    }
+
+    if (message.tool.name === 'TodoWrite' && !c.is_error) {
+        updateLatestTodos(state, message.tool.result?.newTodos, createdAt);
+    }
+
+    changed.add(messageId);
+}
+
+function applyPendingToolResult(state: ReducerState, toolId: string, changed: Set<string>) {
+    const pending = state.pendingToolResults.get(toolId);
+    if (!pending) {
+        return;
+    }
+    state.pendingToolResults.delete(toolId);
+    applyToolResult(state, pending.content, pending.createdAt, changed);
 }
 
 export function reducer(state: ReducerState, messages: NormalizedMessage[], agentState?: AgentState | null): ReducerResult {
@@ -924,6 +1000,7 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                                 };
                                 state.toolIdToMessageId.set(c.id, parentMessageId);
                                 changed.add(parentMessageId);
+                                applyPendingToolResult(state, c.id, changed);
                                 continue;
                             }
                         }
@@ -1009,7 +1086,7 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
 
                         state.toolIdToMessageId.set(c.id, mid);
                         changed.add(mid);
-
+                        applyPendingToolResult(state, c.id, changed);
                     }
                 }
             }
@@ -1024,70 +1101,11 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
         if (msg.role === 'agent') {
             for (let c of msg.content) {
                 if (c.type === 'tool-result') {
-                    // Find the message containing this tool
-                    let messageId = state.toolIdToMessageId.get(c.tool_use_id);
-                    if (!messageId) {
+                    if (!state.toolIdToMessageId.has(c.tool_use_id)) {
+                        state.pendingToolResults.set(c.tool_use_id, { content: c, createdAt: msg.createdAt });
                         continue;
                     }
-
-                    let message = state.messages.get(messageId);
-                    if (!message || !message.tool) {
-                        continue;
-                    }
-                    if (message.tool.inlineRequest?.permission?.id === c.tool_use_id) {
-                        message.tool.inlineRequest.state = c.is_error ? 'error' : 'completed';
-                        message.tool.inlineRequest.result = c.content;
-                        message.tool.inlineRequest.completedAt = msg.createdAt;
-                        message.tool.inlineRequest.permission = {
-                            ...message.tool.inlineRequest.permission,
-                            status: c.is_error ? 'denied' : 'approved',
-                        };
-                        changed.add(messageId);
-                        continue;
-                    }
-
-                    if (message.tool.state !== 'running') {
-                        continue;
-                    }
-
-                    // Update tool state and result
-                    message.tool.state = c.is_error ? 'error' : 'completed';
-                    message.tool.result = c.content;
-                    message.tool.completedAt = msg.createdAt;
-
-
-                    // Update permission data if provided by backend
-                    if (c.permissions) {
-                        // Merge with existing permission to preserve decision field from agentState
-                        if (message.tool.permission) {
-                            // Preserve existing decision if not provided in tool result
-                            const existingDecision = message.tool.permission.decision;
-                            message.tool.permission = {
-                                ...message.tool.permission,
-                                id: c.tool_use_id,
-                                status: c.permissions.result === 'approved' ? 'approved' : 'denied',
-                                date: c.permissions.date,
-                                mode: c.permissions.mode,
-                                allowedTools: c.permissions.allowedTools,
-                                decision: c.permissions.decision || existingDecision
-                            };
-                        } else {
-                            message.tool.permission = {
-                                id: c.tool_use_id,
-                                status: c.permissions.result === 'approved' ? 'approved' : 'denied',
-                                date: c.permissions.date,
-                                mode: c.permissions.mode,
-                                allowedTools: c.permissions.allowedTools,
-                                decision: c.permissions.decision
-                            };
-                        }
-                    }
-
-                    if (message.tool.name === 'TodoWrite' && !c.is_error) {
-                        updateLatestTodos(state, message.tool.result?.newTodos, msg.createdAt);
-                    }
-
-                    changed.add(messageId);
+                    applyToolResult(state, c, msg.createdAt, changed);
                 }
             }
         }
