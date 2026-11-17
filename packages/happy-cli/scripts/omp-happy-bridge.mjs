@@ -403,7 +403,10 @@ export function formatPresentMediaResult(result) {
   };
 }
 
-export async function sendPromptCommand(pi, command) {
+// OMP resolves sendUserMessage for an idle prompt only after the whole agent
+// run ends. Bridge commands run one at a time, so awaiting it here would hold
+// abort, ask answers and model changes until the run they target is over.
+export async function sendPromptCommand(pi, command, onError) {
   if (!command || typeof command !== 'object' || command.type !== 'prompt' || typeof command.text !== 'string') {
     return false;
   }
@@ -419,7 +422,12 @@ export async function sendPromptCommand(pi, command) {
     ...images.map((image) => ({ type: 'image', data: image.data, mimeType: image.mimeType })),
     ...(command.text.length > 0 ? [{ type: 'text', text: command.text }] : []),
   ];
-  await pi.sendUserMessage(content.length === 1 && content[0].type === 'text' ? command.text : content, options);
+  try {
+    const delivery = pi.sendUserMessage(content.length === 1 && content[0].type === 'text' ? command.text : content, options);
+    Promise.resolve(delivery).catch((error) => onError?.(error));
+  } catch (error) {
+    onError?.(error);
+  }
   return true;
 }
 
@@ -684,7 +692,10 @@ export default function happyBridgeExtension(pi) {
 
   const handleCommand = async (command) => {
     if (!command || typeof command !== 'object') return;
-    if (await sendPromptCommand(pi, command)) {
+    const reportPromptError = (error) => {
+      send({ type: 'bridge_error', message: error instanceof Error ? error.message : String(error) });
+    };
+    if (await sendPromptCommand(pi, command, reportPromptError)) {
       return;
     }
     if (command.type === 'set_control_mode') {

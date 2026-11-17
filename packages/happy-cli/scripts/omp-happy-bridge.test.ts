@@ -301,6 +301,18 @@ describe('OMP Happy bridge models', () => {
     ], undefined);
   });
 
+  it('returns before the OMP run started by a prompt finishes and reports its failure', async () => {
+    const run = Promise.withResolvers<void>();
+    const sendUserMessage = vi.fn(() => run.promise);
+    const onError = vi.fn();
+
+    await expect(sendPromptCommand({ sendUserMessage }, { type: 'prompt', text: 'Long task' }, onError))
+      .resolves.toBe(true);
+
+    run.reject(new Error('run failed'));
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(new Error('run failed')));
+  });
+
   it('resolves every goal action to a safe single-line TUI command', () => {
     expect(resolveTuiCommand({
       type: 'goal_command',
