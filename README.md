@@ -2,6 +2,8 @@
 
 This repository connects the native OMP terminal application to the OMP companion app. OMP still runs on the user's computer, inside the selected project directory, with its normal model credentials and tools. The companion app displays and controls that same process through an encrypted relay session.
 
+**Demo:** [vance.sereda.club](https://vance.sereda.club/) has a recording of the phone app driving an OMP session on a local Qwen model, with notes on how it works.
+
 This document covers the native Pi extension bridge. It does not describe the older generic ACP integration in `scripts/omp-run.sh`.
 
 To set up a new computer, follow [`OMP-HAPPY-SETUP.md`](OMP-HAPPY-SETUP.md) from top to bottom; its "Checklist for a new OMP computer" lists every step in order. This document explains how the pieces work once they are installed.
