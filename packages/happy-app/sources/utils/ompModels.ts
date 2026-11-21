@@ -1,3 +1,4 @@
+import { apiSocket } from '@/sync/apiSocket';
 import { machineBash } from '@/sync/ops';
 import { MMKV } from 'react-native-mmkv';
 
@@ -7,90 +8,24 @@ export type OmpModelOption = {
     description?: string | null;
 };
 
-type OmpCatalogModel = {
-    selector?: unknown;
-    name?: unknown;
+/** Shape served by the `omp-models` machine RPC in happy-cli. */
+export type OmpModelsSnapshot = {
+    models: OmpModelOption[];
+    defaultModel: string | null;
+    fetchedAt: number | null;
+    refreshing: boolean;
+    error: string | null;
 };
 
-type OmpModelRolesResponse = {
-    value?: unknown;
-};
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-export function parseOmpModelCatalog(raw: string): OmpModelOption[] {
-    const payload: unknown = JSON.parse(raw);
-    if (!isRecord(payload) || !Array.isArray(payload.models)) {
-        throw new Error('OMP model catalog response is invalid');
-    }
-
-    const seen = new Set<string>();
-    const models: OmpModelOption[] = [];
-    for (const candidate of payload.models as OmpCatalogModel[]) {
-        if (!isRecord(candidate) || typeof candidate.selector !== 'string') {
-            continue;
-        }
-        const selector = candidate.selector.trim();
-        if (!selector || seen.has(selector)) {
-            continue;
-        }
-        seen.add(selector);
-
-        const displayName = typeof candidate.name === 'string' ? candidate.name.trim() : '';
-        models.push({
-            key: selector,
-            name: selector,
-            description: displayName && displayName !== selector ? displayName : null,
-        });
-    }
-    return models;
-}
-
-export function parseOmpDefaultModel(raw: string): string | null {
-    const payload: unknown = JSON.parse(raw) as OmpModelRolesResponse;
-    if (!isRecord(payload) || !isRecord(payload.value)) {
-        return null;
-    }
-    const configuredDefault = payload.value.default;
-    return typeof configuredDefault === 'string' && configuredDefault.trim()
-        ? configuredDefault.trim()
-        : null;
-}
-
-export async function listOmpModels(machineId: string, cwd: string): Promise<OmpModelOption[]> {
-    const [catalogResult, defaultsResult] = await Promise.all([
-        machineBash(machineId, 'omp models --json', cwd),
-        machineBash(machineId, 'omp config get modelRoles --json', cwd),
-    ]);
-
-    if (!catalogResult.success) {
-        throw new Error(catalogResult.stderr || 'Failed to load OMP models');
-    }
-
-    const configuredDefault = defaultsResult.success
-        ? parseOmpDefaultModel(defaultsResult.stdout)
-        : null;
-    const defaultOption: OmpModelOption = {
-        key: 'default',
-        name: configuredDefault ? `${configuredDefault} (default)` : 'default model',
-        description: 'Use the OMP default configured on this machine',
-    };
-
-    return [defaultOption, ...parseOmpModelCatalog(catalogResult.stdout)];
-}
-
-// The OMP catalog is refreshed on this machine by the user running
-// `omp models refresh`; listing through the CLI (`omp models --json`) is slow
-// (it re-checks providers) and the phone's socket to the server reconnects
-// every few tens of seconds, so an ack lost in a reconnect window leaves the
-// socket.io ack promise pending forever. The app therefore persists the last
-// fetched list and only re-runs the CLI when the catalog file's stat stamp
-// changed — a plain `stat` RPC, no omp invocation.
-const MODEL_FETCH_TIMEOUT_MS = 10_000;
-const MODEL_FETCH_MAX_ATTEMPTS = 2;
+// The catalog listing (`omp models --json`) takes about 60 s on the machine
+// and the server aborts machine RPCs after 30 s, so the daemon answers from a
+// cached snapshot and refreshes in the background. The app polls while the
+// daemon reports `refreshing` and keeps its own persisted list for the moment
+// the phone cannot reach the machine at all.
 const MODEL_CACHE_TTL_MS = 60_000;
+const MODEL_RPC_TIMEOUT_MS = 20_000;
+const MODEL_POLL_INTERVAL_MS = 3_000;
+const MODEL_REFRESH_WAIT_MS = 150_000;
 const CATALOG_STAT_COMMAND = "stat -c '%Y %s' ~/.omp/agent/models.db";
 
 type OmpModelCacheEntry = {
@@ -138,7 +73,7 @@ export function getCachedOmpModels(machineId: string): OmpModelOption[] | null {
 }
 
 // React Native swaps the global Promise for the `promise` package, which has
-// no Promise.withResolvers; use the constructor form.
+// no Promise.withResolvers; use the constructor form there.
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
     return new Promise<T>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
@@ -155,33 +90,34 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
     });
 }
 
-async function fetchOmpModelsWithRetry(
-    machineId: string,
-    cwd: string,
-    catalogStamp: string | null,
-): Promise<OmpModelOption[]> {
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= MODEL_FETCH_MAX_ATTEMPTS; attempt++) {
-        try {
-            const models = await withTimeout(listOmpModels(machineId, cwd), MODEL_FETCH_TIMEOUT_MS, 'OMP model list');
-            const entry: OmpModelCacheEntry = { models, fetchedAt: Date.now(), catalogStamp };
-            modelCache.set(machineId, entry);
-            persistCacheEntry(machineId, entry);
-            return models;
-        } catch (error) {
-            lastError = error;
-        }
-    }
-    throw lastError;
+function delay(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+        setTimeout(resolve, ms);
+    });
+}
+
+export async function fetchMachineOmpModels(machineId: string, force: boolean): Promise<OmpModelsSnapshot> {
+    return withTimeout(
+        apiSocket.machineRPC<OmpModelsSnapshot, { force: boolean }>(machineId, 'omp-models', { force }),
+        MODEL_RPC_TIMEOUT_MS,
+        'OMP model list',
+    );
+}
+
+function defaultOption(defaultModel: string | null): OmpModelOption {
+    return {
+        key: 'default',
+        name: defaultModel ? `${defaultModel} (default)` : 'default model',
+        description: 'Use the OMP default configured on this machine',
+    };
 }
 
 /**
- * Returns the machine's OMP models. Serves the persisted list whenever it is
- * fresh or the catalog file is unchanged since it was fetched; the CLI only
- * runs after the user refreshed the catalog (stat stamp changed) or when no
- * list exists yet.
+ * Returns the machine's OMP models. Serves the persisted list while it is
+ * fresh, otherwise asks the daemon for its snapshot and, when the daemon is
+ * still refreshing the catalog, polls until the refreshed list arrives.
  */
-export async function refreshOmpModels(machineId: string, cwd: string): Promise<OmpModelOption[]> {
+export async function refreshOmpModels(machineId: string): Promise<OmpModelOption[]> {
     const cached = hydrateCacheEntry(machineId);
     if (cached && Date.now() - cached.fetchedAt < MODEL_CACHE_TTL_MS) {
         return cached.models;
@@ -189,20 +125,46 @@ export async function refreshOmpModels(machineId: string, cwd: string): Promise<
 
     const statResult = await machineBash(machineId, CATALOG_STAT_COMMAND, '/');
     const catalogStamp = statResult.success ? statResult.stdout.trim() : null;
-    if (cached && catalogStamp !== null && catalogStamp === cached.catalogStamp) {
-        const entry: OmpModelCacheEntry = { ...cached, fetchedAt: Date.now() };
-        modelCache.set(machineId, entry);
-        persistCacheEntry(machineId, entry);
-        return cached.models;
-    }
+    const force = !cached || catalogStamp === null || catalogStamp !== cached.catalogStamp;
 
+    let snapshot: OmpModelsSnapshot;
     try {
-        return await fetchOmpModelsWithRetry(machineId, cwd, catalogStamp);
+        snapshot = await fetchMachineOmpModels(machineId, force);
     } catch (error) {
         if (cached) {
             return cached.models;
         }
-        console.warn(`OMP model list unavailable for machine ${machineId}:`, error instanceof Error ? error.message : error);
         throw error;
     }
+
+    const deadline = Date.now() + MODEL_REFRESH_WAIT_MS;
+    while (snapshot.refreshing && Date.now() < deadline) {
+        await delay(MODEL_POLL_INTERVAL_MS);
+        try {
+            snapshot = await fetchMachineOmpModels(machineId, false);
+        } catch {
+            break;
+        }
+    }
+
+    if (snapshot.models.length === 0) {
+        if (cached) {
+            return cached.models;
+        }
+        throw new Error(snapshot.error ?? 'OMP model list unavailable');
+    }
+
+    const models = [defaultOption(snapshot.defaultModel), ...snapshot.models];
+    // The listing rewrites the catalog database, so the stamp is read after the
+    // refresh to keep the next check from treating the CLI's own write as a
+    // catalog change.
+    const postFetchStat = await machineBash(machineId, CATALOG_STAT_COMMAND, '/');
+    const entry: OmpModelCacheEntry = {
+        models,
+        fetchedAt: Date.now(),
+        catalogStamp: postFetchStat.success ? postFetchStat.stdout.trim() : catalogStamp,
+    };
+    modelCache.set(machineId, entry);
+    persistCacheEntry(machineId, entry);
+    return models;
 }

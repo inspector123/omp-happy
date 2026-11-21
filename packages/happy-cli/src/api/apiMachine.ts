@@ -28,6 +28,7 @@ import {
     forkCodexThread,
     listCodexRewindPoints,
 } from '@/codex/codexThreadFork';
+import { registerOmpModelsHandler } from '@/omp/registerOmpModelsHandler';
 import { registerOmpUsageHandler } from '@/omp/registerOmpUsageHandler';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -135,6 +136,7 @@ export class ApiMachineClient {
         });
 
         registerCommonHandlers(this.rpcHandlerManager, process.cwd());
+        registerOmpModelsHandler(this.rpcHandlerManager);
         registerOmpUsageHandler(this.rpcHandlerManager);
     }
 

@@ -675,7 +675,7 @@ function NewSessionScreen() {
         let cancelled = false;
         const cachedModels = getCachedOmpModels(selectedMachineId);
         setRemoteOmpModels(cachedModels ?? []);
-        void refreshOmpModels(selectedMachineId, '/')
+        void refreshOmpModels(selectedMachineId)
             .then((models) => {
                 if (!cancelled) {
                     setRemoteOmpModels(models);
